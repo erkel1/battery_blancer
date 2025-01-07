@@ -1,0 +1,196 @@
+
+Here's the content formatted as HTML, which should allow you to copy it into an HTML file or use it as needed:
+
+html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Battery Balancer Project README</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+        }
+        h1, h2 {
+            color: #2c3e50;
+        }
+        code {
+            background-color: #f4f4f4;
+            padding: 2px 4px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        pre {
+            background-color: #f4f4f4;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            overflow: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>Battery Balancer Project</h1>
+    
+    <p>This project implements a simple yet effective battery balancer system for lithium-ion batteries using a Raspberry Pi, M5 VMeter units for voltage measurement, and an M5 4-Relay unit for managing cell connections. It includes both the balancing logic and a command-line user interface for monitoring and control.</p>
+
+    <h2>Features</h2>
+    <ul>
+        <li><strong>Automatic Balancing</strong>: Detects and balances cells when their voltage difference exceeds a configurable threshold.</li>
+        <li><strong>Real-time Monitoring</strong>: Continuously monitors cell voltages through an I2C bus.</li>
+        <li><strong>Command-line GUI</strong>: Provides a text-based user interface using <code>curses</code> for status display and basic control.</li>
+        <li><strong>Configurable Settings</strong>: Key parameters like balancing thresholds, times, and I2C addresses are set in an external configuration file for ease of use.</li>
+    </ul>
+
+    <h2>Prerequisites</h2>
+    <h3>Hardware</h3>
+    <ul>
+        <li>Raspberry Pi (with I2C enabled)</li>
+        <li>M5 VMeter units (3 in this setup)</li>
+        <li>M5 4-Relay unit</li>
+        <li>Lithium-ion battery pack (cells must be connected to the VMeter units)</li>
+    </ul>
+
+    <h3>Software</h3>
+    <ul>
+        <li>Python 3.x</li>
+        <li><code>smbus</code> for I2C communication</li>
+        <li><code>curses</code> for the command-line interface</li>
+    </ul>
+
+    <h2>Installation</h2>
+
+    <h3>Hardware Setup</h3>
+    <ol>
+        <li><strong>Connect VMeter Units</strong>: Wire each VMeter to measure the voltage of one battery cell. Ensure they are connected to the I2C bus of your Raspberry Pi.</li>
+        <li><strong>Connect Relay Unit</strong>: Attach the relay unit to the I2C bus as well. Ensure the relays can switch between cells for balancing.</li>
+        <li><strong>Connect DC-DC Converter</strong>: The fourth relay should control the DC-DC converter, which is used for safe switching during balancing operations.</li>
+    </ol>
+
+    <h3>Software Setup</h3>
+    <ol>
+        <li><strong>Install Python Libraries</strong>:
+            <pre><code>sudo apt-get install python3 python3-smbus python3-curses</code></pre>
+        </li>
+        <li><strong>Clone or Download This Repository</strong>:
+            <pre><code>git clone &lt;your-repo-url&gt;
+cd battery-balancer</code></pre>
+        </li>
+        <li><strong>Edit Configuration</strong>:
+            <p>Open <code>config.ini</code> and adjust the settings to match your hardware setup.</p>
+        </li>
+    </ol>
+
+    <h2>Running the Balancer</h2>
+    <ul>
+        <li><strong>Run the Script</strong>:
+            <pre><code>python3 balancer.py</code></pre>
+        </li>
+        <li><strong>Interaction</strong>: 
+            <p>Use the command-line interface to see current cell voltages, balancing status, and to quit the program by typing 'quit'. The system will automatically start balancing when needed, but you can monitor and intervene through the TUI.</p>
+        </li>
+    </ul>
+
+    <h2>Detailed Functionality of the Script</h2>
+
+    <h3>How the Script Works</h3>
+    <ol>
+        <li><strong>Initialization</strong>:
+            <ul>
+                <li>Reads configuration from <code>config.ini</code>.</li>
+                <li>Initializes the I2C bus for communication with VMeter and Relay units.</li>
+            </ul>
+        </li>
+        <li><strong>Voltage Monitoring</strong>:
+            <ul>
+                <li>The script enters a loop where it:</li>
+                <ul>
+                    <li>Reads voltage from each cell using VMeter units.</li>
+                    <li>Displays these voltages in the command-line interface with color coding to indicate balancing status.</li>
+                </ul>
+            </ul>
+        </li>
+        <li><strong>Balancing Logic</strong>:
+            <ul>
+                <li>If the voltage difference between any two cells exceeds <code>BALANCE_THRESHOLD</code>:</li>
+                <ul>
+                    <li>Identifies the highest voltage (<code>high_cell</code>) and lowest voltage (<code>low_cell</code>).</li>
+                    <li>Uses relays to connect <code>high_cell</code> to <code>low_cell</code> for balancing.</li>
+                    <li>Disables the DC-DC converter before switching relays to prevent arcing.</li>
+                    <li>Activates the DC-DC converter for <code>BALANCE_TIME</code> to allow charge transfer.</li>
+                    <li>After balancing, waits for <code>BALANCE_REST_PERIOD</code> for natural stabilization before resuming monitoring.</li>
+                </ul>
+            </ul>
+        </li>
+        <li><strong>User Interaction</strong>:
+            <ul>
+                <li>The TUI shows real-time battery status and allows basic interaction:</li>
+                <ul>
+                    <li>User can type 'quit' to stop the script.</li>
+                </ul>
+            </ul>
+        </li>
+        <li><strong>Safety Measures</strong>:
+            <ul>
+                <li>Relays are controlled to ensure the DC-DC converter is only active during balancing to reduce wear and prevent damage.</li>
+                <li>The script includes brief delays to ensure no voltage is present during relay switching.</li>
+            </ul>
+        </li>
+    </ol>
+
+    <h3>Key Components</h3>
+    <ul>
+        <li><strong>I2C Communication</strong>: Utilizes the SMBus protocol to communicate with VMeter and Relay units.</li>
+        <li><strong>Balancing Strategy</strong>: Employs an active balancing method where charge is redistributed from higher to lower voltage cells.</li>
+        <li><strong>Configuration File</strong>: Allows users to modify operational parameters without changing the code, enhancing flexibility for different setups.</li>
+    </ul>
+
+    <h2>Configuration</h2>
+    <p>Configuration is managed through <code>config.ini</code>:</p>
+    <pre><code>[General]
+NUM_CELLS = 3
+BALANCE_THRESHOLD = 0.05
+BALANCE_TIME = 60
+SLEEP_TIME = 5
+BALANCE_REST_PERIOD = 300
+
+[I2C]
+VMETER_ADDRS = 0x49, 0x4A, 0x4B
+RELAY_ADDR = 0x26</code></pre>
+
+    <ul>
+        <li><strong>NUM_CELLS</strong>: Number of battery cells.</li>
+        <li><strong>BALANCE_THRESHOLD</strong>: Voltage difference to trigger balancing (in volts).</li>
+        <li><strong>BALANCE_TIME</strong>: Duration of each balancing operation (in seconds).</li>
+        <li><strong>SLEEP_TIME</strong>: Interval between checks (in seconds).</li>
+        <li><strong>BALANCE_REST_PERIOD</strong>: Time allowed for cells to naturally balance post-balancing (in seconds).</li>
+        <li><strong>VMETER_ADDRS</strong>: I2C addresses of VMeter units.</li>
+        <li><strong>RELAY_ADDR</strong>: I2C address of the relay unit.</li>
+    </ul>
+
+    <h2>Safety Considerations</h2>
+    <ul>
+        <li><strong>Use caution when working with lithium-ion batteries</strong>. Improper balancing can lead to overcharging, undercharging, or even battery failure.</li>
+        <li><strong>Test with a low power setup</strong> before connecting to high-capacity or high-voltage batteries.</li>
+        <li><strong>Monitor the system</strong>: Ensure you can physically disconnect all circuits if something goes wrong.</li>
+    </ul>
+
+    <h2>Known Issues</h2>
+    <p>The script uses a single-threaded approach which might affect GUI responsiveness during balancing operations. Consider this when scaling or for more demanding applications.</p>
+
+    <h2>Contributing</h2>
+    <p>Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.</p>
+
+    <h2>License</h2>
+    <p>[Insert your license here, e.g., MIT, GPL, etc.]</p>
+
+    <h2>Acknowledgments</h2>
+    <ul>
+        <li>M5Stack for their modules providing an accessible platform for DIY electronics projects.</li>
+        <li>The open-source community for libraries like <code>curses</code> and <code>smbus</code>.</li>
+    </ul>
+</body>
+</html>
