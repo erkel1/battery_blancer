@@ -95,13 +95,9 @@ def read_voltage_with_retry(cell_id, num_samples=5, tolerance=0.01, max_retries=
                 bus.write_byte(VMETER_ADDR, 0x01)
                 time.sleep(0.2)
                 adc_raw = bus.read_word_data(VMETER_ADDR, REG_CONVERSION) & 0xFFFF
-                logging.debug(f"Raw ADC reading for Cell {cell_id + 1}: {adc_raw}")
-                if adc_raw is not None and adc_raw != 0:
-                    voltage = adc_raw * (6.144 / 32767)
-                    readings.append(voltage)
-                    raw_adc_values.append(adc_raw)
-                else:
-                    logging.warning(f"Invalid ADC reading for Cell {cell_id + 1}: {adc_raw}")
+                voltage = adc_raw * (6.144 / 32767)
+                readings.append(voltage)
+                raw_adc_values.append(adc_raw)
             except IOError as e:
                 logging.warning(f"Voltage reading attempt for Cell {cell_id + 1}: {e}")
                 continue
