@@ -57,7 +57,7 @@ except Exception as e:
 # ADS1115 configuration settings
 REG_CONFIG = 0x01
 REG_CONVERSION = 0x00
-CONFIG_SINGLE_SHOT = 0x8000
+CONFIG_CONTINUOUS = 0x0000  # Continuous conversion mode
 CONFIG_RATE_8 = 0x0000
 CONFIG_PGA_2048 = 0x0400  # Gain setting for 32V max input
 
@@ -71,7 +71,7 @@ def select_channel(channel):
 
 # Function to configure ADS1115 for VMeter reading
 def config_vmeter():
-    config = CONFIG_SINGLE_SHOT | CONFIG_RATE_8 | CONFIG_PGA_2048
+    config = CONFIG_CONTINUOUS | CONFIG_RATE_8 | CONFIG_PGA_2048
     try:
         bus.write_word_data(VMETER_ADDR, REG_CONFIG, config)
         logging.debug("Configured VMeter")
@@ -254,4 +254,4 @@ if __name__ == '__main__':
         logging.error(f"An unexpected error occurred in script execution: {e}")
     finally:
         GPIO.cleanup()
-        logging.info("Program terminated. GPIO cleanup completed.")
+        logging.info("Program terminated. GPIO cleanup completed.") 
