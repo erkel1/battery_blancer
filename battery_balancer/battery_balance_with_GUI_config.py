@@ -93,12 +93,17 @@ def read_voltage_with_retry(cell_id, max_retries=3):
             scaling_factor = 5.0 / 22270 * 32767  # Example scaling, adjust as needed
             voltage = (adc_raw * scaling_factor) / 32767.0
             logging.debug(f"Read voltage from Cell {cell_id + 1}: {voltage:.2f}V on attempt {attempt+1}")
-            return voltage
+            logging.debug(f"Raw ADC value for Cell {cell_id + 1}: {adc_raw}")
+            
+            # Also print raw ADC value to console for immediate visibility
+            print(f"Raw ADC for Cell {cell_id + 1}: {adc_raw}")
+            
+            return voltage, adc_raw  # Return both voltage and raw ADC value
         except IOError as e:
             logging.warning(f"Voltage reading retry {attempt + 1} for Cell {cell_id + 1}: {e}")
             time.sleep(1)  # Wait before retrying
     logging.error(f"Failed to read voltage for Cell {cell_id + 1} after {max_retries} attempts")
-    return None
+    return None, None
 
 # Function to control the relays and DC-DC converter
 def set_relay(high_cell, low_cell):
@@ -172,12 +177,14 @@ def check_overvoltage_alarm(voltages):
 
 def balance_cells(stdscr):
     voltages = []
+    adc_raws = []  # Collect raw ADC values
     for cell in range(NUM_CELLS):
-        voltage = read_voltage_with_retry(cell)
+        voltage, adc_raw = read_voltage_with_retry(cell)
         if voltage is None:
             stdscr.addstr(cell + 2, 0, f"Cell {cell+1}: Error reading voltage", curses.color_pair(1))
         else:
             voltages.append(voltage)
+            adc_raws.append(adc_raw)
     
     if not voltages:
         stdscr.addstr(10, 0, "No valid voltage readings. Check hardware.")
@@ -226,19 +233,15 @@ def main(stdscr):
             stdscr.addstr(0, 0, "Battery Balancer TUI", curses.color_pair(1))
             stdscr.hline(1, 0, curses.ACS_HLINE, curses.COLS - 1)
             for i in range(NUM_CELLS):
-                voltage = read_voltage_with_retry(i)
+                voltage, adc_raw = read_voltage_with_retry(i)
                 if voltage is None:
                     stdscr.addstr(i + 2, 0, f"Cell {i+1}: Error reading voltage", curses.color_pair(1))
                 else:
                     voltage_color = curses.color_pair(2) if voltage < BALANCE_THRESHOLD else curses.color_pair(3)
-                    stdscr.addstr(i + 2, 0, f"Cell {i+1}: {voltage:.2f}V", voltage_color)
+                    # Display both voltage and raw ADC value
+                    stdscr.addstr(i + 2, 0, f"Cell {i+1}: {voltage:.2f}V (Raw: {adc_raw})", voltage_color)
 
             balance_cells(stdscr)
-
-            stdscr.addstr(11, 0, "Press 'q' to quit")
-            key = stdscr.getch()
-            if key == ord('q'):  # 'q' for quit
-                break
 
             time.sleep(SLEEP_TIME)
             stdscr.refresh()  # Ensure screen refreshes
@@ -254,4 +257,4 @@ if __name__ == '__main__':
         logging.error(f"An unexpected error occurred in script execution: {e}")
     finally:
         GPIO.cleanup()
-        logging.info("Program terminated. GPIO cleanup completed.") 
+        logging.info("Program terminated. GPIO cleanup completed.")
