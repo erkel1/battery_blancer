@@ -59,7 +59,7 @@ REG_CONFIG = 0x01
 REG_CONVERSION = 0x00
 CONFIG_CONTINUOUS = 0x0000  # Continuous conversion mode
 CONFIG_RATE_8 = 0x0000
-CONFIG_PGA_2048 = 0x0400  # Gain setting for 32V max input
+CONFIG_PGA_6144 = 0x0200  # Gain setting for ±6.144V
 
 # Function to select a channel on PaHUB2
 def select_channel(channel):
@@ -71,7 +71,7 @@ def select_channel(channel):
 
 # Function to configure ADS1115 for VMeter reading
 def config_vmeter():
-    config = CONFIG_CONTINUOUS | CONFIG_RATE_8 | CONFIG_PGA_2048
+    config = CONFIG_CONTINUOUS | CONFIG_RATE_8 | CONFIG_PGA_6144
     try:
         bus.write_word_data(VMETER_ADDR, REG_CONFIG, config)
         logging.debug("Configured VMeter")
@@ -79,7 +79,7 @@ def config_vmeter():
         logging.error(f"Failed to configure VMeter: {e}")
 
 # Function to read voltage with retry
-def read_voltage_with_retry(cell_id, max_retries=3):
+def read_voltage_with_retry(cell_id, max_retries=5):  # Increased retries
     for attempt in range(max_retries):
         try:
             vmeter_channel = cell_id % 3  # Each VMeter is on channels 0, 1, 2 sequentially
@@ -87,21 +87,21 @@ def read_voltage_with_retry(cell_id, max_retries=3):
             config_vmeter()
             
             bus.write_byte(VMETER_ADDR, 0x01)  # Start conversion on channel
-            time.sleep(0.15)  # Wait for conversion
+            time.sleep(0.2)  # Increased wait time for conversion
             adc_raw = bus.read_word_data(VMETER_ADDR, REG_CONVERSION) & 0xFFFF
             
-            scaling_factor = 5.0 / 22270 * 32767  # Example scaling, adjust as needed
-            voltage = (adc_raw * scaling_factor) / 32767.0
-            logging.debug(f"Read voltage from Cell {cell_id + 1}: {voltage:.2f}V on attempt {attempt+1}")
-            logging.debug(f"Raw ADC value for Cell {cell_id + 1}: {adc_raw}")
+            # Scaling factor for PGA_6144 (±6.144V)
+            scaling_factor = 6.144 / 32767  # 6.144V is the full-scale range for this gain
+            voltage = adc_raw * scaling_factor
             
-            # Also print raw ADC value to console for immediate visibility
-            print(f"Raw ADC for Cell {cell_id + 1}: {adc_raw}")
+            logging.debug(f"Read voltage from Cell {cell_id + 1}: {voltage:.2f}V on attempt {attempt+1}")
+            logging.info(f"Raw ADC value for Cell {cell_id + 1}: {adc_raw}")
             
             return voltage, adc_raw  # Return both voltage and raw ADC value
         except IOError as e:
             logging.warning(f"Voltage reading retry {attempt + 1} for Cell {cell_id + 1}: {e}")
-            time.sleep(1)  # Wait before retrying
+            if attempt + 1 < max_retries:
+                time.sleep(1)  # Wait before retrying
     logging.error(f"Failed to read voltage for Cell {cell_id + 1} after {max_retries} attempts")
     return None, None
 
@@ -243,7 +243,7 @@ def main(stdscr):
 
             balance_cells(stdscr)
 
-            time.sleep(SLEEP_TIME)
+            time.sleep(SLEEP_TIME)  # You might want to adjust this based on performance
             stdscr.refresh()  # Ensure screen refreshes
     except Exception as e:
         logging.error(f"Error in main loop: {e}")
