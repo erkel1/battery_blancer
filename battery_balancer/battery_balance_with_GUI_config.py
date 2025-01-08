@@ -241,7 +241,7 @@ def main(stdscr):
                     # Display both voltage and raw ADC value
                     stdscr.addstr(i + 2, 0, f"Cell {i+1}: {voltage:.2f}V (Raw: {adc_raw})", voltage_color)
 
-            balance_cells(stdscr)
+          #  balance_cells(stdscr)
 
             time.sleep(SLEEP_TIME)  # You might want to adjust this based on performance
             stdscr.refresh()  # Ensure screen refreshes
