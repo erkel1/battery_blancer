@@ -7,12 +7,29 @@ from email.mime.text import MIMEText
 import curses
 import logging
 import sys
+import threading
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG, 
                     format='%(asctime)s - %(levelname)s - %(message)s',
                     filename='battery_balancer.log',
                     filemode='w')  # 'w' mode ensures the log file is overwritten each run for cleaner debugging
+
+"""
+Battery Balancer Script
+
+This script controls a battery balancing system for multiple lithium cells. 
+It uses:
+- I2C for reading battery voltages via an ADC (like ADS1115).
+- I2C for controlling relays via an M5Stack 4Relay module.
+- GPIO for controlling DC-DC converters.
+- Curses for a Text User Interface (TUI) to display real-time battery status.
+- Threading to manage voltage balancing without blocking UI updates.
+
+Configuration:
+- Reads parameters from a config.ini file, including I2C addresses, GPIO pins, etc.
+- Logs operations and errors to battery_balancer.log for debugging.
+"""
 
 # Read configuration
 config = configparser.ConfigParser()
@@ -63,8 +80,17 @@ CONFIG_CONTINUOUS = 0x0000  # Continuous conversion mode
 CONFIG_RATE_8 = 0x0000
 CONFIG_PGA_6144 = 0x0200  # Gain setting for ±6.144V
 
+# Global variable for managing the balancing thread
+balancing_thread = None
+
 # Function to select a channel on PaHUB2
 def select_channel(channel):
+    """
+    Selects the specified channel on the PaHUB2 I2C multiplexer.
+
+    Args:
+        channel (int): The channel number to select (0-indexed).
+    """
     try:
         bus.write_byte(PAHUB2_ADDR, 1 << channel)
         logging.debug(f"Selected channel {channel}")
@@ -73,6 +99,9 @@ def select_channel(channel):
 
 # Function to configure ADS1115 for VMeter reading
 def config_vmeter():
+    """
+    Configures the ADS1115 for continuous conversion with a gain suitable for battery voltage measurement.
+    """
     config = CONFIG_CONTINUOUS | CONFIG_RATE_8 | CONFIG_PGA_6144
     try:
         bus.write_word_data(VMETER_ADDR, REG_CONFIG, config)
@@ -82,6 +111,18 @@ def config_vmeter():
 
 # Function to read voltage with retry
 def read_voltage_with_retry(cell_id, num_samples=5, tolerance=0.01, max_retries=5):
+    """
+    Reads voltage from a battery cell with retries for consistency.
+
+    Args:
+        cell_id (int): The ID of the cell to measure (0-indexed).
+        num_samples (int): Number of samples to take for each reading.
+        tolerance (float): Percentage tolerance for sample consistency.
+        max_retries (int): Maximum number of retry attempts.
+
+    Returns:
+        tuple: (average_voltage, list of readings, list of raw ADC values) or (None, [], []) on failure.
+    """
     valid_readings = []
     valid_raw_adc = []
     for attempt in range(max_retries):
@@ -104,7 +145,6 @@ def read_voltage_with_retry(cell_id, num_samples=5, tolerance=0.01, max_retries=
                     raw_adc_values.append(adc_raw)
                 else:
                     logging.warning(f"ADC returned zero for Cell {cell_id + 1}")
-                    # Optionally, append a very small voltage or None here for consistency
                     readings.append(0.0001)  # Very small value to avoid division by zero in later checks
                     raw_adc_values.append(0)
             except IOError as e:
@@ -144,8 +184,15 @@ def read_voltage_with_retry(cell_id, num_samples=5, tolerance=0.01, max_retries=
 
 # Function to control the relays and DC-DC converter
 def set_relay(high_cell, low_cell):
+    """
+    Sets the relay configuration for balancing from one cell to another using the M5Stack 4Relay module.
+
+    Args:
+        high_cell (int): Index of the cell with higher voltage (0-indexed).
+        low_cell (int): Index of the cell with lower voltage (0-indexed).
+    """
     try:
-        select_channel(3)  # Switch to the channel where the relays are connected
+        select_channel(3)  # Switch to channel 3 where the 4Relay module is connected
         relay_state = 0
         if high_cell == low_cell or high_cell < 0 or low_cell < 0:
             relay_state = 0  # All relays off
@@ -171,6 +218,12 @@ def set_relay(high_cell, low_cell):
 
 # Function to control DC-DC converter via GPIO
 def control_dc_dc(enable):
+    """
+    Controls the DC-DC converter through GPIO.
+
+    Args:
+        enable (bool): If True, the converter is enabled; if False, it's disabled.
+    """
     try:
         GPIO.output(DC_DC_RELAY_PIN, GPIO.HIGH if enable else GPIO.LOW)
         logging.info(f"DC-DC Converter {'enabled' if enable else 'disabled'}")
@@ -179,6 +232,9 @@ def control_dc_dc(enable):
 
 # Function to send an email alarm
 def send_email_alarm():
+    """
+    Sends an email alarm when a cell voltage exceeds the predefined threshold.
+    """
     msg = MIMEText(f'Warning: Cell voltage exceeded {ALARM_VOLTAGE_THRESHOLD}V!')
     msg['Subject'] = 'Battery Alarm'
     msg['From'] = SENDER_EMAIL
@@ -193,6 +249,15 @@ def send_email_alarm():
 
 # New function to handle overvoltage alarm
 def check_overvoltage_alarm(voltages):
+    """
+    Checks if any cell voltage exceeds the alarm threshold and activates alarms if necessary.
+
+    Args:
+        voltages (list): List of current voltages for each cell.
+
+    Returns:
+        bool: True if an overvoltage was detected and alarm was triggered, False otherwise.
+    """
     for i, voltage in enumerate(voltages):
         if voltage and voltage > ALARM_VOLTAGE_THRESHOLD:
             logging.warning(f"ALARM: Cell {i+1} voltage is {voltage:.2f}V, exceeding threshold!")
@@ -208,9 +273,16 @@ def check_overvoltage_alarm(voltages):
         logging.error(f"Error resetting alarm relay: {e}")
     return False
 
-def balance_cells(stdscr, voltages):
+def balance_cells(voltages):
+    """
+    Performs balancing based on voltage differences between cells.
+
+    This function is intended to run in a separate thread to not block UI updates.
+
+    Args:
+        voltages (list): List of current voltages for each cell.
+    """
     if not voltages:
-        stdscr.addstr(10, 0, "No valid voltage readings. Check hardware.")
         return
 
     if check_overvoltage_alarm(voltages):
@@ -222,22 +294,29 @@ def balance_cells(stdscr, voltages):
     low_cell = voltages.index(min_voltage)
 
     if max_voltage - min_voltage > BALANCE_THRESHOLD:
-        stdscr.addstr(10, 0, f"Balancing Cell {high_cell+1} to Cell {low_cell+1}...")
         set_relay(high_cell, low_cell)
         control_dc_dc(False)
         time.sleep(0.1)
         control_dc_dc(True)
         time.sleep(BALANCE_TIME)
         control_dc_dc(False)
-        stdscr.addstr(10, 0, "Balancing completed. Waiting for stabilization...")
-        time.sleep(BALANCE_REST_PERIOD)
-        stdscr.addstr(10, 0, "Stabilization complete.                     ")
         logging.info(f"Balancing completed: Cell {high_cell+1} to Cell {low_cell+1}")
     else:
-        stdscr.addstr(10, 0, "No balancing needed.                      ")
         logging.info("No balancing action taken; voltages within threshold")
 
 def main(stdscr):
+    """
+    Main function to run the battery balancer TUI.
+
+    This function initializes the curses interface, reads battery voltages, 
+    updates the display, and manages the balancing process in a way that 
+    doesn't block the UI updates.
+
+    Args:
+        stdscr: Curses window object provided by curses.wrapper.
+    """
+    global balancing_thread
+    
     try:
         curses.noecho()
         curses.cbreak()
@@ -271,8 +350,12 @@ def main(stdscr):
                     stdscr.addstr(i + 3, 0, f"  Readings: {' '.join(f'{v:.2f}' for v in readings)}")
                     stdscr.addstr(i + 4, 0, f"  Raw ADC: {' '.join(str(a) for a in adc_values)}")
 
-            if voltages and len(voltages) == NUM_CELLS:  # Check if we have all cell voltages
-                balance_cells(stdscr, voltages)
+            if voltages and len(voltages) == NUM_CELLS:
+                if balancing_thread is None or not balancing_thread.is_alive():
+                    balancing_thread = threading.Thread(target=balance_cells, args=(voltages,))
+                    balancing_thread.start()
+                else:
+                    stdscr.addstr(10, 0, "Balancing in progress...")
 
             stdscr.refresh()
             time.sleep(1)  # Update display every second
