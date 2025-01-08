@@ -97,9 +97,24 @@ def set_relay(high_cell, low_cell):
         if high_cell == low_cell or high_cell < 0 or low_cell < 0:
             relay_state = 0  # All relays off
         else:
-            # Mapping logic (unchanged for brevity)
-            # ... (Add the relay mapping logic here)
-            bus.write_byte_data(RELAY_ADDR, 0x10, relay_state)
+            if high_cell == 2 and low_cell == 1:  # 2->1
+                relay_state |= (1 << 0) | (1 << 2) | (1 << 4)  # Relay 1 Pole 3, Relay 2 Pole 1, Relay 3 Pole 1
+            elif high_cell == 3 and low_cell == 1:  # 3->1
+                relay_state |= (1 << 1) | (1 << 3) | (1 << 4)  # Relay 4 Pole 2, Relay 2 Pole 2, Relay 3 Pole 1
+            elif high_cell == 1 and low_cell == 2:  # 1->2
+                relay_state |= (1 << 0) | (1 << 4) | (1 << 2)  # Relay 1 Pole 1, Relay 3 Pole 1, Relay 2 Pole 1
+            elif high_cell == 1 and low_cell == 3:  # 1->3
+                relay_state |= (1 << 1) | (1 << 5) | (1 << 3)  # Relay 1 Pole 2, Relay 3 Pole 2, Relay 2 Pole 2
+            elif high_cell == 2 and low_cell == 2:  # 2->2
+                relay_state |= (1 << 0) | (1 << 5)  # Relay 1 Pole 3, Relay 3 Pole 2
+            elif high_cell == 2 and low_cell == 3:  # 2->3
+                relay_state |= (1 << 2) | (1 << 3) | (1 << 5)  # Relay 4 Pole 1, Relay 2 Pole 2, Relay 3 Pole 2
+            elif high_cell == 3 and low_cell == 2:  # 3->2
+                relay_state |= (1 << 3) | (1 << 5) | (1 << 2)  # Relay 4 Pole 2, Relay 3 Pole 2, Relay 2 Pole 1
+            elif high_cell == 3 and low_cell == 3:  # 3->3
+                relay_state |= (1 << 1) | (1 << 5)  # Relay 4 Pole 2, Relay 3 Pole 2
+
+        bus.write_byte_data(RELAY_ADDR, 0x10, relay_state)
         logging.info(f"Set relay state for balancing from Cell {high_cell + 1} to Cell {low_cell + 1}")
     except IOError as e:
         logging.error(f"Relay setting error: {e}")
@@ -152,6 +167,10 @@ def balance_cells(stdscr):
 
     if check_overvoltage_alarm(voltages):
         return  # Skip balancing if an alarm has been triggered
+
+    # Add delay here before balancing
+    time.sleep(2)  # Delay for 2 seconds, adjust as needed
+    logging.info("Delay completed before balancing")
 
     max_voltage = max(voltages)
     min_voltage = min(voltages)
