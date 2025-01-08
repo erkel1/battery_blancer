@@ -4,6 +4,7 @@ import configparser
 import RPi.GPIO as GPIO
 import smtplib
 from email.mime.text import MIMEText
+import curses
 
 # Read configuration
 config = configparser.ConfigParser()
@@ -19,7 +20,7 @@ ALARM_VOLTAGE_THRESHOLD = config.getfloat('General', 'ALARM_VOLTAGE_THRESHOLD')
 
 # I2C addresses for M5 Units
 PAHUB2_ADDR = int(config.get('I2C', 'PAHUB2_ADDR'), 16)
-VMETER_ADDR = int(config.get('I2C', 'VMETER_ADDR'), 16)
+VMETER_ADDR = int(config.get('I2C', 'VMETER_ADDR'), 16)  # All VMeter units have the same address
 RELAY_ADDR = int(config.get('I2C', 'RELAY_ADDR'), 16)
 
 # GPIO pins
@@ -39,21 +40,38 @@ GPIO.setmode(GPIO.BCM)
 GPIO.setup(DC_DC_RELAY_PIN, GPIO.OUT)
 GPIO.setup(ALARM_RELAY_PIN, GPIO.OUT, initial=GPIO.LOW)  # Alarm relay starts off
 
+# ADS1115 configuration settings
+REG_CONFIG = 0x01
+REG_CONVERSION = 0x00
+CONFIG_SINGLE_SHOT = 0x8000
+CONFIG_RATE_8 = 0x0000
+CONFIG_PGA_2048 = 0x0400  # Gain setting for 32V max input
+
 # Function to select a channel on PaHUB2
 def select_channel(channel):
     bus.write_byte(PAHUB2_ADDR, 1 << channel)  # Enable the specific channel
 
+# Function to configure ADS1115 for VMeter reading
+def config_vmeter():
+    config = CONFIG_SINGLE_SHOT | CONFIG_RATE_8 | CONFIG_PGA_2048
+    bus.write_word_data(VMETER_ADDR, REG_CONFIG, config)
+
 # Function to read voltage from a specific cell using one of the M5 VMeter units
 def read_voltage(cell_id):
     # Determine which channel the VMeter is on
-    vmeter_channel = cell_id % 3  # Assuming each VMeter is on channels 0, 1, 2 sequentially
+    vmeter_channel = cell_id % 3  # Each VMeter is on channels 0, 1, 2 sequentially
     select_channel(vmeter_channel)
     
-    bus.write_byte(VMETER_ADDR, 0x01)  # Start conversion on channel
-    time.sleep(0.001)  # Small delay for conversion
-    raw_adc = bus.read_word_data(VMETER_ADDR, 0x00)  # Read conversion result
+    config_vmeter()  # Configure VMeter before reading
     
-    voltage = (raw_adc * 16.0) / 32767.0  # 32767 for 15-bit signed, adjust if different
+    bus.write_byte(VMETER_ADDR, 0x01)  # Start conversion on channel
+    time.sleep(0.15)  # Wait for conversion
+    adc_raw = bus.read_word_data(VMETER_ADDR, REG_CONVERSION) & 0xFFFF
+    
+    # Adjust the scaling factor based on the actual reading for your setup
+    scaling_factor = 5.0 / 22270 * 32767  # Example scaling, adjust as needed
+    voltage = (adc_raw * scaling_factor) / 32767.0
+    
     return voltage
 
 # Function to control the relays and DC-DC converter
@@ -162,26 +180,12 @@ def main(stdscr):
         # Perform balancing in the main loop
         balance_cells(stdscr)
 
-        # User input area
-        stdscr.addstr(NUM_CELLS + 5, 0, "Enter command (quit): ")
-        stdscr.refresh()
-
-        # Check for user input to quit the program
-        command = stdscr.getstr(NUM_CELLS + 5, 20, 10).decode('utf-8').strip().lower()
-        if command == 'quit':
-            break
+        # User input area is removed, so no 'quit' command
 
         # Wait before refreshing to not overload the system
         time.sleep(SLEEP_TIME)
 
-    # Clean up before exiting
-    stdscr.keypad(False)
-    curses.echo()
-    curses.nocbreak()
-    curses.endwin()
-
 if __name__ == '__main__':
-    import curses
     try:
         curses.wrapper(main)
     finally:
