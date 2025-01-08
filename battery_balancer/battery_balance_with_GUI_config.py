@@ -95,9 +95,18 @@ def read_voltage_with_retry(cell_id, num_samples=5, tolerance=0.01, max_retries=
                 bus.write_byte(VMETER_ADDR, 0x01)
                 time.sleep(0.2)
                 adc_raw = bus.read_word_data(VMETER_ADDR, REG_CONVERSION) & 0xFFFF
-                voltage = adc_raw * (6.144 / 32767)
-                readings.append(voltage)
-                raw_adc_values.append(adc_raw)
+                logging.debug(f"Raw ADC reading for Cell {cell_id + 1}: {adc_raw}")
+                
+                # Avoid division by zero
+                if adc_raw != 0:
+                    voltage = adc_raw * (6.144 / 32767)
+                    readings.append(voltage)
+                    raw_adc_values.append(adc_raw)
+                else:
+                    logging.warning(f"ADC returned zero for Cell {cell_id + 1}")
+                    # Optionally, append a very small voltage or None here for consistency
+                    readings.append(0.0001)  # Very small value to avoid division by zero in later checks
+                    raw_adc_values.append(0)
             except IOError as e:
                 logging.warning(f"Voltage reading attempt for Cell {cell_id + 1}: {e}")
                 continue
@@ -120,7 +129,12 @@ def read_voltage_with_retry(cell_id, num_samples=5, tolerance=0.01, max_retries=
         filtered_readings = [r for r in valid_readings if abs(r - avg) / avg <= 0.05]
         filtered_adc = [raw_adc_values[i] for i, r in enumerate(valid_readings) if abs(r - avg) / avg <= 0.05]
         if filtered_readings:
-            return sum(filtered_readings) / len(filtered_readings), filtered_readings, filtered_adc
+            # Ensure we don't divide by zero here either
+            if len(filtered_readings) > 0:
+                return sum(filtered_readings) / len(filtered_readings), filtered_readings, filtered_adc
+            else:
+                logging.warning(f"Filtered readings for Cell {cell_id + 1} are empty")
+                return None, [], []
         else:
             logging.warning(f"All readings for Cell {cell_id + 1} were too far off from average.")
             return None, [], []
