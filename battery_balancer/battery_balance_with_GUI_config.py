@@ -6,44 +6,53 @@ import smtplib
 from email.mime.text import MIMEText
 import curses
 import logging
+import sys
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG, 
                     format='%(asctime)s - %(levelname)s - %(message)s',
-                    filename='battery_balancer.log')
+                    filename='battery_balancer.log',
+                    filemode='w')  # 'w' mode ensures the log file is overwritten each run for cleaner debugging
 
 # Read configuration
 config = configparser.ConfigParser()
-config.read('config.ini')
+if not config.read('config.ini'):
+    logging.error("Failed to read config.ini")
+    sys.exit(1)
 
 # Extract configuration values
-NUM_CELLS = config.getint('General', 'NUM_CELLS')
-BALANCE_THRESHOLD = config.getfloat('General', 'BALANCE_THRESHOLD')
-BALANCE_TIME = config.getint('General', 'BALANCE_TIME')
-SLEEP_TIME = config.getint('General', 'SLEEP_TIME')
-BALANCE_REST_PERIOD = config.getint('General', 'BALANCE_REST_PERIOD')
-ALARM_VOLTAGE_THRESHOLD = config.getfloat('General', 'ALARM_VOLTAGE_THRESHOLD')
+try:
+    NUM_CELLS = config.getint('General', 'NUM_CELLS')
+    BALANCE_THRESHOLD = config.getfloat('General', 'BALANCE_THRESHOLD')
+    BALANCE_TIME = config.getint('General', 'BALANCE_TIME')
+    SLEEP_TIME = config.getint('General', 'SLEEP_TIME')
+    BALANCE_REST_PERIOD = config.getint('General', 'BALANCE_REST_PERIOD')
+    ALARM_VOLTAGE_THRESHOLD = config.getfloat('General', 'ALARM_VOLTAGE_THRESHOLD')
 
-# I2C addresses for M5 Units
-PAHUB2_ADDR = int(config.get('I2C', 'PAHUB2_ADDR'), 16)
-VMETER_ADDR = int(config.get('I2C', 'VMETER_ADDR'), 16)  # All VMeter units have the same address
-RELAY_ADDR = int(config.get('I2C', 'RELAY_ADDR'), 16)
+    PAHUB2_ADDR = int(config.get('I2C', 'PAHUB2_ADDR'), 16)
+    VMETER_ADDR = int(config.get('I2C', 'VMETER_ADDR'), 16)
+    RELAY_ADDR = int(config.get('I2C', 'RELAY_ADDR'), 16)
 
-# GPIO pins
-DC_DC_RELAY_PIN = config.getint('GPIO', 'DC_DC_RELAY_PIN')
-ALARM_RELAY_PIN = config.getint('GPIO', 'ALARM_RELAY_PIN')
+    DC_DC_RELAY_PIN = config.getint('GPIO', 'DC_DC_RELAY_PIN')
+    ALARM_RELAY_PIN = config.getint('GPIO', 'ALARM_RELAY_PIN')
 
-# Email configuration
-SMTP_SERVER = config.get('Email', 'SMTP_SERVER')
-SMTP_PORT = config.getint('Email', 'SMTP_PORT')
-SENDER_EMAIL = config.get('Email', 'SENDER_EMAIL')
-RECIPIENT_EMAIL = config.get('Email', 'RECIPIENT_EMAIL')
+    SMTP_SERVER = config.get('Email', 'SMTP_SERVER')
+    SMTP_PORT = config.getint('Email', 'SMTP_PORT')
+    SENDER_EMAIL = config.get('Email', 'SENDER_EMAIL')
+    RECIPIENT_EMAIL = config.get('Email', 'RECIPIENT_EMAIL')
+except (configparser.NoOptionError, ValueError) as e:
+    logging.error(f"Configuration error: {e}")
+    sys.exit(1)
 
 # Initialize I2C bus and GPIO
-bus = smbus.SMBus(1)  # Use bus 1 for newer Raspberry Pi models
-GPIO.setmode(GPIO.BCM)
-GPIO.setup(DC_DC_RELAY_PIN, GPIO.OUT)
-GPIO.setup(ALARM_RELAY_PIN, GPIO.OUT, initial=GPIO.LOW)  # Alarm relay starts off
+try:
+    bus = smbus.SMBus(1)  # Use bus 1 for newer Raspberry Pi models
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(DC_DC_RELAY_PIN, GPIO.OUT)
+    GPIO.setup(ALARM_RELAY_PIN, GPIO.OUT, initial=GPIO.LOW)  # Alarm relay starts off
+except Exception as e:
+    logging.error(f"Error initializing I2C or GPIO: {e}")
+    sys.exit(1)
 
 # ADS1115 configuration settings
 REG_CONFIG = 0x01
@@ -55,7 +64,8 @@ CONFIG_PGA_2048 = 0x0400  # Gain setting for 32V max input
 # Function to select a channel on PaHUB2
 def select_channel(channel):
     try:
-        bus.write_byte(PAHUB2_ADDR, 1 << channel)  # Enable the specific channel
+        bus.write_byte(PAHUB2_ADDR, 1 << channel)
+        logging.debug(f"Selected channel {channel}")
     except IOError as e:
         logging.error(f"I2C Error while selecting channel {channel}: {e}")
 
@@ -64,16 +74,17 @@ def config_vmeter():
     config = CONFIG_SINGLE_SHOT | CONFIG_RATE_8 | CONFIG_PGA_2048
     try:
         bus.write_word_data(VMETER_ADDR, REG_CONFIG, config)
+        logging.debug("Configured VMeter")
     except IOError as e:
         logging.error(f"Failed to configure VMeter: {e}")
 
-# Function to read voltage from a specific cell using one of the M5 VMeter units with retry
+# Function to read voltage with retry
 def read_voltage_with_retry(cell_id, max_retries=3):
     for attempt in range(max_retries):
         try:
             vmeter_channel = cell_id % 3  # Each VMeter is on channels 0, 1, 2 sequentially
             select_channel(vmeter_channel)
-            config_vmeter()  # Configure VMeter before reading
+            config_vmeter()
             
             bus.write_byte(VMETER_ADDR, 0x01)  # Start conversion on channel
             time.sleep(0.15)  # Wait for conversion
@@ -97,6 +108,7 @@ def set_relay(high_cell, low_cell):
         if high_cell == low_cell or high_cell < 0 or low_cell < 0:
             relay_state = 0  # All relays off
         else:
+            # Relay mapping logic
             if high_cell == 2 and low_cell == 1:  # 2->1
                 relay_state |= (1 << 0) | (1 << 2) | (1 << 4)  # Relay 1 Pole 3, Relay 2 Pole 1, Relay 3 Pole 1
             elif high_cell == 3 and low_cell == 1:  # 3->1
@@ -136,7 +148,7 @@ def send_email_alarm():
 
     try:
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.send_message(msg)  # Note: No login required if you're using a relay or local SMTP server
+            server.send_message(msg)  
         logging.info("Email alarm sent successfully")
     except Exception as e:
         logging.error(f"Failed to send email: {e}")
@@ -146,10 +158,16 @@ def check_overvoltage_alarm(voltages):
     for i, voltage in enumerate(voltages):
         if voltage and voltage > ALARM_VOLTAGE_THRESHOLD:
             logging.warning(f"ALARM: Cell {i+1} voltage is {voltage:.2f}V, exceeding threshold!")
-            GPIO.output(ALARM_RELAY_PIN, GPIO.HIGH)  # Trigger alarm relay
-            send_email_alarm()
+            try:
+                GPIO.output(ALARM_RELAY_PIN, GPIO.HIGH)
+                send_email_alarm()
+            except Exception as e:
+                logging.error(f"Error during overvoltage alarm: {e}")
             return True
-    GPIO.output(ALARM_RELAY_PIN, GPIO.LOW)  # Reset alarm relay if no overvoltage
+    try:
+        GPIO.output(ALARM_RELAY_PIN, GPIO.LOW)
+    except Exception as e:
+        logging.error(f"Error resetting alarm relay: {e}")
     return False
 
 def balance_cells(stdscr):
@@ -161,15 +179,14 @@ def balance_cells(stdscr):
         else:
             voltages.append(voltage)
     
-    if not voltages:  # If all readings failed
+    if not voltages:
         stdscr.addstr(10, 0, "No valid voltage readings. Check hardware.")
         return
 
     if check_overvoltage_alarm(voltages):
-        return  # Skip balancing if an alarm has been triggered
+        return
 
-    # Add delay here before balancing
-    time.sleep(2)  # Delay for 2 seconds, adjust as needed
+    time.sleep(2)  # Delay before balancing
     logging.info("Delay completed before balancing")
 
     max_voltage = max(voltages)
@@ -194,43 +211,47 @@ def balance_cells(stdscr):
         logging.info("No balancing action taken; voltages within threshold")
 
 def main(stdscr):
-    curses.noecho()
-    curses.cbreak()
-    stdscr.keypad(True)
-    stdscr.clear()
-    curses.start_color()
-    curses.use_default_colors()
-    for i in range(1, curses.COLORS):
-        curses.init_pair(i, i, -1)
-
-    while True:
+    try:
+        curses.noecho()
+        curses.cbreak()
+        stdscr.keypad(True)
         stdscr.clear()
-        stdscr.addstr(0, 0, "Battery Balancer TUI", curses.color_pair(1))
-        stdscr.hline(1, 0, curses.ACS_HLINE, curses.COLS - 1)
-        for i in range(NUM_CELLS):
-            voltage = read_voltage_with_retry(i)
-            if voltage is None:
-                stdscr.addstr(i + 2, 0, f"Cell {i+1}: Error reading voltage", curses.color_pair(1))
-            else:
-                voltage_color = curses.color_pair(2) if voltage < BALANCE_THRESHOLD else curses.color_pair(3)
-                stdscr.addstr(i + 2, 0, f"Cell {i+1}: {voltage:.2f}V", voltage_color)
+        curses.start_color()
+        curses.use_default_colors()
+        for i in range(1, curses.COLORS):
+            curses.init_pair(i, i, -1)
 
-        balance_cells(stdscr)
+        while True:
+            stdscr.clear()
+            stdscr.addstr(0, 0, "Battery Balancer TUI", curses.color_pair(1))
+            stdscr.hline(1, 0, curses.ACS_HLINE, curses.COLS - 1)
+            for i in range(NUM_CELLS):
+                voltage = read_voltage_with_retry(i)
+                if voltage is None:
+                    stdscr.addstr(i + 2, 0, f"Cell {i+1}: Error reading voltage", curses.color_pair(1))
+                else:
+                    voltage_color = curses.color_pair(2) if voltage < BALANCE_THRESHOLD else curses.color_pair(3)
+                    stdscr.addstr(i + 2, 0, f"Cell {i+1}: {voltage:.2f}V", voltage_color)
 
-        # Check for user input to exit
-        stdscr.addstr(11, 0, "Press 'q' to quit")
-        key = stdscr.getch()
-        if key == ord('q'):  # 'q' for quit
-            break
+            balance_cells(stdscr)
 
-        time.sleep(SLEEP_TIME)
+            stdscr.addstr(11, 0, "Press 'q' to quit")
+            key = stdscr.getch()
+            if key == ord('q'):  # 'q' for quit
+                break
+
+            time.sleep(SLEEP_TIME)
+            stdscr.refresh()  # Ensure screen refreshes
+    except Exception as e:
+        logging.error(f"Error in main loop: {e}")
+        stdscr.addstr(12, 0, f"Error: {e}", curses.color_pair(1))
 
 if __name__ == '__main__':
     try:
         logging.info("Starting the Battery Balancer script")
         curses.wrapper(main)
     except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}")
+        logging.error(f"An unexpected error occurred in script execution: {e}")
     finally:
         GPIO.cleanup()
         logging.info("Program terminated. GPIO cleanup completed.")
