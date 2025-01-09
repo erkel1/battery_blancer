@@ -13,7 +13,7 @@ import threading
 logging.basicConfig(level=logging.DEBUG, 
                     format='%(asctime)s - %(levelname)s - %(message)s',
                     filename='battery_balancer.log',
-                    filemode='w')  # 'w' mode ensures the log file is overwritten each run for cleaner debugging
+                    filemode='w')
 
 """
 Battery Balancer Script
@@ -273,36 +273,45 @@ def check_overvoltage_alarm(voltages):
         logging.error(f"Error resetting alarm relay: {e}")
     return False
 
-def balance_cells(voltages):
+def balance_cells(stdscr, high_cell, low_cell):
     """
-    Performs balancing based on voltage differences between cells.
+    Perform cell balancing from a higher voltage cell to a lower one.
 
-    This function is intended to run in a separate thread to not block UI updates.
+    This function updates the TUI with the current balancing status, 
+    including an animation to show activity. It controls the DC-DC converter 
+    and relays to manage voltage transfer.
 
     Args:
-        voltages (list): List of current voltages for each cell.
+        stdscr (curses window object): The curses window for UI updates.
+        high_cell (int): Index of the cell with higher voltage (0-indexed).
+        low_cell (int): Index of the cell with lower voltage (0-indexed).
+
+    Note:
+    - The function assumes `read_voltage` function exists to read cell voltages.
+    - `animation_frames` should be defined elsewhere, e.g., ['|', '/', '-', '\\'] for a simple animation.
     """
-    if not voltages:
-        return
+    # Read current voltages
+    adc_raw_high, voltage_high = read_voltage_with_retry(high_cell)
+    _, voltage_low = read_voltage_with_retry(low_cell)
 
-    if check_overvoltage_alarm(voltages):
-        return
+    # Animation frames for visual feedback in the TUI
+    animation_frames = ['|', '/', '-', '\\']
+    
+    # Initial display of balancing action
+    for i, frame in enumerate(animation_frames * 5):  # Loop the animation 5 times
+        stdscr.addstr(10, 0, f"Balancing Cell {high_cell+1} ({voltage_high:.2f}V) -> Cell {low_cell+1} ({voltage_low:.2f}V)... [{frame}]")
+        stdscr.refresh()  # Refresh screen to update animation
+        time.sleep(0.1)  # Small delay for animation
+        
+        # Only need to set up the relay and control the DC-DC once
+        if i == 0:
+            set_relay(high_cell, low_cell)  # Configure relay for balancing
+            control_dc_dc(False)  # Turn off DC-DC converter before switching
+            time.sleep(0.1)  # Short delay to ensure no voltage is present during switch
+            control_dc_dc(True)  # Turn on DC-DC converter for balancing
 
-    max_voltage = max(voltages)
-    min_voltage = min(voltages)
-    high_cell = voltages.index(max_voltage)
-    low_cell = voltages.index(min_voltage)
-
-    if max_voltage - min_voltage > BALANCE_THRESHOLD:
-        set_relay(high_cell, low_cell)
-        control_dc_dc(False)
-        time.sleep(0.1)
-        control_dc_dc(True)
-        time.sleep(BALANCE_TIME)
-        control_dc_dc(False)
-        logging.info(f"Balancing completed: Cell {high_cell+1} to Cell {low_cell+1}")
-    else:
-        logging.info("No balancing action taken; voltages within threshold")
+    # After balancing, ensure DC-DC is off
+    control_dc_dc(False)
 
 def main(stdscr):
     """
@@ -345,15 +354,22 @@ def main(stdscr):
                     all_readings.append(readings)
                     all_adc.append(adc_values)
                     voltage_color = curses.color_pair(2) if voltage < BALANCE_THRESHOLD else curses.color_pair(3)
-                    stdscr.addstr(i + 2, 0, f"Cell {i+1}: {voltage:.2f}V", voltage_color)
-                    # Display all readings and ADC values for this cell
-                    stdscr.addstr(i + 3, 0, f"  Readings: {' '.join(f'{v:.2f}' for v in readings)}")
-                    stdscr.addstr(i + 4, 0, f"  Raw ADC: {' '.join(str(a) for a in adc_values)}")
+                    stdscr.addstr(i + 2, 0, f"Cell {i+1}: {voltage:.2f}V (ADC: {adc_values[0] if adc_values else 'N/A'})")
+                    if readings:
+                        stdscr.addstr(i + 3, 0, f"  [Readings: {', '.join(f'{v:.2f}' for v in readings)}]")
 
             if voltages and len(voltages) == NUM_CELLS:
                 if balancing_thread is None or not balancing_thread.is_alive():
-                    balancing_thread = threading.Thread(target=balance_cells, args=(voltages,))
-                    balancing_thread.start()
+                    max_voltage = max(voltages)
+                    min_voltage = min(voltages)
+                    high_cell = voltages.index(max_voltage)
+                    low_cell = voltages.index(min_voltage)
+
+                    if max_voltage - min_voltage > BALANCE_THRESHOLD:
+                        balancing_thread = threading.Thread(target=balance_cells, args=(stdscr, high_cell, low_cell))
+                        balancing_thread.start()
+                    else:
+                        stdscr.addstr(10, 0, "No balancing required; voltages within threshold.")
                 else:
                     stdscr.addstr(10, 0, "Balancing in progress...")
 
