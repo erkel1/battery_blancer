@@ -353,17 +353,15 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
     """
     Balance charge from a battery with higher voltage to one with lower voltage.
     
-    This function shows what's happening on the screen, including a progress bar.
-    It controls the hardware to move charge between batteries. It will not balance
-    if the low voltage battery reads 0.00V to prevent ineffective or harmful operations.
-
     Args:
         stdscr (curses window object): Where we show what's happening.
         high_voltage_battery (int): Battery with higher voltage (1-indexed).
         low_voltage_battery (int): Battery with lower voltage (1-indexed).
     """
     try:
-        global balance_start_time
+        global balance_start_time, battery_voltages  # Assuming battery_voltages is a global list
+        balancing_active = True  # Flag to indicate balancing is occurring
+
         logging.info(f"Starting balance from Battery {high_voltage_battery} to {low_voltage_battery}")
 
         # Initial voltage reading
@@ -395,8 +393,9 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
             voltage_high, _, _ = read_voltage_with_retry(high_voltage_battery)
             voltage_low, _, _ = read_voltage_with_retry(low_voltage_battery)
             
-            voltage_high = voltage_high if voltage_high is not None else 0.0
-            voltage_low = voltage_low if voltage_low is not None else 0.0
+            # Update the global list of battery voltages
+            battery_voltages[high_voltage_battery - 1] = voltage_high if voltage_high is not None else 0.0
+            battery_voltages[low_voltage_battery - 1] = voltage_low if voltage_low is not None else 0.0
 
             # Make a simple progress bar for the screen
             bar_length = 20
@@ -419,7 +418,9 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
         # Reset relay state here if necessary
         logging.info("Resetting relay connections to default state.")
         set_relay_connection(1, 1)  # Assuming 1 means all off for 1-indexed batteries
-    
+
+        balancing_active = False  # Reset the balancing flag
+
     except Exception as e:
         logging.error(f"Error during balancing process: {e}")
 
@@ -434,6 +435,8 @@ signal.signal(signal.SIGTERM, shutdown_handler)
 signal.signal(signal.SIGINT, shutdown_handler)
 
 def main_program(stdscr):
+    global battery_voltages, balance_start_time, balancing_active  # Assuming these are global
+
     try:
         curses.noecho()
         curses.cbreak()
@@ -478,10 +481,12 @@ def main_program(stdscr):
             "  |___________| |___________| |___________|  "
         ]
 
+        balancing_active = False  # Flag to indicate if balancing is active
+
         while True:
             try:
                 stdscr.clear()
-                battery_voltages = []
+                battery_voltages = []  # Reset or initialize if not already done
                 for i in range(1, config['General']['NumberOfBatteries'] + 1):
                     voltage, _, _ = read_voltage_with_retry(i, number_of_samples=2, max_attempts=2)
                     battery_voltages.append(voltage if voltage is not None else 0.0)
@@ -564,9 +569,9 @@ def main_program(stdscr):
                     low_battery = battery_voltages.index(min_voltage) + 1  # +1 for 1-indexed
 
                     if max_voltage - min_voltage > config['General']['VoltageDifferenceToBalance'] and min_voltage > 0:
+                        balancing_active = True
                         balance_battery_voltages(stdscr, high_battery, low_battery)
-                        stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, "  <======>", BALANCE_COLOR)
-                        stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, f" Balancing Battery {high_battery} ({max_voltage:.2f}V) -> Battery {low_battery} ({min_voltage:.2f}V)", BALANCE_COLOR)
+                        balancing_active = False
                     else:
                         stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, "  [ OK ]", OK_VOLTAGE_COLOR)
                         if min_voltage == 0:
