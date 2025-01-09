@@ -342,8 +342,6 @@ def check_for_voltage_issues(voltages):
     return alert_needed
 
 def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
-    logging.info(f"Starting balance from Battery {high_voltage_battery} to {low_voltage_battery}")
-    # ... rest of the function with more logging at critical points
     """
     Balance charge from a battery with higher voltage to one with lower voltage.
     
@@ -358,8 +356,12 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
     """
     try:    
         global balance_start_time
+        logging.info(f"Starting balance from Battery {high_voltage_battery} to {low_voltage_battery}")
+
         voltage_high, _, _ = read_voltage_with_retry(high_voltage_battery)
+        logging.debug(f"Voltage high: {voltage_high}")
         voltage_low, _, _ = read_voltage_with_retry(low_voltage_battery)
+        logging.debug(f"Voltage low: {voltage_low}")
 
         voltage_high = voltage_high if voltage_high is not None else 0.0
         voltage_low = voltage_low if voltage_low is not None else 0.0
@@ -375,7 +377,9 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
         balance_start_time = time.time()  # Start timer for balancing
         frame_index = 0
 
+        logging.info("Setting up relay connections.")
         set_relay_connection(high_voltage_battery, low_voltage_battery)
+        logging.info("Turning on DC-DC converter.")
         control_dcdc_converter(True)
 
         while time.time() - balance_start_time < config['General']['BalanceDurationSeconds']:
@@ -391,19 +395,22 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
                 stdscr.addstr(10, 0, f"Balancing Battery {high_voltage_battery} ({voltage_high:.2f}V) -> Battery {low_voltage_battery} ({voltage_low:.2f}V)... [{animation_frames[frame_index % len(animation_frames)]}]")
                 stdscr.addstr(11, 0, f"Progress: [{bar}] {int(progress * 100)}%")
                 stdscr.refresh()
+            logging.debug(f"Balancing progress: {progress}")
             
             frame_index += 1
             time.sleep(0.01)  # Small delay to not update too frequently
 
+        logging.info("Balancing completed, turning off DC-DC converter.")
         control_dcdc_converter(False)  # Turn off after balancing
 
         # Reset relay state here if necessary
+        logging.info("Resetting relay connections.")
         set_relay_connection(1, 1)  # Assuming 1 means all off for 1-indexed batteries
     
     except Exception as e:
-    logging.error(f"Error during balancing: {e}")
-    # Decide what to do with the thread here, e.g., stop it or let it exit
-
+        logging.error(f"Error during balancing: {e}")
+        # Decide what to do with the thread here, e.g., stop it or let it exit
+        # Here you might want to handle the error, perhaps by resetting hardware or stopping the thread
 
 # Function to keep an eye on the main task
 def keep_watching():
