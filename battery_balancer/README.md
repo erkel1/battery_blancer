@@ -1,155 +1,109 @@
-  Battery Balancer Script Documentation body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; } h1, h2, h3 { color: #2c3e50; } code { background-color: #f4f4f4; padding: 2px 4px; border: 1px solid #ddd; border-radius: 4px; } pre { background-color: #f4f4f4; padding: 10px; border: 1px solid #ddd; border-radius: 4px; overflow: auto; } ul, ol { padding-left: 20px; }
+  Battery Balancer Script README body { font-family: Arial, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; } h1, h2, h3 { color: #333; } code { background-color: #f4f4f4; padding: 2px 4px; border-radius: 4px; font-family: 'Courier New', Courier, monospace; } pre { background-color: #f4f4f4; padding: 10px; border-radius: 4px; overflow: auto; } ul { list-style-type: square; }
 
-Battery Balancer Script Documentation
-=====================================
+Battery Balancer Script
+=======================
 
-Overview
---------
-
-This script provides an automated system for balancing lithium-ion battery cells, using a Raspberry Pi with M5 VMeter units for voltage monitoring, 3PDT and 2PDT relays for connection management, and an isolated DC-DC converter for safe balancing. It includes an alarm system that activates if cell voltage exceeds a set threshold, notifying via email and a physical alarm.
+A Python script designed for balancing multiple lithium battery cells using Raspberry Pi, I2C communication, and GPIO for hardware control. This script provides a terminal-based user interface (TUI) for real-time monitoring and management of battery cell voltages.
 
 Features
 --------
 
-*   **Real-time Voltage Monitoring**: Uses M5 VMeter units to continuously monitor cell voltages over an I2C bus.
-*   **Automatic Balancing**: Initiates when the voltage difference between cells exceeds a user-defined threshold.
-*   **Command-Line Interface**: Provides status updates via a text-based user interface (`curses`).
-*   **Configurable Settings**: Parameters like balancing thresholds and alarm settings are managed through an external configuration file.
-*   **Safety Mechanisms**: Includes control over the DC-DC converter and an alarm system for overvoltage protection.
-*   **Overvoltage Alarm**: Triggers when any cell voltage exceeds a threshold, activating an email alert and a physical relay.
+*   **Real-time Voltage Monitoring**: Monitors the voltage of each battery cell in real-time.
+*   **Automatic Balancing**: Balances the voltage between cells when disparities exceed a set threshold.
+*   **Alarm System**: Alerts via email and hardware relay when cells reach critical voltage levels.
+*   **Error Handling**: Robust error detection with logging for troubleshooting.
+*   **Watchdog System**: Automatically restarts the script if it becomes unresponsive.
+*   **Text-based User Interface**: Uses `curses` for an interactive TUI displaying battery status.
 
-Prerequisites
--------------
+Hardware Requirements
+---------------------
 
-### Hardware
+*   Raspberry Pi (with Python 3 installed)
+*   ADS1115 ADC for voltage measurement
+*   M5Stack 4Relay module for relay control
+*   DC-DC converter for balancing
+*   I2C multiplexer (PaHUB2)
+*   Buzzer or LED for physical alarm indication
 
-*   Raspberry Pi with I2C enabled
-*   M5 VMeter Units (3 units for 3 cells)
-*   2 x 3PDT Relays (Relays 1 & 4)
-*   2 x 2PDT Relays (Relays 2 & 3)
-*   Isolated DC-DC Converter
-*   PaHUB2 I2C Expandable Hub (I2C address: 0x70)
-*   Alarm Relay connected to GPIO
+Software Requirements
+---------------------
 
-### Software
-
-*   Python 3.x
-*   `smbus` for I2C communication
-*   `curses` for TUI
-*   `configparser` for configuration management
-*   `RPi.GPIO` for GPIO control
-*   Local SMTP server (`sendmail` or similar) for email notifications
+*   Python 3
+*   Libraries:
+    *   `smbus`
+    *   `RPi.GPIO`
+    *   `smtplib`
+    *   `curses`
+    *   `configparser`
+    *   `logging`
+    *   `threading`
+    *   `os`, `signal`, `sys`
 
 Installation
 ------------
 
-### Hardware Setup
-
-*   Connect VMeter units to measure each battery cell's voltage.
-*   Wire the relays to manage cell connections, with the DC-DC converter placed between the 2PDT relays.
-*   Connect the alarm relay to a GPIO pin for physical alert signaling.
-*   Ensure your SMTP server is configured for local email delivery.
-
-### Software Setup
-
-1.  **Enable I2C on Raspberry Pi**:
+1.  **Clone the Repository**:
     
-        sudo raspi-config
-    
-    Navigate to `Interface Options` and enable I2C.
-2.  **Install Required Libraries**:
-    
-        sudo apt-get update
-        sudo apt-get install python3 python3-smbus python3-curses python3-rpi.gpio
-    
-3.  **Install Local SMTP Server** (if not already set up):
-    
-        sudo apt-get install sendmail
-    
-    Configure `sendmail` for local email delivery.
-4.  **Clone or Download This Repository**:
-    
-        git clone <your-repo-url>
+        git clone [your-repository-url]
         cd battery-balancer
     
-5.  **Edit Configuration**:
-    *   Modify `config.ini` to match your hardware setup and email configuration.
-
-Running the Script
-------------------
-
-To run the balancer script:
-
-    python3 balancer.py
-
-### User Interaction
-
-*   Observe cell voltages and balancing status through the TUI.
-*   Type 'quit' to exit the program.
-
-Configuration File (`config.ini`)
----------------------------------
-
-    [General]
-    NUM_CELLS = 3
-    BALANCE_THRESHOLD = 0.05
-    BALANCE_TIME = 60
-    SLEEP_TIME = 5
-    BALANCE_REST_PERIOD = 300
-    ALARM_VOLTAGE_THRESHOLD = 21.25
+2.  **Install Dependencies**:
     
-    [I2C]
-    PAHUB2_ADDR = 0x70
-    VMETER_ADDR = 0x49
-    RELAY_ADDR = 0x26
+        sudo apt-get update
+        sudo apt-get install -y python3-smbus python3-rpi.gpio python3-curses python3-configparser
     
-    [GPIO]
-    DC_DC_RELAY_PIN = 18
-    ALARM_RELAY_PIN = 23
+3.  **Setup Configuration**:
+    *   Edit `config.ini` with the correct hardware settings, email configurations, and operational parameters.
+4.  **Run the Script**:
     
-    [Email]
-    SMTP_SERVER = localhost
-    SMTP_PORT = 25
-    SENDER_EMAIL = your_local_user@localhost
-    SENDER_PASSWORD = 
-    RECIPIENT_EMAIL = your_local_user@localhost
+        python3 battery_balancer.py
+    
 
-*   **NUM\_CELLS**: Number of cells to balance.
-*   **BALANCE\_THRESHOLD**: Voltage difference to trigger balancing.
-*   **BALANCE\_TIME**: Duration of each balancing action.
-*   **SLEEP\_TIME**: Time between voltage checks.
-*   **BALANCE\_REST\_PERIOD**: Time for natural stabilization post-balance.
-*   **ALARM\_VOLTAGE\_THRESHOLD**: Voltage to trigger the overvoltage alarm.
-*   **I2C Addresses**: For hardware components.
-*   **GPIO Pins**: For controlling the DC-DC converter and alarm relay.
-*   **Email Settings**: For local SMTP server configuration.
+Configuration
+-------------
 
-Safety Considerations
----------------------
+*   **config.ini**: This file contains all necessary configuration settings:
+    *   `General`: Contains operational thresholds and timing.
+    *   `I2C`: Addresses for I2C devices.
+    *   `GPIO`: GPIO pin numbers for relay control.
+    *   `Email`: SMTP settings for email alerts.
+    *   `ADS1115`: Configuration for the ADC.
 
-*   **DC-DC Converter**: Ensured to be off during relay switching to prevent short circuits.
-*   **Voltage Monitoring**: Continuous to avoid over/under-charging scenarios.
-*   **Overvoltage Protection**: Alarm system for safety.
+Usage
+-----
 
-Known Issues
+*   **Monitor**: The script will run, showing a TUI where you can monitor battery voltages.
+*   **Balancing**: If a voltage imbalance is detected, the script will initiate balancing automatically.
+
+Troubleshooting
+---------------
+
+*   **Check Logs**: All operations are logged in `battery_balancer.log`. Check this for any errors or issues.
+*   **Hardware Check**: Ensure all connections are secure and hardware is functioning.
+*   **Configuration**: Verify settings in `config.ini` are correct for your setup.
+
+Safety Notes
 ------------
 
-*   Single-threaded operation might cause GUI lag during balancing.
-*   This script assumes a very specific hardware setup; changes might require code modification.
-
-Contributing
-------------
-
-*   Pull requests are welcome for enhancements or bug fixes.
-*   For significant changes, please open an issue to discuss first.
+*   **Do Not Overcharge**: Ensure your `ALARM_VOLTAGE_THRESHOLD` is set appropriately to avoid overcharging cells.
+*   **Physical Inspection**: Regularly inspect physical connections and battery health.
 
 License
 -------
 
-\[Insert your license here, e.g., MIT, GPL, etc.\]
+\[Your License Here\] - e.g., MIT License, GPL, etc.
 
-Acknowledgments
----------------
+Acknowledgements
+----------------
 
-*   M5Stack for VMeter and Relay modules.
-*   The open-source community for Python libraries used.
+*   Special thanks to \[Your Name or Team\] for the development of this script.
+*   Thanks to the open-source community for the libraries and tools used in this project.
+
+Contact
+-------
+
+For any issues or suggestions, please contact \[Your Contact Information\].
+
+* * *
+
+Feel free to contribute to this project by submitting pull requests or raising issues on the repository.

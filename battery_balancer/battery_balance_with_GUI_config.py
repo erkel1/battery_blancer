@@ -8,313 +8,402 @@ import curses
 import logging
 import sys
 import threading
+import os
+import signal
+from art import text2art  # Importing the art library
 
-# Setup logging
-logging.basicConfig(level=logging.DEBUG, 
+# Setup logging for tracking what's happening
+logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(levelname)s - %(message)s',
                     filename='battery_balancer.log',
-                    filemode='w')
+                    filemode='a')  
+
+# Lock to prevent problems when multiple parts of the code try to use the same thing at once
+shared_lock = threading.Lock()
 
 """
 Battery Balancer Script
 
-This script controls a battery balancing system for multiple lithium cells. 
-It uses:
-- I2C for reading battery voltages via an ADC (like ADS1115).
-- I2C for controlling relays via an M5Stack 4Relay module.
-- GPIO for controlling DC-DC converters.
-- Curses for a Text User Interface (TUI) to display real-time battery status.
-- Threading to manage voltage balancing without blocking UI updates.
+This script manages a system to balance the charge of multiple lithium battery cells. 
+It does this by:
+- Reading battery voltages using an Analog-to-Digital Converter (ADC).
+- Controlling relays to move charge between cells.
+- Using GPIO to manage DC-DC converters.
+- Showing battery status on screen with a Text User Interface (TUI).
+- Running multiple tasks at once with threading.
 
 Configuration:
-- Reads parameters from a config.ini file, including I2C addresses, GPIO pins, etc.
-- Logs operations and errors to battery_balancer.log for debugging.
+- Loads settings from 'config.ini', like how many cells, voltage thresholds, etc.
+- Logs what's happening or any issues to 'battery_balancer.log'.
 """
 
-# Read configuration
-config = configparser.ConfigParser()
-if not config.read('config.ini'):
-    logging.error("Failed to read config.ini")
-    sys.exit(1)
-
-# Extract configuration values
-try:
-    NUM_CELLS = config.getint('General', 'NUM_CELLS')
-    BALANCE_THRESHOLD = config.getfloat('General', 'BALANCE_THRESHOLD')
-    BALANCE_TIME = config.getint('General', 'BALANCE_TIME')
-    SLEEP_TIME = config.getint('General', 'SLEEP_TIME')
-    BALANCE_REST_PERIOD = config.getint('General', 'BALANCE_REST_PERIOD')
-    ALARM_VOLTAGE_THRESHOLD = config.getfloat('General', 'ALARM_VOLTAGE_THRESHOLD')
-    NUM_SAMPLES = config.getint('General', 'NUM_SAMPLES')
-    MAX_RETRIES = config.getint('General', 'MAX_RETRIES')
-
-    PAHUB2_ADDR = int(config.get('I2C', 'PAHUB2_ADDR'), 16)
-    VMETER_ADDR = int(config.get('I2C', 'VMETER_ADDR'), 16)
-    RELAY_ADDR = int(config.get('I2C', 'RELAY_ADDR'), 16)
-
-    DC_DC_RELAY_PIN = config.getint('GPIO', 'DC_DC_RELAY_PIN')
-    ALARM_RELAY_PIN = config.getint('GPIO', 'ALARM_RELAY_PIN')
-
-    SMTP_SERVER = config.get('Email', 'SMTP_SERVER')
-    SMTP_PORT = config.getint('Email', 'SMTP_PORT')
-    SENDER_EMAIL = config.get('Email', 'SENDER_EMAIL')
-    RECIPIENT_EMAIL = config.get('Email', 'RECIPIENT_EMAIL')
-except (configparser.NoOptionError, ValueError) as e:
-    logging.error(f"Configuration error: {e}")
-    sys.exit(1)
-
-# Initialize I2C bus and GPIO
-try:
-    bus = smbus.SMBus(1)  # Use bus 1 for newer Raspberry Pi models
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setup(DC_DC_RELAY_PIN, GPIO.OUT)
-    GPIO.setup(ALARM_RELAY_PIN, GPIO.OUT, initial=GPIO.LOW)  # Alarm relay starts off
-except Exception as e:
-    logging.error(f"Error initializing I2C or GPIO: {e}")
-    sys.exit(1)
-
-# ADS1115 configuration settings
-REG_CONFIG = 0x01
-REG_CONVERSION = 0x00
-CONFIG_CONTINUOUS = 0x0000  # Continuous conversion mode
-CONFIG_RATE_8 = 0x0000
-CONFIG_PGA_6144 = 0x0200  # Gain setting for ±6.144V
-
-# Global variable for managing the balancing thread
-balancing_thread = None
-
-# Function to select a channel on PaHUB2
-def select_channel(channel):
+def load_settings():
     """
-    Selects the specified channel on the PaHUB2 I2C multiplexer.
+    Load all the settings from a configuration file.
+    This makes sure we know how to handle the batteries correctly.
+    """
+    config = configparser.ConfigParser()
+    if not config.read('config.ini'):
+        logging.error("Couldn't read the config file!")
+        raise FileNotFoundError("We can't find or read the config file!")
+    
+    try:
+        settings = {
+            'General': {
+                'NumberOfBatteries': config.getint('General', 'NumberOfBatteries'),
+                'VoltageDifferenceToBalance': config.getfloat('General', 'VoltageDifferenceToBalance'),
+                'BalanceDurationSeconds': config.getint('General', 'BalanceDurationSeconds'),
+                'SleepTimeBetweenChecks': config.getint('General', 'SleepTimeBetweenChecks'),
+                'BalanceRestPeriodSeconds': config.getint('General', 'BalanceRestPeriodSeconds'),
+                'AlarmVoltageThreshold': config.getfloat('General', 'AlarmVoltageThreshold'),
+                'NumberOfSamples': config.getint('General', 'NumberOfSamples'),
+                'MaxRetries': config.getint('General', 'MaxRetries'),
+                'EmailAlertIntervalSeconds': config.getint('General', 'EmailAlertIntervalSeconds'),
+                'I2C_BusNumber': config.getint('General', 'I2C_BusNumber')
+            },
+            'I2C': {
+                'MultiplexerAddress': int(config.get('I2C', 'MultiplexerAddress'), 16),
+                'VoltageMeterAddress': int(config.get('I2C', 'VoltageMeterAddress'), 16),
+                'RelayAddress': int(config.get('I2C', 'RelayAddress'), 16),
+            },
+            'GPIO': {
+                'DC_DC_RelayPin': config.getint('GPIO', 'DC_DC_RelayPin'),
+                'AlarmRelayPin': config.getint('GPIO', 'AlarmRelayPin'),
+            },
+            'Email': {
+                'SMTP_Server': config.get('Email', 'SMTP_Server'),
+                'SMTP_Port': config.getint('Email', 'SMTP_Port'),
+                'SenderEmail': config.get('Email', 'SenderEmail'),
+                'RecipientEmail': config.get('Email', 'RecipientEmail'),
+            },
+            'ADC': {
+                'ConfigRegister': int(config.get('ADC', 'ConfigRegister'), 16),
+                'ConversionRegister': int(config.get('ADC', 'ConversionRegister'), 16),
+                'ContinuousModeConfig': int(config.get('ADC', 'ContinuousModeConfig'), 16),
+                'SampleRateConfig': int(config.get('ADC', 'SampleRateConfig'), 16),
+                'GainConfig': int(config.get('ADC', 'GainConfig'), 16),
+            }
+        }
 
+        # Check if our balance threshold makes sense
+        if settings['General']['VoltageDifferenceToBalance'] <= 0:
+            raise ValueError("The voltage difference for balancing must be positive.")
+
+        return settings
+    except (configparser.NoOptionError, ValueError) as e:
+        logging.error(f"Something's wrong with the config file: {e}")
+        raise
+
+# Global variables to keep track of things
+config = None
+bus = None
+balancing_task = None
+last_email_time = 0
+balance_start_time = None  # Track when balancing begins
+
+def setup_hardware():
+    """
+    Prepare all the hardware we need for battery balancing.
+    This includes setting up communication with devices and configuring GPIO pins.
+    """
+    global bus, config
+    try:
+        config = load_settings()
+        bus = smbus.SMBus(config['General']['I2C_BusNumber'])
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(config['GPIO']['DC_DC_RelayPin'], GPIO.OUT)
+        GPIO.setup(config['GPIO']['AlarmRelayPin'], GPIO.OUT, initial=GPIO.LOW)
+        logging.info("All hardware is set up and ready!")
+    except Exception as e:
+        logging.critical(f"Problem setting up hardware: {e}")
+        raise
+
+def choose_channel(channel):
+    """
+    Pick which channel on the I2C multiplexer we want to talk to.
+    
     Args:
-        channel (int): The channel number to select (0-indexed).
+        channel (int): Which channel to talk to (numbered from 0).
     """
     try:
-        bus.write_byte(PAHUB2_ADDR, 1 << channel)
-        logging.debug(f"Selected channel {channel}")
+        with shared_lock:
+            bus.write_byte(config['I2C']['MultiplexerAddress'], 1 << channel)
+        logging.debug(f"Switched to channel {channel}")
     except IOError as e:
-        logging.error(f"I2C Error while selecting channel {channel}: {e}")
+        logging.error(f"Trouble selecting channel {channel}: {e}")
 
-# Function to configure ADS1115 for VMeter reading
-def config_vmeter():
+def setup_voltage_meter():
     """
-    Configures the ADS1115 for continuous conversion with a gain suitable for battery voltage measurement.
+    Set up the ADC to measure battery voltage correctly.
     """
-    config = CONFIG_CONTINUOUS | CONFIG_RATE_8 | CONFIG_PGA_6144
+    config_value = (config['ADC']['ContinuousModeConfig'] | 
+                    config['ADC']['SampleRateConfig'] | 
+                    config['ADC']['GainConfig'])
     try:
-        bus.write_word_data(VMETER_ADDR, REG_CONFIG, config)
-        logging.debug("Configured VMeter")
+        with shared_lock:
+            bus.write_word_data(config['I2C']['VoltageMeterAddress'], config['ADC']['ConfigRegister'], config_value)
+        logging.debug("Voltage meter is now configured")
     except IOError as e:
-        logging.error(f"Failed to configure VMeter: {e}")
+        logging.error(f"Couldn't set up the voltage meter: {e}")
 
-# Function to read voltage with retry
-def read_voltage_with_retry(cell_id, num_samples=5, tolerance=0.01, max_retries=5):
+def read_voltage_with_retry(battery_id, number_of_samples=5, allowed_difference=0.01, max_attempts=5):
     """
-    Reads voltage from a battery cell with retries for consistency.
-
+    Try to read the voltage of a battery several times to get a reliable measurement.
+    
     Args:
-        cell_id (int): The ID of the cell to measure (0-indexed).
-        num_samples (int): Number of samples to take for each reading.
-        tolerance (float): Percentage tolerance for sample consistency.
-        max_retries (int): Maximum number of retry attempts.
+        battery_id (int): Which battery we're checking (starts from 0).
+        number_of_samples (int): How many readings to take.
+        allowed_difference (float): How much variation we allow in readings.
+        max_attempts (int): How many times to try if readings are inconsistent.
 
     Returns:
-        tuple: (average_voltage, list of readings, list of raw ADC values) or (None, [], []) on failure.
+        tuple: (average_voltage, list of readings, list of raw ADC values) or (None, [], []) if it fails.
     """
-    valid_readings = []
-    valid_raw_adc = []
-    for attempt in range(max_retries):
-        readings = []
-        raw_adc_values = []
-        for _ in range(num_samples):
-            try:
-                vmeter_channel = cell_id % 3
-                select_channel(vmeter_channel)
-                config_vmeter()
-                bus.write_byte(VMETER_ADDR, 0x01)
+    for attempt in range(max_attempts):
+        try:
+            readings = []
+            raw_values = []
+            for _ in range(number_of_samples):
+                meter_channel = battery_id % 3
+                choose_channel(meter_channel)
+                setup_voltage_meter()
+                with shared_lock:
+                    bus.write_byte(config['I2C']['VoltageMeterAddress'], 0x01)
                 time.sleep(0.2)
-                adc_raw = bus.read_word_data(VMETER_ADDR, REG_CONVERSION) & 0xFFFF
-                logging.debug(f"Raw ADC reading for Cell {cell_id + 1}: {adc_raw}")
+                with shared_lock:
+                    raw_adc = bus.read_word_data(config['I2C']['VoltageMeterAddress'], config['ADC']['ConversionRegister']) & 0xFFFF
+                logging.debug(f"Raw ADC value for Battery {battery_id + 1}: {raw_adc}")
                 
-                # Avoid division by zero
-                if adc_raw != 0:
-                    voltage = adc_raw * (6.144 / 32767)
-                    readings.append(voltage)
-                    raw_adc_values.append(adc_raw)
+                if raw_adc != 0:
+                    battery_voltage = raw_adc * (6.144 / 32767)
+                    readings.append(battery_voltage)
+                    raw_values.append(raw_adc)
                 else:
-                    logging.warning(f"ADC returned zero for Cell {cell_id + 1}")
-                    readings.append(0.0001)  # Very small value to avoid division by zero in later checks
-                    raw_adc_values.append(0)
-            except IOError as e:
-                logging.warning(f"Voltage reading attempt for Cell {cell_id + 1}: {e}")
-                continue
+                    readings.append(0.0)
+                    raw_values.append(0)
 
-        # Check if readings are within tolerance
-        if len(readings) >= num_samples:
-            average = sum(readings) / len(readings)
-            if all(abs(r - average) / average <= tolerance for r in readings):
-                valid_readings.extend(readings)
-                valid_raw_adc.extend(raw_adc_values)
-                break  # Exit if we've got valid readings
-            else:
-                logging.debug(f"Readings for Cell {cell_id + 1} not consistent enough, retrying.")
-        
-        time.sleep(5)  # Wait 5 seconds before next attempt if necessary
+            if readings:
+                average = sum(readings) / len(readings)
+                if average == 0.0 or all(abs(r - average) / (average if average != 0 else 1) <= allowed_difference for r in readings):
+                    # Only keep readings within 5% of the average to reduce noise
+                    valid_readings = [r for r in readings if abs(r - average) / (average if average != 0 else 1) <= 0.05]
+                    valid_adc = [raw_values[i] for i, r in enumerate(readings) if abs(r - average) / (average if average != 0 else 1) <= 0.05]
+                    if valid_readings:
+                        return sum(valid_readings) / len(valid_readings), valid_readings, valid_adc
+                else:
+                    logging.debug(f"Readings for Battery {battery_id + 1} aren't consistent, trying again.")
+        except IOError as e:
+            logging.warning(f"Couldn't read voltage for Battery {battery_id + 1}: {e}")
+            continue
+        time.sleep(5)  # Give it a little break before trying again
 
-    if valid_readings:
-        # Filter out readings more than 5% off from the average
-        avg = sum(valid_readings) / len(valid_readings)
-        filtered_readings = [r for r in valid_readings if abs(r - avg) / avg <= 0.05]
-        filtered_adc = [raw_adc_values[i] for i, r in enumerate(valid_readings) if abs(r - avg) / avg <= 0.05]
-        if filtered_readings:
-            # Ensure we don't divide by zero here either
-            if len(filtered_readings) > 0:
-                return sum(filtered_readings) / len(filtered_readings), filtered_readings, filtered_adc
-            else:
-                logging.warning(f"Filtered readings for Cell {cell_id + 1} are empty")
-                return None, [], []
-        else:
-            logging.warning(f"All readings for Cell {cell_id + 1} were too far off from average.")
-            return None, [], []
-
-    logging.error(f"Failed to read consistent voltage for Cell {cell_id + 1} after {max_retries} attempts")
+    logging.error(f"Couldn't get a good voltage reading for Battery {battery_id + 1} after {max_attempts} tries")
     return None, [], []
 
-# Function to control the relays and DC-DC converter
-def set_relay(high_cell, low_cell):
+def set_relay_connection(high_voltage_battery, low_voltage_battery):
     """
-    Sets the relay configuration for balancing from one cell to another using the M5Stack 4Relay module.
-
+    Set up the relays to balance charge between two batteries.
+    
     Args:
-        high_cell (int): Index of the cell with higher voltage (0-indexed).
-        low_cell (int): Index of the cell with lower voltage (0-indexed).
+        high_voltage_battery (int): Battery with higher voltage (0-indexed).
+        low_voltage_battery (int): Battery with lower voltage (0-indexed).
     """
     try:
-        select_channel(3)  # Switch to channel 3 where the 4Relay module is connected
-        relay_state = 0
-        if high_cell == low_cell or high_cell < 0 or low_cell < 0:
-            relay_state = 0  # All relays off
-        else:
-            # Relay mapping logic
-            if high_cell == 2 and low_cell == 1:  # 2->1
-                relay_state |= (1 << 0) | (1 << 2) | (1 << 4)  # Relay 1 Pole 3, Relay 2 Pole 1, Relay 3 Pole 1
-            elif high_cell == 3 and low_cell == 1:  # 3->1
-                relay_state |= (1 << 1) | (1 << 3) | (1 << 4)  # Relay 4 Pole 2, Relay 2 Pole 2, Relay 3 Pole 1
-            elif high_cell == 1 and low_cell == 2:  # 1->2
-                relay_state |= (1 << 0) | (1 << 4) | (1 << 2)  # Relay 1 Pole 1, Relay 3 Pole 1, Relay 2 Pole 1
-            elif high_cell == 1 and low_cell == 3:  # 1->3
-                relay_state |= (1 << 1) | (1 << 5) | (1 << 3)  # Relay 1 Pole 2, Relay 3 Pole 2, Relay 2 Pole 2
-            elif high_cell == 2 and low_cell == 3:  # 2->3
-                relay_state |= (1 << 2) | (1 << 3) | (1 << 5)  # Relay 4 Pole 1, Relay 2 Pole 2, Relay 3 Pole 2
-            elif high_cell == 3 and low_cell == 2:  # 3->2
-                relay_state |= (1 << 3) | (1 << 5) | (1 << 2)  # Relay 4 Pole 2, Relay 3 Pole 2, Relay 2 Pole 1
-
-        bus.write_byte_data(RELAY_ADDR, 0x10, relay_state)
-        logging.info(f"Set relay state for balancing from Cell {high_cell + 1} to Cell {low_cell + 1}")
+        with shared_lock:
+            choose_channel(3)  # Relay module is on channel 3
+            relay_state = 0
+            if high_voltage_battery == low_voltage_battery or high_voltage_battery < 0 or low_voltage_battery < 0:
+                relay_state = 0  # Turn off all relays
+            else:
+                # Relay mapping (actual setup might differ based on hardware)
+                if high_voltage_battery == 2 and low_voltage_battery == 1:
+                    relay_state |= (1 << 0)  # Turn on relay 0
+                    relay_state |= (1 << 2)  # Turn on relay 2
+                    relay_state |= (1 << 4)  # Turn on relay 4
+                elif high_voltage_battery == 3 and low_voltage_battery == 1:
+                    relay_state |= (1 << 1)  # Turn on relay 1
+                    relay_state |= (1 << 3)  # Turn on relay 3
+                    relay_state |= (1 << 4)  # Turn on relay 4
+                elif high_voltage_battery == 1 and low_voltage_battery == 2:
+                    relay_state |= (1 << 0)  # Turn on relay 0
+                    relay_state |= (1 << 4)  # Turn on relay 4
+                    relay_state |= (1 << 2)  # Turn on relay 2
+                elif high_voltage_battery == 1 and low_voltage_battery == 3:
+                    relay_state |= (1 << 1)  # Turn on relay 1
+                    relay_state |= (1 << 5)  # Turn on relay 5
+                    relay_state |= (1 << 3)  # Turn on relay 3
+                elif high_voltage_battery == 2 and low_voltage_battery == 3:
+                    relay_state |= (1 << 2)  # Turn on relay 2
+                    relay_state |= (1 << 3)  # Turn on relay 3
+                    relay_state |= (1 << 5)  # Turn on relay 5
+                elif high_voltage_battery == 3 and low_voltage_battery == 2:
+                    relay_state |= (1 << 3)  # Turn on relay 3
+                    relay_state |= (1 << 5)  # Turn on relay 5
+                    relay_state |= (1 << 2)  # Turn on relay 2
+                
+            bus.write_byte_data(config['I2C']['RelayAddress'], 0x10, relay_state)
+        logging.info(f"Set up relay for balancing from Battery {high_voltage_battery + 1} to Battery {low_voltage_battery + 1}")
     except IOError as e:
-        logging.error(f"Relay setting error: {e}")
+        logging.error(f"Error setting up relay: {e}")
 
-# Function to control DC-DC converter via GPIO
-def control_dc_dc(enable):
+def control_dcdc_converter(turn_on):
     """
-    Controls the DC-DC converter through GPIO.
-
+    Turn the DC-DC converter on or off using GPIO.
+    
     Args:
-        enable (bool): If True, the converter is enabled; if False, it's disabled.
+        turn_on (bool): True to turn on, False to turn off.
     """
     try:
-        GPIO.output(DC_DC_RELAY_PIN, GPIO.HIGH if enable else GPIO.LOW)
-        logging.info(f"DC-DC Converter {'enabled' if enable else 'disabled'}")
+        with shared_lock:
+            GPIO.output(config['GPIO']['DC_DC_RelayPin'], GPIO.HIGH if turn_on else GPIO.LOW)
+        logging.info(f"DC-DC Converter is now {'on' if turn_on else 'off'}")
     except GPIO.GPIOError as e:
-        logging.error(f"Error controlling DC-DC converter: {e}")
+        logging.error(f"Problem controlling DC-DC converter: {e}")
 
-# Function to send an email alarm
-def send_email_alarm():
+def send_alert_email(voltage=None, battery_id=None):
     """
-    Sends an email alarm when a cell voltage exceeds the predefined threshold.
+    Send an email when something goes wrong with battery voltage.
+    
+    Args:
+        voltage (float or None): The voltage causing the alert.
+        battery_id (int or None): Which battery caused the alert.
     """
-    msg = MIMEText(f'Warning: Cell voltage exceeded {ALARM_VOLTAGE_THRESHOLD}V!')
-    msg['Subject'] = 'Battery Alarm'
-    msg['From'] = SENDER_EMAIL
-    msg['To'] = RECIPIENT_EMAIL
+    global last_email_time
+    
+    if time.time() - last_email_time < config['General']['EmailAlertIntervalSeconds']:
+        logging.debug("Skipping this alert email to avoid flooding.")
+        return
 
     try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        subject = "Battery Alert"
+        if voltage is None and battery_id is None:
+            content = "Warning: Something's wrong with a battery's voltage!"
+        elif voltage == 0.0:
+            content = f"Warning: Battery {battery_id+1} has no voltage!"
+            subject = f"Battery Alert: Battery {battery_id+1} Voltage Zero"
+        else:
+            content = f"Warning: Battery {battery_id+1} voltage is too high! Current voltage: {voltage:.2f}V"
+            subject = f"Battery Alert: Battery {battery_id+1} Overvoltage"
+
+        msg = MIMEText(content)
+        msg['Subject'] = subject
+        msg['From'] = config['Email']['SenderEmail']
+        msg['To'] = config['Email']['RecipientEmail']
+
+        with smtplib.SMTP(config['Email']['SMTP_Server'], config['Email']['SMTP_Port']) as server:
             server.send_message(msg)  
-        logging.info("Email alarm sent successfully")
+        last_email_time = time.time()
+        logging.info(f"Alert email sent: {subject}")
     except Exception as e:
-        logging.error(f"Failed to send email: {e}")
+        logging.error(f"Failed to send alert email: {e}")
 
-# New function to handle overvoltage alarm
-def check_overvoltage_alarm(voltages):
+def check_for_voltage_issues(voltages):
     """
-    Checks if any cell voltage exceeds the alarm threshold and activates alarms if necessary.
-
+    Check if any battery voltage is too high or too low, set off alarms if necessary.
+    
     Args:
-        voltages (list): List of current voltages for each cell.
+        voltages (list): List of current voltages for each battery.
 
     Returns:
-        bool: True if an overvoltage was detected and alarm was triggered, False otherwise.
+        bool: True if an alert was triggered, False otherwise.
     """
+    alert_needed = False
+    
     for i, voltage in enumerate(voltages):
-        if voltage and voltage > ALARM_VOLTAGE_THRESHOLD:
-            logging.warning(f"ALARM: Cell {i+1} voltage is {voltage:.2f}V, exceeding threshold!")
+        if voltage is None or voltage == 0.0:
+            logging.warning(f"ALERT: Battery {i+1} voltage is {voltage}V, which is not right!")
             try:
-                GPIO.output(ALARM_RELAY_PIN, GPIO.HIGH)
-                send_email_alarm()
+                with shared_lock:
+                    GPIO.output(config['GPIO']['AlarmRelayPin'], GPIO.HIGH)
+                send_alert_email(voltage, i)
+                alert_needed = True
             except Exception as e:
-                logging.error(f"Error during overvoltage alarm: {e}")
-            return True
-    try:
-        GPIO.output(ALARM_RELAY_PIN, GPIO.LOW)
-    except Exception as e:
-        logging.error(f"Error resetting alarm relay: {e}")
-    return False
+                logging.error(f"Problem activating alarm for zero voltage: {e}")
+        elif voltage > config['General']['AlarmVoltageThreshold']:
+            logging.warning(f"ALERT: Battery {i+1} voltage is {voltage:.2f}V, too high!")
+            try:
+                with shared_lock:
+                    GPIO.output(config['GPIO']['AlarmRelayPin'], GPIO.HIGH)
+                send_alert_email(voltage, i)
+                alert_needed = True
+            except Exception as e:
+                logging.error(f"Problem with high voltage alert: {e}")
+    
+    if not alert_needed:
+        try:
+            with shared_lock:
+                GPIO.output(config['GPIO']['AlarmRelayPin'], GPIO.LOW)
+        except Exception as e:
+            logging.error(f"Problem turning off alarm: {e}")
+    
+    return alert_needed
 
-def balance_cells(stdscr, high_cell, low_cell):
+def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
     """
-    Perform cell balancing from a higher voltage cell to a lower one.
-
-    This function updates the TUI with the current balancing status, 
-    including an animation to show activity. It controls the DC-DC converter 
-    and relays to manage voltage transfer.
+    Balance charge from a battery with higher voltage to one with lower voltage.
+    
+    This function shows what's happening on the screen, including a progress bar.
+    It controls the hardware to move charge between batteries.
 
     Args:
-        stdscr (curses window object): The curses window for UI updates.
-        high_cell (int): Index of the cell with higher voltage (0-indexed).
-        low_cell (int): Index of the cell with lower voltage (0-indexed).
+        stdscr (curses window object): Where we show what's happening.
+        high_voltage_battery (int): Battery with higher voltage (0-indexed).
+        low_voltage_battery (int): Battery with lower voltage (0-indexed).
     """
-    # Read current voltages
-    voltage_high, _, adc_raw_high = read_voltage_with_retry(high_cell)
-    voltage_low, _, _ = read_voltage_with_retry(low_cell)
+    global balance_start_time
+    voltage_high, _, _ = read_voltage_with_retry(high_voltage_battery)
+    voltage_low, _, _ = read_voltage_with_retry(low_voltage_battery)
 
-    # Use default values if voltage readings are None
     voltage_high = voltage_high if voltage_high is not None else 0.0
     voltage_low = voltage_low if voltage_low is not None else 0.0
 
-    # Animation frames for visual feedback in the TUI
     animation_frames = ['|', '/', '-', '\\']
+    balance_start_time = time.time()  # Start timer for balancing
     
-    # Initial display of balancing action
-    for i, frame in enumerate(animation_frames * 5):  # Loop the animation 5 times
-        stdscr.addstr(10, 0, f"Balancing Cell {high_cell+1} ({voltage_high:.2f}V) -> Cell {low_cell+1} ({voltage_low:.2f}V)... [{frame}]")
-        stdscr.refresh()  # Refresh screen to update animation
-        time.sleep(0.1)  # Small delay for animation
+    for i, frame in enumerate(animation_frames * 5):
+        elapsed_time = time.time() - balance_start_time
+        progress = min(1.0, elapsed_time / config['General']['BalanceDurationSeconds'])
         
-        # Only need to set up the relay and control the DC-DC once
+        # Make a simple progress bar for the screen
+        bar_length = 20
+        filled_length = int(bar_length * progress)
+        bar = '=' * filled_length + ' ' * (bar_length - filled_length)
+        
+        with shared_lock:
+            stdscr.addstr(10, 0, f"Balancing Battery {high_voltage_battery+1} ({voltage_high:.2f}V) -> Battery {low_voltage_battery+1} ({voltage_low:.2f}V)... [{frame}]")
+            stdscr.addstr(11, 0, f"Progress: [{bar}] {int(progress * 100)}%")
+            stdscr.refresh()
+        
         if i == 0:
-            set_relay(high_cell, low_cell)  # Configure relay for balancing
-            control_dc_dc(False)  # Turn off DC-DC converter before switching
-            time.sleep(0.1)  # Short delay to ensure no voltage is present during switch
-            control_dc_dc(True)  # Turn on DC-DC converter for balancing
+            set_relay_connection(high_voltage_battery, low_voltage_battery)
+            control_dcdc_converter(False)
+            time.sleep(0.1)
+            control_dcdc_converter(True)
 
-    # After balancing, ensure DC-DC is off
-    control_dc_dc(False)
+        time.sleep(0.1)
+    
+    control_dcdc_converter(False)
 
-def main(stdscr):
-    global balancing_thread
+# Function to keep an eye on the main task
+def keep_watching():
+    while True:
+        time.sleep(60)  # Check every 60 seconds
+        if not balancing_task or not balancing_task.is_alive():
+            logging.error("Uh-oh, looks like our main task stopped! Let's restart everything.")
+            os.execv(sys.executable, ['python'] + sys.argv)  # Restart the script
+
+# Handle signals for clean shutdown
+def shutdown_handler(signum, frame):
+    logging.info("Received shutdown signal, cleaning up.")
+    GPIO.cleanup()
+    sys.exit(0)
+
+# Register to handle shutdown signals
+signal.signal(signal.SIGTERM, shutdown_handler)
+signal.signal(signal.SIGINT, shutdown_handler)
+
+def main_program(stdscr):
+    global balancing_task
     
     try:
         curses.noecho()
@@ -326,7 +415,7 @@ def main(stdscr):
         for i in range(1, curses.COLORS):
             curses.init_pair(i, i, -1)
 
-        # Define colors for better readability
+        # Colors for better screen readability
         TITLE_COLOR = curses.color_pair(1)    # Red for title
         HIGH_VOLTAGE_COLOR = curses.color_pair(2)  # Red for high voltage
         LOW_VOLTAGE_COLOR = curses.color_pair(3)   # Yellow for low voltage
@@ -336,8 +425,8 @@ def main(stdscr):
         INFO_COLOR = curses.color_pair(7)          # Blue for info
         ERROR_COLOR = curses.color_pair(8)         # Magenta for errors
 
-        # ASCII art for the GUI
-        ascii_art = [
+        # Simple graphic for the GUI
+        battery_art = [
             "   ___________   ___________   ___________   ",
             "  |           | |           | |           |  ",
             "  |           | |           | |           |  ",
@@ -358,98 +447,150 @@ def main(stdscr):
         ]
 
         while True:
-            stdscr.clear()
-            # Display ASCII art with voltages
-            voltages = []
-            for i in range(NUM_CELLS):
-                voltage, readings, adc_values = read_voltage_with_retry(i, num_samples=NUM_SAMPLES)
-                if voltage is None:
-                    voltages.append("Error")
+            try:
+                stdscr.clear()
+                battery_voltages = []
+                for i in range(config['General']['NumberOfBatteries']):
+                    voltage, readings, adc_values = read_voltage_with_retry(i, number_of_samples=config['General']['NumberOfSamples'])
+                    if voltage is None:
+                        battery_voltages.append(None)
+                    else:
+                        battery_voltages.append(voltage)
+                
+                # Total voltage of all batteries
+                total_voltage = sum([v for v in battery_voltages if v is not None] or [0])
+                
+                # Determine color based on total battery voltage
+                total_voltage_high = config['General']['AlarmVoltageThreshold'] * config['General']['NumberOfBatteries']
+                total_voltage_low = total_voltage_high - config['General']['VoltageDifferenceToBalance'] * config['General']['NumberOfBatteries']
+                
+                if total_voltage > total_voltage_high:
+                    color = HIGH_VOLTAGE_COLOR
+                elif total_voltage < total_voltage_low:
+                    color = LOW_VOLTAGE_COLOR
                 else:
-                    voltages.append(voltage)
-            
-            for i, line in enumerate(ascii_art):
-                # Determine color based on voltage
-                for j, volt in enumerate(voltages):
-                    if volt == "Error":
-                        color = ERROR_COLOR
-                    elif isinstance(volt, float):
-                        if volt > ALARM_VOLTAGE_THRESHOLD:
+                    color = OK_VOLTAGE_COLOR
+
+                # Use the art library to display the total voltage in Roman font
+                roman_voltage = text2art(f"{total_voltage:.2f}V", font='roman', chr_ignore=True)
+                
+                with shared_lock:
+                    stdscr.addstr(0, 0, "Battery Balancer GUI", TITLE_COLOR)
+                    for i, line in enumerate(roman_voltage.splitlines()):
+                        stdscr.addstr(i + 1, 0, line, color)
+                    stdscr.hline(len(roman_voltage.splitlines()) + 1, 0, curses.ACS_HLINE, curses.COLS - 1)
+                
+                y_offset = len(roman_voltage.splitlines()) + 2
+                for i, line in enumerate(battery_art):
+                    for j, volt in enumerate(battery_voltages):
+                        if volt is None:
+                            color = ERROR_COLOR
+                        elif volt > config['General']['AlarmVoltageThreshold']:
                             color = HIGH_VOLTAGE_COLOR
-                        elif volt < ALARM_VOLTAGE_THRESHOLD - BALANCE_THRESHOLD:
+                        elif volt < config['General']['AlarmVoltageThreshold'] - config['General']['VoltageDifferenceToBalance']:
                             color = LOW_VOLTAGE_COLOR
                         else:
                             color = OK_VOLTAGE_COLOR
+                        
+                        start_pos = j * 17
+                        end_pos = start_pos + 17
+                        with shared_lock:
+                            stdscr.addstr(i + y_offset, start_pos, line[start_pos:end_pos], color)
+
+                    for j, volt in enumerate(battery_voltages):
+                        if volt is None:
+                            with shared_lock:
+                                stdscr.addstr(y_offset + 6, 17 * j + 3, "Error".center(11), ERROR_COLOR)
+                        else:
+                            voltage_str = f"{volt:.2f}V"
+                            color = OK_VOLTAGE_COLOR if volt <= config['General']['AlarmVoltageThreshold'] else HIGH_VOLTAGE_COLOR
+                            color = LOW_VOLTAGE_COLOR if volt < config['General']['AlarmVoltageThreshold'] - config['General']['VoltageDifferenceToBalance'] else color
+                            with shared_lock:
+                                stdscr.addstr(y_offset + 6, 17 * j + 3, voltage_str.center(11), color)
+
+                y_offset += len(battery_art)  # Move cursor down after drawing
+                for i in range(config['General']['NumberOfBatteries']):
+                    voltage, readings, adc_values = read_voltage_with_retry(i, number_of_samples=config['General']['NumberOfSamples'])
+                    if voltage is None:
+                        with shared_lock:
+                            stdscr.addstr(y_offset + i, 0, f"Battery {i+1}: Error reading voltage", ERROR_COLOR)
                     else:
-                        color = INFO_COLOR  # Default color if voltage can't be interpreted
+                        with shared_lock:
+                            stdscr.addstr(y_offset + i, 0, f"Battery {i+1}: (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_READINGS_COLOR)
+                        
+                        if readings:
+                            with shared_lock:
+                                stdscr.addstr(y_offset + i + 1, 0, f"  [Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_READINGS_COLOR)
 
-                    # Adjust the position where the battery starts on the line
-                    start_pos = j * 17  # Assuming each battery takes up 17 characters width
-                    end_pos = start_pos + 17
-                    
-                    # Slice the line for the specific battery and apply color
-                    stdscr.addstr(i, start_pos, line[start_pos:end_pos], color)
+                if len(battery_voltages) == config['General']['NumberOfBatteries']:
+                    if balancing_task is None or not balancing_task.is_alive():
+                        max_voltage = max([v for v in battery_voltages if isinstance(v, float)], default=0)
+                        min_voltage = min([v for v in battery_voltages if isinstance(v, float)], default=0)
+                        high_battery = [i for i, v in enumerate(battery_voltages) if v == max_voltage][0]
+                        low_battery = [i for i, v in enumerate(battery_voltages) if v == min_voltage][0]
 
-                # Add voltage inside the battery cell at the 7th line
-                for j, volt in enumerate(voltages):
-                    if isinstance(volt, float):
-                        voltage_str = f"{volt:.2f}V"
-                        color = OK_VOLTAGE_COLOR if volt <= ALARM_VOLTAGE_THRESHOLD else HIGH_VOLTAGE_COLOR
-                        color = LOW_VOLTAGE_COLOR if volt < ALARM_VOLTAGE_THRESHOLD - BALANCE_THRESHOLD else color
-                        stdscr.addstr(6, 17 * j + 3, voltage_str.center(11), color)  # Centering the voltage string
+                        if max_voltage - min_voltage > config['General']['VoltageDifferenceToBalance']:
+                            balancing_task = threading.Thread(target=balance_battery_voltages, args=(stdscr, high_battery, low_battery))
+                            balancing_task.start()
+                            with shared_lock:
+                                stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, "  <======>", BALANCE_COLOR)
+                                stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, f" Balancing Battery {high_battery+1} ({max_voltage:.2f}V) -> Battery {low_battery+1} ({min_voltage:.2f}V)", BALANCE_COLOR)
+                        else:
+                            with shared_lock:
+                                stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, "  [ OK ]", OK_VOLTAGE_COLOR)
+                                stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, "No need to balance, voltages are good.", INFO_COLOR)
                     else:
-                        stdscr.addstr(6, 17 * j + 3, "Error".center(11), ERROR_COLOR)
+                        # Animation for balancing in progress
+                        frame = int(time.time() * 2) % 4  # Change frame every 0.5 seconds
+                        animations = ['<======>', '>======<', '<======>', '>======<']
+                        with shared_lock:
+                            stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, f"  {animations[frame]}", BALANCE_COLOR)
+                            stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, f" Balancing Battery {high_battery+1} ({max_voltage:.2f}V) -> Battery {low_battery+1} ({min_voltage:.2f}V)", BALANCE_COLOR)
+                            # Show progress bar
+                            if balance_start_time is not None:
+                                elapsed_time = time.time() - balance_start_time
+                                progress = min(1.0, elapsed_time / config['General']['BalanceDurationSeconds'])
+                                progress_bar_length = 20
+                                filled_length = int(progress_bar_length * progress)
+                                bar = '=' * filled_length + ' ' * (progress_bar_length - filled_length)
+                                stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 4, 0, f" Progress: [{bar}] {int(progress * 100)}%", BALANCE_COLOR)
 
-            stdscr.addstr(len(ascii_art) + 1, 0, "Battery Balancer TUI", TITLE_COLOR)
-            stdscr.hline(len(ascii_art) + 2, 0, curses.ACS_HLINE, curses.COLS - 1)
-            
-            y_offset = len(ascii_art) + 3
-            for i in range(NUM_CELLS):
-                voltage, readings, adc_values = read_voltage_with_retry(i, num_samples=NUM_SAMPLES)
-                if voltage is None:
-                    stdscr.addstr(y_offset + i, 0, f"Cell {i+1}: Error reading voltage", ERROR_COLOR)
-                else:
-                    stdscr.addstr(y_offset + i, 0, f"Cell {i+1}: (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_READINGS_COLOR)
+                # Check if we need to sound any alarms
+                check_for_voltage_issues(battery_voltages)
+
+                with shared_lock:
+                    stdscr.refresh()
                 
-                if readings:
-                    stdscr.addstr(y_offset + i + 1, 0, f"  [Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_READINGS_COLOR)
+                # Here's where we use SleepTimeBetweenChecks:
+                time.sleep(config['General']['SleepTimeBetweenChecks'])
+                # This pause allows the system to rest between checks, reducing CPU usage 
+                # and giving hardware a chance to cool down. It balances system responsiveness 
+                # with efficiency, ensuring we're not checking too often (which could be wasteful) 
+                # or too rarely (which could miss important changes).
 
-            if len(voltages) == NUM_CELLS:
-                if balancing_thread is None or not balancing_thread.is_alive():
-                    max_voltage = max([v for v in voltages if isinstance(v, float)], default=0)
-                    min_voltage = min([v for v in voltages if isinstance(v, float)], default=0)
-                    high_cell = voltages.index(max_voltage)
-                    low_cell = voltages.index(min_voltage)
-
-                    if max_voltage - min_voltage > BALANCE_THRESHOLD:
-                        balancing_thread = threading.Thread(target=balance_cells, args=(stdscr, high_cell, low_cell))
-                        balancing_thread.start()
-                        # Large balancing icon
-                        stdscr.addstr(y_offset + NUM_CELLS + 2, 0, "  <======>", BALANCE_COLOR)
-                        stdscr.addstr(y_offset + NUM_CELLS + 3, 0, f" Balancing Cell {high_cell+1} ({max_voltage:.2f}V) -> Cell {low_cell+1} ({min_voltage:.2f}V)", BALANCE_COLOR)
-                    else:
-                        stdscr.addstr(y_offset + NUM_CELLS + 2, 0, "  [ OK ]", OK_VOLTAGE_COLOR)
-                        stdscr.addstr(y_offset + NUM_CELLS + 3, 0, "No balancing required; voltages within threshold.", INFO_COLOR)
-                else:
-                    # Large balancing icon with animation
-                    frame = int(time.time() * 2) % 4  # Change frame every 0.5 seconds
-                    animations = ['<======>', '>======<', '<======>', '>======<']
-                    stdscr.addstr(y_offset + NUM_CELLS + 2, 0, f"  {animations[frame]}", BALANCE_COLOR)
-                    stdscr.addstr(y_offset + NUM_CELLS + 3, 0, f" Balancing Cell {high_cell+1} ({max_voltage:.2f}V) -> Cell {low_cell+1} ({min_voltage:.2f}V)", BALANCE_COLOR)
-
-            stdscr.refresh()
-            time.sleep(0.5)  # Slower update for animation visibility
+            except Exception as e:
+                logging.error(f"Something went wrong in the main loop: {e}")
+                with shared_lock:
+                    stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 5, 0, f"Error: {e}", ERROR_COLOR)
+                time.sleep(5)  # Wait a bit before trying again
 
     except Exception as e:
-        logging.error(f"Error in main loop: {e}")
-        stdscr.addstr(y_offset + NUM_CELLS + 4, 0, f"Error: {e}", ERROR_COLOR)
+        logging.critical(f"A serious error in the main loop: {e}")
+        raise
 
 if __name__ == '__main__':
     try:
-        logging.info("Starting the Battery Balancer script")
-        curses.wrapper(main)
+        logging.info("Starting the Battery Balancer program")
+        setup_hardware()
+
+        # Start the watch-dog thread
+        watch_dog_thread = threading.Thread(target=keep_watching, daemon=True)
+        watch_dog_thread.start()
+
+        curses.wrapper(main_program)  # Use curses to manage screen setup and cleanup
     except Exception as e:
-        logging.error(f"An unexpected error occurred in script execution: {e}")
+        logging.critical(f"Something unexpected happened while running the script: {e}")
+        sys.exit(1)
     finally:
-        GPIO.cleanup()
-        logging.info("Program terminated. GPIO cleanup completed.")
+        GPIO.cleanup()  # Make sure to clean up GPIO even if something goes wrong
+        logging.info("Program finished. Cleaned up GPIO.")
