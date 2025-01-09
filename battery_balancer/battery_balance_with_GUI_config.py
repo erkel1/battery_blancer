@@ -151,7 +151,7 @@ def read_voltage_with_retry(battery_id, number_of_samples=5, allowed_difference=
     Try to read the voltage of a battery several times to get a reliable measurement.
     
     Args:
-        battery_id (int): Which battery we're checking (starts from 0).
+        battery_id (int): Which battery we're checking (starts from 1).
         number_of_samples (int): How many readings to take.
         allowed_difference (float): How much variation we allow in readings.
         max_attempts (int): How many times to try if readings are inconsistent.
@@ -164,7 +164,7 @@ def read_voltage_with_retry(battery_id, number_of_samples=5, allowed_difference=
             readings = []
             raw_values = []
             for _ in range(number_of_samples):
-                meter_channel = battery_id % 3
+                meter_channel = (battery_id - 1) % 3  # Adjust for 1-indexed batteries
                 choose_channel(meter_channel)
                 
                 # Increased setup attempt in case of initial failure
@@ -182,7 +182,7 @@ def read_voltage_with_retry(battery_id, number_of_samples=5, allowed_difference=
                 time.sleep(0.3)  # Increased delay, adjust if needed
                 with shared_lock:
                     raw_adc = bus.read_word_data(config['I2C']['VoltageMeterAddress'], config['ADC']['ConversionRegister']) & 0xFFFF
-                logging.debug(f"Raw ADC value for Battery {battery_id + 1}: {raw_adc}")
+                logging.debug(f"Raw ADC value for Battery {battery_id}: {raw_adc}")
                 
                 if raw_adc != 0:
                     battery_voltage = raw_adc * (6.144 / 32767)  # Ensure this conversion factor matches your setup
@@ -200,58 +200,52 @@ def read_voltage_with_retry(battery_id, number_of_samples=5, allowed_difference=
                     if valid_readings:
                         return sum(valid_readings) / len(valid_readings), valid_readings, valid_adc
                 else:
-                    logging.debug(f"Readings for Battery {battery_id + 1} aren't consistent, trying again.")
+                    logging.debug(f"Readings for Battery {battery_id} aren't consistent, trying again.")
         except IOError as e:
-            logging.warning(f"Couldn't read voltage for Battery {battery_id + 1}: {e}")
+            logging.warning(f"Couldn't read voltage for Battery {battery_id}: {e}")
             continue
         time.sleep(5)  # Wait before next attempt
 
-    logging.error(f"Couldn't get a good voltage reading for Battery {battery_id + 1} after {max_attempts} tries")
+    logging.error(f"Couldn't get a good voltage reading for Battery {battery_id} after {max_attempts} tries")
     return None, [], []
 
 def set_relay_connection(high_voltage_battery, low_voltage_battery):
     """
-    Set up the relays to balance charge between two batteries.
+    Set up the relays to balance charge between two batteries using M5Stack 4Relay module.
     
     Args:
-        high_voltage_battery (int): Battery with higher voltage (0-indexed).
-        low_voltage_battery (int): Battery with lower voltage (0-indexed).
+        high_voltage_battery (int): Battery with higher voltage (1-indexed).
+        low_voltage_battery (int): Battery with lower voltage (1-indexed).
     """
     try:
         with shared_lock:
             choose_channel(3)  # Relay module is on channel 3
             relay_state = 0
-            if high_voltage_battery == low_voltage_battery or high_voltage_battery < 0 or low_voltage_battery < 0:
-                relay_state = 0  # Turn off all relays
+            if high_voltage_battery == low_voltage_battery or high_voltage_battery < 1 or low_voltage_battery < 1:
+                relay_state = 0  # All relays off, cell 1 links to cell 1
             else:
                 # Relay mapping (actual setup might differ based on hardware)
                 if high_voltage_battery == 2 and low_voltage_battery == 1:
-                    relay_state |= (1 << 0)  # Turn on relay 0
-                    relay_state |= (1 << 2)  # Turn on relay 2
-                    relay_state |= (1 << 4)  # Turn on relay 4
+                    relay_state |= (1 << 0)  # Turn on relay 1
                 elif high_voltage_battery == 3 and low_voltage_battery == 1:
-                    relay_state |= (1 << 1)  # Turn on relay 1
-                    relay_state |= (1 << 3)  # Turn on relay 3
-                    relay_state |= (1 << 4)  # Turn on relay 4
+                    relay_state |= (1 << 0)  # Turn on relay 1
+                    relay_state |= (1 << 1)  # Turn on relay 2
                 elif high_voltage_battery == 1 and low_voltage_battery == 2:
-                    relay_state |= (1 << 0)  # Turn on relay 0
-                    relay_state |= (1 << 4)  # Turn on relay 4
-                    relay_state |= (1 << 2)  # Turn on relay 2
+                    relay_state |= (1 << 2)  # Turn on relay 3
                 elif high_voltage_battery == 1 and low_voltage_battery == 3:
-                    relay_state |= (1 << 1)  # Turn on relay 1
-                    relay_state |= (1 << 5)  # Turn on relay 5
-                    relay_state |= (1 << 3)  # Turn on relay 3
+                    relay_state |= (1 << 2)  # Turn on relay 3
+                    relay_state |= (1 << 3)  # Turn on relay 4
                 elif high_voltage_battery == 2 and low_voltage_battery == 3:
-                    relay_state |= (1 << 2)  # Turn on relay 2
-                    relay_state |= (1 << 3)  # Turn on relay 3
-                    relay_state |= (1 << 5)  # Turn on relay 5
+                    relay_state |= (1 << 0)  # Turn on relay 1
+                    relay_state |= (1 << 2)  # Turn on relay 3
+                    relay_state |= (1 << 3)  # Turn on relay 4
                 elif high_voltage_battery == 3 and low_voltage_battery == 2:
-                    relay_state |= (1 << 3)  # Turn on relay 3
-                    relay_state |= (1 << 5)  # Turn on relay 5
-                    relay_state |= (1 << 2)  # Turn on relay 2
+                    relay_state |= (1 << 1)  # Turn on relay 2
+                    relay_state |= (1 << 2)  # Turn on relay 3
+                    relay_state |= (1 << 3)  # Turn on relay 4
                 
             bus.write_byte_data(config['I2C']['RelayAddress'], 0x10, relay_state)
-        logging.info(f"Set up relay for balancing from Battery {high_voltage_battery + 1} to Battery {low_voltage_battery + 1}")
+        logging.info(f"Set up relay for balancing from Battery {high_voltage_battery} to Battery {low_voltage_battery}")
     except IOError as e:
         logging.error(f"Error setting up relay: {e}")
 
@@ -288,11 +282,11 @@ def send_alert_email(voltage=None, battery_id=None):
         if voltage is None and battery_id is None:
             content = "Warning: Something's wrong with a battery's voltage!"
         elif voltage == 0.0:
-            content = f"Warning: Battery {battery_id+1} has no voltage!"
-            subject = f"Battery Alert: Battery {battery_id+1} Voltage Zero"
+            content = f"Warning: Battery {battery_id} has no voltage!"
+            subject = f"Battery Alert: Battery {battery_id} Voltage Zero"
         else:
-            content = f"Warning: Battery {battery_id+1} voltage is too high! Current voltage: {voltage:.2f}V"
-            subject = f"Battery Alert: Battery {battery_id+1} Overvoltage"
+            content = f"Warning: Battery {battery_id} voltage is too high! Current voltage: {voltage:.2f}V"
+            subject = f"Battery Alert: Battery {battery_id} Overvoltage"
 
         msg = MIMEText(content)
         msg['Subject'] = subject
@@ -318,9 +312,9 @@ def check_for_voltage_issues(voltages):
     """
     alert_needed = False
     
-    for i, voltage in enumerate(voltages):
+    for i, voltage in enumerate(voltages, 1):  # Start from 1 for battery_id
         if voltage is None or voltage == 0.0:
-            logging.warning(f"ALERT: Battery {i+1} voltage is {voltage}V, which is not right!")
+            logging.warning(f"ALERT: Battery {i} voltage is {voltage}V, which is not right!")
             try:
                 with shared_lock:
                     GPIO.output(config['GPIO']['AlarmRelayPin'], GPIO.HIGH)
@@ -329,7 +323,7 @@ def check_for_voltage_issues(voltages):
             except Exception as e:
                 logging.error(f"Problem activating alarm for zero voltage: {e}")
         elif voltage > config['General']['AlarmVoltageThreshold']:
-            logging.warning(f"ALERT: Battery {i+1} voltage is {voltage:.2f}V, too high!")
+            logging.warning(f"ALERT: Battery {i} voltage is {voltage:.2f}V, too high!")
             try:
                 with shared_lock:
                     GPIO.output(config['GPIO']['AlarmRelayPin'], GPIO.HIGH)
@@ -357,8 +351,8 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
 
     Args:
         stdscr (curses window object): Where we show what's happening.
-        high_voltage_battery (int): Battery with higher voltage (0-indexed).
-        low_voltage_battery (int): Battery with lower voltage (0-indexed).
+        high_voltage_battery (int): Battery with higher voltage (1-indexed).
+        low_voltage_battery (int): Battery with lower voltage (1-indexed).
     """
     global balance_start_time
     voltage_high, _, _ = read_voltage_with_retry(high_voltage_battery)
@@ -368,16 +362,20 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
     voltage_low = voltage_low if voltage_low is not None else 0.0
 
     if voltage_low == 0.0:
-        logging.warning(f"Cannot balance to Battery {low_voltage_battery + 1} as it shows 0.00V. Skipping balancing.")
+        logging.warning(f"Cannot balance to Battery {low_voltage_battery} as it shows 0.00V. Skipping balancing.")
         with shared_lock:
-            stdscr.addstr(10, 0, f"Cannot balance to Battery {low_voltage_battery + 1} (0.00V).", ERROR_COLOR)
+            stdscr.addstr(10, 0, f"Cannot balance to Battery {low_voltage_battery} (0.00V).", curses.color_pair(8))
             stdscr.refresh()
         return
 
     animation_frames = ['|', '/', '-', '\\']
     balance_start_time = time.time()  # Start timer for balancing
-    
-    for i, frame in enumerate(animation_frames * 5):
+    frame_index = 0
+
+    set_relay_connection(high_voltage_battery, low_voltage_battery)
+    control_dcdc_converter(True)
+
+    while time.time() - balance_start_time < config['General']['BalanceDurationSeconds']:
         elapsed_time = time.time() - balance_start_time
         progress = min(1.0, elapsed_time / config['General']['BalanceDurationSeconds'])
         
@@ -387,19 +385,17 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
         bar = '=' * filled_length + ' ' * (bar_length - filled_length)
         
         with shared_lock:
-            stdscr.addstr(10, 0, f"Balancing Battery {high_voltage_battery+1} ({voltage_high:.2f}V) -> Battery {low_voltage_battery+1} ({voltage_low:.2f}V)... [{frame}]")
+            stdscr.addstr(10, 0, f"Balancing Battery {high_voltage_battery} ({voltage_high:.2f}V) -> Battery {low_voltage_battery} ({voltage_low:.2f}V)... [{animation_frames[frame_index % len(animation_frames)]}]")
             stdscr.addstr(11, 0, f"Progress: [{bar}] {int(progress * 100)}%")
             stdscr.refresh()
         
-        if i == 0:
-            set_relay_connection(high_voltage_battery, low_voltage_battery)
-            control_dcdc_converter(False)
-            time.sleep(0.1)
-            control_dcdc_converter(True)
+        frame_index += 1
+        time.sleep(0.1)  # Small delay to not update too frequently
 
-        time.sleep(0.1)
-    
-    control_dcdc_converter(False)
+    control_dcdc_converter(False)  # Turn off after balancing
+
+    # Reset relay state here if necessary
+    set_relay_connection(1, 1)  # Assuming 1 means all off for 1-indexed batteries
 
 # Function to keep an eye on the main task
 def keep_watching():
@@ -467,7 +463,7 @@ def main_program(stdscr):
             try:
                 stdscr.clear()
                 battery_voltages = []
-                for i in range(config['General']['NumberOfBatteries']):
+                for i in range(1, config['General']['NumberOfBatteries'] + 1):
                     voltage, _, _ = read_voltage_with_retry(i, number_of_samples=config['General']['NumberOfSamples'])
                     battery_voltages.append(voltage if voltage is not None else 0.0)
                 
@@ -523,30 +519,30 @@ def main_program(stdscr):
                                 stdscr.addstr(y_offset + 6, 17 * j + 3, voltage_str.center(11), color)
 
                 y_offset += len(battery_art)  # Move cursor down after drawing
-                for i in range(config['General']['NumberOfBatteries']):
+                for i in range(1, config['General']['NumberOfBatteries'] + 1):
                     voltage, readings, adc_values = read_voltage_with_retry(i, number_of_samples=config['General']['NumberOfSamples'])
                     if voltage is None:
                         voltage = 0.0
                     with shared_lock:
-                        stdscr.addstr(y_offset + i, 0, f"Battery {i+1}: (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_READINGS_COLOR)
+                        stdscr.addstr(y_offset + i - 1, 0, f"Battery {i}: (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_READINGS_COLOR)
                         
                     if readings:
                         with shared_lock:
-                            stdscr.addstr(y_offset + i + 1, 0, f"  [Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_READINGS_COLOR)
+                            stdscr.addstr(y_offset + i, 0, f"  [Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_READINGS_COLOR)
 
                 if len(battery_voltages) == config['General']['NumberOfBatteries']:
                     if balancing_task is None or not balancing_task.is_alive():
                         max_voltage = max(battery_voltages)
                         min_voltage = min(battery_voltages)
-                        high_battery = battery_voltages.index(max_voltage)
-                        low_battery = battery_voltages.index(min_voltage)
+                        high_battery = battery_voltages.index(max_voltage) + 1  # +1 for 1-indexed
+                        low_battery = battery_voltages.index(min_voltage) + 1  # +1 for 1-indexed
 
                         if max_voltage - min_voltage > config['General']['VoltageDifferenceToBalance'] and min_voltage > 0:
                             balancing_task = threading.Thread(target=balance_battery_voltages, args=(stdscr, high_battery, low_battery))
                             balancing_task.start()
                             with shared_lock:
                                 stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, "  <======>", BALANCE_COLOR)
-                                stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, f" Balancing Battery {high_battery+1} ({max_voltage:.2f}V) -> Battery {low_battery+1} ({min_voltage:.2f}V)", BALANCE_COLOR)
+                                stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, f" Balancing Battery {high_battery} ({max_voltage:.2f}V) -> Battery {low_battery} ({min_voltage:.2f}V)", BALANCE_COLOR)
                         else:
                             with shared_lock:
                                 stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, "  [ OK ]", OK_VOLTAGE_COLOR)
@@ -560,7 +556,7 @@ def main_program(stdscr):
                         animations = ['<======>', '>======<', '<======>', '>======<']
                         with shared_lock:
                             stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, f"  {animations[frame]}", BALANCE_COLOR)
-                            stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, f" Balancing Battery {high_battery+1} ({max_voltage:.2f}V) -> Battery {low_battery+1} ({min_voltage:.2f}V)", BALANCE_COLOR)
+                            stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, f" Balancing Battery {high_battery} ({max_voltage:.2f}V) -> Battery {low_battery} ({min_voltage:.2f}V)", BALANCE_COLOR)
                             # Show progress bar
                             if balance_start_time is not None:
                                 elapsed_time = time.time() - balance_start_time
