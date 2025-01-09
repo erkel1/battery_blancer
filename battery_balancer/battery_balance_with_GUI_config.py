@@ -500,15 +500,15 @@ def main_program(stdscr):
         while True:
             try:
                 stdscr.clear()
-                battery_voltages = []
                 
                 # For GUI display, use real-time voltages
+                real_time_voltages = []
                 for i in range(1, config['General']['NumberOfBatteries'] + 1):
                     voltage, _, _ = read_voltage_with_retry(i, number_of_samples=2, max_attempts=2)
-                    battery_voltages.append(voltage if voltage is not None else 0.0)
+                    real_time_voltages.append(voltage if voltage is not None else 0.0)
 
                 # Total voltage of all batteries for GUI display
-                total_voltage = sum(battery_voltages)
+                total_voltage = sum(real_time_voltages)
                 
                 # Determine color based on total battery voltage (for GUI)
                 total_voltage_high = config['General']['AlarmVoltageThreshold'] * config['General']['NumberOfBatteries']
@@ -531,7 +531,7 @@ def main_program(stdscr):
                 
                 y_offset = len(roman_voltage.splitlines()) + 2
                 for i, line in enumerate(battery_art):
-                    for j, volt in enumerate(battery_voltages):
+                    for j, volt in enumerate(real_time_voltages):
                         if volt == 0.0:
                             color = ERROR_COLOR
                         elif volt > config['General']['AlarmVoltageThreshold']:
@@ -545,7 +545,7 @@ def main_program(stdscr):
                         end_pos = start_pos + 17
                         stdscr.addstr(i + y_offset, start_pos, line[start_pos:end_pos], color)
 
-                    for j, volt in enumerate(battery_voltages):
+                    for j, volt in enumerate(real_time_voltages):
                         if volt == 0.0:
                             voltage_str = "0.00V"
                             color = ERROR_COLOR
@@ -594,7 +594,7 @@ def main_program(stdscr):
                     averaged_voltages = [sum(voltages) / len(voltages) for voltages in zip(*voltage_samples)]
                 else:
                     # Fallback in case of no samples, though unlikely
-                    averaged_voltages = battery_voltages
+                    averaged_voltages = real_time_voltages
 
                 if len(averaged_voltages) == config['General']['NumberOfBatteries']:
                     max_voltage = max(averaged_voltages)
@@ -621,8 +621,8 @@ def main_program(stdscr):
                         else:
                             stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, "No need to balance, voltages are good.", INFO_COLOR)
 
-                # Check if we need to sound any alarms
-                check_for_voltage_issues(battery_voltages)
+                # Check if we need to sound any alarms - using real-time voltages here
+                check_for_voltage_issues(real_time_voltages)
 
                 stdscr.refresh()
                 
