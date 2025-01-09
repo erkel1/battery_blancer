@@ -349,6 +349,7 @@ def check_for_voltage_issues(voltages):
     
     return alert_needed
 
+
 def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
     """
     Balance charge from a battery with higher voltage to one with lower voltage.
@@ -359,7 +360,7 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
         low_voltage_battery (int): Battery with lower voltage (1-indexed).
     """
     try:
-        global balance_start_time, battery_voltages  # Assuming battery_voltages is a global list
+        global balance_start_time, battery_voltages
         balancing_active = True  # Flag to indicate balancing is occurring
 
         logging.info(f"Starting balance from Battery {high_voltage_battery} to {low_voltage_battery}")
@@ -402,8 +403,31 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
             filled_length = int(bar_length * progress)
             bar = '=' * filled_length + ' ' * (bar_length - filled_length)
             
+            # Update the balancing status
             stdscr.addstr(10, 0, f"Balancing Battery {high_voltage_battery} ({voltage_high:.2f}V) -> Battery {low_voltage_battery} ({voltage_low:.2f}V)... [{animation_frames[frame_index % len(animation_frames)]}]", curses.color_pair(6))  # BALANCE_COLOR
             stdscr.addstr(11, 0, f"Progress: [{bar}] {int(progress * 100)}%", curses.color_pair(6))  # BALANCE_COLOR
+            
+            # Update all battery voltages on the GUI
+            y_offset = 12  # Assuming this is where battery art starts; adjust as necessary
+            for i, volt in enumerate(battery_voltages):
+                if volt == 0.0:
+                    voltage_str = "0.00V"
+                    color = ERROR_COLOR
+                else:
+                    voltage_str = f"{volt:.2f}V"
+                    color = OK_VOLTAGE_COLOR if volt <= config['General']['AlarmVoltageThreshold'] else HIGH_VOLTAGE_COLOR
+                    color = LOW_VOLTAGE_COLOR if volt < config['General']['AlarmVoltageThreshold'] - config['General']['VoltageDifferenceToBalance'] else color
+                
+                # Adjust position for each cell
+                if i == 1:  # Second cell (0-indexed)
+                    center_pos = 17 * i + 3 - 3  # Move 3 spaces to the left
+                elif i == 2:  # Third cell (0-indexed)
+                    center_pos = 17 * i + 3 - 6  # Move 6 spaces to the left
+                else:
+                    center_pos = 17 * i + 3  # Default position for the first cell
+                
+                stdscr.addstr(y_offset + 6, center_pos, voltage_str.center(11), color)
+
             stdscr.refresh()  # Update the screen with new voltage readings
             
             logging.debug(f"Balancing progress: {progress * 100:.2f}%, High Voltage: {voltage_high:.2f}V, Low Voltage: {voltage_low:.2f}V")
