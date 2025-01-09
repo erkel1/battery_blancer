@@ -423,6 +423,7 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
 
     except Exception as e:
         logging.error(f"Error during balancing process: {e}")
+        balancing_active = False  # Ensure flag is reset on error
 
 # Handle signals for clean shutdown
 def shutdown_handler(signum, frame):
@@ -486,7 +487,7 @@ def main_program(stdscr):
         while True:
             try:
                 stdscr.clear()
-                battery_voltages = []  # Initialize the list
+                battery_voltages = []  # Reset or initialize if not already done
                 for i in range(1, config['General']['NumberOfBatteries'] + 1):
                     voltage, _, _ = read_voltage_with_retry(i, number_of_samples=2, max_attempts=2)
                     battery_voltages.append(voltage if voltage is not None else 0.0)
@@ -572,6 +573,26 @@ def main_program(stdscr):
                         balancing_active = True
                         balance_battery_voltages(stdscr, high_battery, low_battery)
                         balancing_active = False
+                        # Refresh the GUI after balancing is complete
+                        for j, volt in enumerate(battery_voltages):
+                            if volt == 0.0:
+                                voltage_str = "0.00V"
+                                color = ERROR_COLOR
+                            else:
+                                voltage_str = f"{volt:.2f}V"
+                                color = OK_VOLTAGE_COLOR if volt <= config['General']['AlarmVoltageThreshold'] else HIGH_VOLTAGE_COLOR
+                                color = LOW_VOLTAGE_COLOR if volt < config['General']['AlarmVoltageThreshold'] - config['General']['VoltageDifferenceToBalance'] else color
+                            
+                            # Adjust position for each cell (same logic as before)
+                            if j == 1:
+                                center_pos = 17 * j + 3 - 3
+                            elif j == 2:
+                                center_pos = 17 * j + 3 - 6
+                            else:
+                                center_pos = 17 * j + 3
+                            
+                            stdscr.addstr(y_offset + 6, center_pos, voltage_str.center(11), color)
+                        stdscr.refresh()
                     else:
                         stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, "  [ OK ]", OK_VOLTAGE_COLOR)
                         if min_voltage == 0:
