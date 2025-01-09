@@ -342,6 +342,8 @@ def check_for_voltage_issues(voltages):
     return alert_needed
 
 def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
+    logging.info(f"Starting balance from Battery {high_voltage_battery} to {low_voltage_battery}")
+    # ... rest of the function with more logging at critical points
     """
     Balance charge from a battery with higher voltage to one with lower voltage.
     
@@ -354,48 +356,54 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
         high_voltage_battery (int): Battery with higher voltage (1-indexed).
         low_voltage_battery (int): Battery with lower voltage (1-indexed).
     """
-    global balance_start_time
-    voltage_high, _, _ = read_voltage_with_retry(high_voltage_battery)
-    voltage_low, _, _ = read_voltage_with_retry(low_voltage_battery)
+    try:    
+        global balance_start_time
+        voltage_high, _, _ = read_voltage_with_retry(high_voltage_battery)
+        voltage_low, _, _ = read_voltage_with_retry(low_voltage_battery)
 
-    voltage_high = voltage_high if voltage_high is not None else 0.0
-    voltage_low = voltage_low if voltage_low is not None else 0.0
+        voltage_high = voltage_high if voltage_high is not None else 0.0
+        voltage_low = voltage_low if voltage_low is not None else 0.0
 
-    if voltage_low == 0.0:
-        logging.warning(f"Cannot balance to Battery {low_voltage_battery} as it shows 0.00V. Skipping balancing.")
-        with shared_lock:
-            stdscr.addstr(10, 0, f"Cannot balance to Battery {low_voltage_battery} (0.00V).", curses.color_pair(8))
-            stdscr.refresh()
-        return
+        if voltage_low == 0.0:
+            logging.warning(f"Cannot balance to Battery {low_voltage_battery} as it shows 0.00V. Skipping balancing.")
+            with shared_lock:
+                stdscr.addstr(10, 0, f"Cannot balance to Battery {low_voltage_battery} (0.00V).", curses.color_pair(8))
+                stdscr.refresh()
+            return
 
-    animation_frames = ['|', '/', '-', '\\']
-    balance_start_time = time.time()  # Start timer for balancing
-    frame_index = 0
+        animation_frames = ['|', '/', '-', '\\']
+        balance_start_time = time.time()  # Start timer for balancing
+        frame_index = 0
 
-    set_relay_connection(high_voltage_battery, low_voltage_battery)
-    control_dcdc_converter(True)
+        set_relay_connection(high_voltage_battery, low_voltage_battery)
+        control_dcdc_converter(True)
 
-    while time.time() - balance_start_time < config['General']['BalanceDurationSeconds']:
-        elapsed_time = time.time() - balance_start_time
-        progress = min(1.0, elapsed_time / config['General']['BalanceDurationSeconds'])
-        
-        # Make a simple progress bar for the screen
-        bar_length = 20
-        filled_length = int(bar_length * progress)
-        bar = '=' * filled_length + ' ' * (bar_length - filled_length)
-        
-        with shared_lock:
-            stdscr.addstr(10, 0, f"Balancing Battery {high_voltage_battery} ({voltage_high:.2f}V) -> Battery {low_voltage_battery} ({voltage_low:.2f}V)... [{animation_frames[frame_index % len(animation_frames)]}]")
-            stdscr.addstr(11, 0, f"Progress: [{bar}] {int(progress * 100)}%")
-            stdscr.refresh()
-        
-        frame_index += 1
-        time.sleep(0.01)  # Small delay to not update too frequently
+        while time.time() - balance_start_time < config['General']['BalanceDurationSeconds']:
+            elapsed_time = time.time() - balance_start_time
+            progress = min(1.0, elapsed_time / config['General']['BalanceDurationSeconds'])
+            
+            # Make a simple progress bar for the screen
+            bar_length = 20
+            filled_length = int(bar_length * progress)
+            bar = '=' * filled_length + ' ' * (bar_length - filled_length)
+            
+            with shared_lock:
+                stdscr.addstr(10, 0, f"Balancing Battery {high_voltage_battery} ({voltage_high:.2f}V) -> Battery {low_voltage_battery} ({voltage_low:.2f}V)... [{animation_frames[frame_index % len(animation_frames)]}]")
+                stdscr.addstr(11, 0, f"Progress: [{bar}] {int(progress * 100)}%")
+                stdscr.refresh()
+            
+            frame_index += 1
+            time.sleep(0.01)  # Small delay to not update too frequently
 
-    control_dcdc_converter(False)  # Turn off after balancing
+        control_dcdc_converter(False)  # Turn off after balancing
 
-    # Reset relay state here if necessary
-    set_relay_connection(1, 1)  # Assuming 1 means all off for 1-indexed batteries
+        # Reset relay state here if necessary
+        set_relay_connection(1, 1)  # Assuming 1 means all off for 1-indexed batteries
+    
+    except Exception as e:
+    logging.error(f"Error during balancing: {e}")
+    # Decide what to do with the thread here, e.g., stop it or let it exit
+
 
 # Function to keep an eye on the main task
 def keep_watching():
