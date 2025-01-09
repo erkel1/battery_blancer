@@ -360,8 +360,8 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
         low_voltage_battery (int): Battery with lower voltage (1-indexed).
     """
     try:
-        global balance_start_time, battery_voltages, balancing_active
-        balancing_active = True  # Set flag to indicate balancing is occurring
+        global balance_start_time, battery_voltages
+        balancing_active = True  # Flag to indicate balancing is occurring
 
         logging.info(f"Starting balance from Battery {high_voltage_battery} to {low_voltage_battery}")
 
@@ -373,7 +373,6 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
             logging.warning(f"Cannot balance to Battery {low_voltage_battery} as it shows 0.00V. Skipping balancing.")
             stdscr.addstr(10, 0, f"Cannot balance to Battery {low_voltage_battery} (0.00V).", curses.color_pair(8))
             stdscr.refresh()
-            balancing_active = False
             return
 
         animation_frames = ['|', '/', '-', '\\']
@@ -404,31 +403,8 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
             filled_length = int(bar_length * progress)
             bar = '=' * filled_length + ' ' * (bar_length - filled_length)
             
-            # Update the balancing status
             stdscr.addstr(10, 0, f"Balancing Battery {high_voltage_battery} ({voltage_high:.2f}V) -> Battery {low_voltage_battery} ({voltage_low:.2f}V)... [{animation_frames[frame_index % len(animation_frames)]}]", curses.color_pair(6))  # BALANCE_COLOR
             stdscr.addstr(11, 0, f"Progress: [{bar}] {int(progress * 100)}%", curses.color_pair(6))  # BALANCE_COLOR
-            
-            # Update all battery voltages on the GUI
-            y_offset = 12  # Adjust based on where battery art starts
-            for i, volt in enumerate(battery_voltages):
-                if volt == 0.0:
-                    voltage_str = "0.00V"
-                    color = ERROR_COLOR
-                else:
-                    voltage_str = f"{volt:.2f}V"
-                    color = OK_VOLTAGE_COLOR if volt <= config['General']['AlarmVoltageThreshold'] else HIGH_VOLTAGE_COLOR
-                    color = LOW_VOLTAGE_COLOR if volt < config['General']['AlarmVoltageThreshold'] - config['General']['VoltageDifferenceToBalance'] else color
-                
-                # Adjust position for each cell
-                if i == 1:  # Second cell (0-indexed)
-                    center_pos = 17 * i + 3 - 3  # Move 3 spaces to the left
-                elif i == 2:  # Third cell (0-indexed)
-                    center_pos = 17 * i + 3 - 6  # Move 6 spaces to the left
-                else:
-                    center_pos = 17 * i + 3  # Default position for the first cell
-                
-                stdscr.addstr(y_offset + 6, center_pos, voltage_str.center(11), color)
-
             stdscr.refresh()  # Update the screen with new voltage readings
             
             logging.debug(f"Balancing progress: {progress * 100:.2f}%, High Voltage: {voltage_high:.2f}V, Low Voltage: {voltage_low:.2f}V")
@@ -448,10 +424,7 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
 
     except Exception as e:
         logging.error(f"Error during balancing process: {e}")
-        logging.info("Error occurred, resetting relay connections to default state.")
-        set_relay_connection(1, 1)  # Ensure all relays are turned off
-        control_dcdc_converter(False)  # Ensure DC-DC converter is off
-        balancing_active = False  # Reset the balancing flag
+        balancing_active = False  # Ensure flag is reset on error
 
 # Handle signals for clean shutdown
 def shutdown_handler(signum, frame):
@@ -515,7 +488,7 @@ def main_program(stdscr):
         while True:
             try:
                 stdscr.clear()
-                battery_voltages = []  # Reset or initialize if not already done
+                battery_voltages = []
                 for i in range(1, config['General']['NumberOfBatteries'] + 1):
                     voltage, _, _ = read_voltage_with_retry(i, number_of_samples=2, max_attempts=2)
                     battery_voltages.append(voltage if voltage is not None else 0.0)
@@ -601,40 +574,6 @@ def main_program(stdscr):
                         balancing_active = True
                         balance_battery_voltages(stdscr, high_battery, low_battery)
                         balancing_active = False
-                        
-                        # Refresh all voltage displays after balancing
-                        y_offset = len(roman_voltage.splitlines()) + 2 + len(battery_art)
-                        for i in range(1, config['General']['NumberOfBatteries'] + 1):
-                            voltage, readings, adc_values = read_voltage_with_retry(i, number_of_samples=2, max_attempts=2)
-                            if voltage is None:
-                                voltage = 0.0
-                            stdscr.addstr(y_offset + i - 1, 0, f"Battery {i}: (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_READINGS_COLOR)
-                            
-                            if readings:
-                                stdscr.addstr(y_offset + i, 0, f"[Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_READINGS_COLOR)
-                            else:
-                                stdscr.addstr(y_offset + i, 0, "  [Readings: No data]", ADC_READINGS_COLOR)
-                            
-                            # Update the voltage on the battery art
-                            if voltage == 0.0:
-                                voltage_str = "0.00V"
-                                color = ERROR_COLOR
-                            else:
-                                voltage_str = f"{voltage:.2f}V"
-                                color = OK_VOLTAGE_COLOR if voltage <= config['General']['AlarmVoltageThreshold'] else HIGH_VOLTAGE_COLOR
-                                color = LOW_VOLTAGE_COLOR if voltage < config['General']['AlarmVoltageThreshold'] - config['General']['VoltageDifferenceToBalance'] else color
-                            
-                            # Adjust position for each cell (same logic as before)
-                            if i - 1 == 1:  # Second cell (0-indexed)
-                                center_pos = 17 * (i - 1) + 3 - 3  # Move 3 spaces to the left
-                            elif i - 1 == 2:  # Third cell (0-indexed)
-                                center_pos = 17 * (i - 1) + 3 - 6  # Move 6 spaces to the left
-                            else:
-                                center_pos = 17 * (i - 1) + 3  # Default position for the first cell
-                            
-                            stdscr.addstr(len(roman_voltage.splitlines()) + 2 + 6, center_pos, voltage_str.center(11), color)
-
-                        stdscr.refresh()
                     else:
                         stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, "  [ OK ]", OK_VOLTAGE_COLOR)
                         if min_voltage == 0:
