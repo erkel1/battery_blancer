@@ -544,7 +544,7 @@ def main_program(stdscr):
                         
                     if readings:
                         with shared_lock:
-                            stdscr.addstr(y_offset + i, 0, f"  [Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_READINGS_COLOR)
+                            stdscr.addstr(y_offset + i, 0, f"[Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_READINGS_COLOR)
 
                 if len(battery_voltages) == config['General']['NumberOfBatteries']:
                     if balancing_task is None or not balancing_task.is_alive():
