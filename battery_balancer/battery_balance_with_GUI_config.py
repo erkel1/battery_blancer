@@ -362,21 +362,14 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
         high_voltage_battery (int): Battery with higher voltage (1-indexed).
         low_voltage_battery (int): Battery with lower voltage (1-indexed).
     """
-    try:    
+    try:
         global balance_start_time
         logging.info(f"Starting balance from Battery {high_voltage_battery} to {low_voltage_battery}")
 
-        logging.info(f"Reading voltage for high battery {high_voltage_battery}")
+        # Initial voltage reading
         voltage_high, _, _ = read_voltage_with_retry(high_voltage_battery)
-        logging.debug(f"Voltage high: {voltage_high}")
-
-        logging.info(f"Reading voltage for low battery {low_voltage_battery}")
         voltage_low, _, _ = read_voltage_with_retry(low_voltage_battery)
-        logging.debug(f"Voltage low: {voltage_low}")
-
-        voltage_high = voltage_high if voltage_high is not None else 0.0
-        voltage_low = voltage_low if voltage_low is not None else 0.0
-
+        
         if voltage_low == 0.0:
             logging.warning(f"Cannot balance to Battery {low_voltage_battery} as it shows 0.00V. Skipping balancing.")
             stdscr.addstr(10, 0, f"Cannot balance to Battery {low_voltage_battery} (0.00V).", curses.color_pair(8))
@@ -398,16 +391,23 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
             elapsed_time = time.time() - balance_start_time
             progress = min(1.0, elapsed_time / config['General']['BalanceDurationSeconds'])
             
+            # Re-read voltages during balancing
+            voltage_high, _, _ = read_voltage_with_retry(high_voltage_battery)
+            voltage_low, _, _ = read_voltage_with_retry(low_voltage_battery)
+            
+            voltage_high = voltage_high if voltage_high is not None else 0.0
+            voltage_low = voltage_low if voltage_low is not None else 0.0
+
             # Make a simple progress bar for the screen
             bar_length = 20
             filled_length = int(bar_length * progress)
             bar = '=' * filled_length + ' ' * (bar_length - filled_length)
             
-            stdscr.addstr(10, 0, f"Balancing Battery {high_voltage_battery} ({voltage_high:.2f}V) -> Battery {low_voltage_battery} ({voltage_low:.2f}V)... [{animation_frames[frame_index % len(animation_frames)]}]")
-            stdscr.addstr(11, 0, f"Progress: [{bar}] {int(progress * 100)}%")
-            stdscr.refresh()
+            stdscr.addstr(10, 0, f"Balancing Battery {high_voltage_battery} ({voltage_high:.2f}V) -> Battery {low_voltage_battery} ({voltage_low:.2f}V)... [{animation_frames[frame_index % len(animation_frames)]}]", curses.color_pair(6))  # BALANCE_COLOR
+            stdscr.addstr(11, 0, f"Progress: [{bar}] {int(progress * 100)}%", curses.color_pair(6))  # BALANCE_COLOR
+            stdscr.refresh()  # Update the screen with new voltage readings
             
-            logging.debug(f"Balancing progress: {progress * 100:.2f}%")
+            logging.debug(f"Balancing progress: {progress * 100:.2f}%, High Voltage: {voltage_high:.2f}V, Low Voltage: {voltage_low:.2f}V")
             
             frame_index += 1
             time.sleep(0.01)  # Small delay to not update too frequently
