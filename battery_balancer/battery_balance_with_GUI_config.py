@@ -290,6 +290,10 @@ def balance_cells(stdscr, high_cell, low_cell):
     voltage_high, _, adc_raw_high = read_voltage_with_retry(high_cell)
     voltage_low, _, _ = read_voltage_with_retry(low_cell)
 
+    # Use default values if voltage readings are None
+    voltage_high = voltage_high if voltage_high is not None else 0.0
+    voltage_low = voltage_low if voltage_low is not None else 0.0
+
     # Animation frames for visual feedback in the TUI
     animation_frames = ['|', '/', '-', '\\']
     
@@ -334,51 +338,86 @@ def main(stdscr):
 
         # ASCII art for the GUI
         ascii_art = [
-            "  _______   _______   _______  ",
-            " |       | |       | |       | ",
-            " |  BAT  | |  BAT  | |  BAT  | ",
-            " |_______| |_______| |_______| ",
-            "   [_____]   [_____]   [_____]",
-            "    |  |       |  |       |  | ",
-            "    |  |       |  |       |  | ",
-            "    |  |       |  |       |  | ",
-            "    |__|       |__|       |__| "
+            "   ___________   ___________   ___________   ",
+            "  |           | |           | |           |  ",
+            "  |           | |           | |           |  ",
+            "  |           | |           | |           |  ",
+            "  |           | |           | |           |  ",
+            "  |    +++    | |    +++    | |    +++    |  ",
+            "  |    +++    | |    +++    | |    +++    |  ",
+            "  |           | |           | |           |  ",
+            "  |           | |           | |           |  ",
+            "  |           | |           | |           |  ",
+            "  |           | |           | |           |  ",
+            "  |    ---    | |    ---    | |    ---    |  ",
+            "  |    ---    | |    ---    | |    ---    |  ",
+            "  |    ---    | |    ---    | |    ---    |  ",
+            "  |           | |           | |           |  ",
+            "  |           | |           | |           |  ",
+            "  |___________| |___________| |___________|  "
         ]
 
         while True:
             stdscr.clear()
-            # Display ASCII art
+            # Display ASCII art with voltages
+            voltages = []
+            for i in range(NUM_CELLS):
+                voltage, readings, adc_values = read_voltage_with_retry(i, num_samples=NUM_SAMPLES)
+                if voltage is None:
+                    voltages.append("Error")
+                else:
+                    voltages.append(voltage)
+            
             for i, line in enumerate(ascii_art):
-                stdscr.addstr(i, 0, line, INFO_COLOR)
+                # Determine color based on voltage
+                for j, volt in enumerate(voltages):
+                    if volt == "Error":
+                        color = ERROR_COLOR
+                    elif isinstance(volt, float):
+                        if volt > ALARM_VOLTAGE_THRESHOLD:
+                            color = HIGH_VOLTAGE_COLOR
+                        elif volt < ALARM_VOLTAGE_THRESHOLD - BALANCE_THRESHOLD:
+                            color = LOW_VOLTAGE_COLOR
+                        else:
+                            color = OK_VOLTAGE_COLOR
+                    else:
+                        color = INFO_COLOR  # Default color if voltage can't be interpreted
+
+                    # Adjust the position where the battery starts on the line
+                    start_pos = j * 17  # Assuming each battery takes up 17 characters width
+                    end_pos = start_pos + 17
+                    
+                    # Slice the line for the specific battery and apply color
+                    stdscr.addstr(i, start_pos, line[start_pos:end_pos], color)
+
+                # Add voltage inside the battery cell at the 7th line
+                for j, volt in enumerate(voltages):
+                    if isinstance(volt, float):
+                        voltage_str = f"{volt:.2f}V"
+                        color = OK_VOLTAGE_COLOR if volt <= ALARM_VOLTAGE_THRESHOLD else HIGH_VOLTAGE_COLOR
+                        color = LOW_VOLTAGE_COLOR if volt < ALARM_VOLTAGE_THRESHOLD - BALANCE_THRESHOLD else color
+                        stdscr.addstr(6, 17 * j + 3, voltage_str.center(11), color)  # Centering the voltage string
+                    else:
+                        stdscr.addstr(6, 17 * j + 3, "Error".center(11), ERROR_COLOR)
 
             stdscr.addstr(len(ascii_art) + 1, 0, "Battery Balancer TUI", TITLE_COLOR)
             stdscr.hline(len(ascii_art) + 2, 0, curses.ACS_HLINE, curses.COLS - 1)
             
-            voltages = []
             y_offset = len(ascii_art) + 3
             for i in range(NUM_CELLS):
                 voltage, readings, adc_values = read_voltage_with_retry(i, num_samples=NUM_SAMPLES)
                 if voltage is None:
                     stdscr.addstr(y_offset + i, 0, f"Cell {i+1}: Error reading voltage", ERROR_COLOR)
                 else:
-                    voltages.append(voltage)
-                    voltage_color = OK_VOLTAGE_COLOR
-                    if voltage > ALARM_VOLTAGE_THRESHOLD:
-                        voltage_color = HIGH_VOLTAGE_COLOR
-                    elif voltage < ALARM_VOLTAGE_THRESHOLD - BALANCE_THRESHOLD:  # Assuming this is your low voltage threshold
-                        voltage_color = LOW_VOLTAGE_COLOR
-                    
-                    stdscr.addstr(y_offset + i, 0, f"Cell {i+1}: ", INFO_COLOR)
-                    stdscr.addstr(f"{voltage:.2f}V", voltage_color)
-                    stdscr.addstr(f" (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_READINGS_COLOR)
+                    stdscr.addstr(y_offset + i, 0, f"Cell {i+1}: (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_READINGS_COLOR)
                 
                 if readings:
                     stdscr.addstr(y_offset + i + 1, 0, f"  [Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_READINGS_COLOR)
 
-            if voltages and len(voltages) == NUM_CELLS:
+            if len(voltages) == NUM_CELLS:
                 if balancing_thread is None or not balancing_thread.is_alive():
-                    max_voltage = max(voltages)
-                    min_voltage = min(voltages)
+                    max_voltage = max([v for v in voltages if isinstance(v, float)], default=0)
+                    min_voltage = min([v for v in voltages if isinstance(v, float)], default=0)
                     high_cell = voltages.index(max_voltage)
                     low_cell = voltages.index(min_voltage)
 
