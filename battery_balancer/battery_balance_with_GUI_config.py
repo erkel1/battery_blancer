@@ -435,16 +435,8 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
         control_dcdc_converter(False)  # Turn off DC-DC converter
         set_relay_connection(0, 0)  # All relays off
         balancing_active = False  # Ensure flag is reset on any exit condition
-
-# Handle signals for clean shutdown
-def shutdown_handler(signum, frame):
-    logging.info("Received shutdown signal, cleaning up.")
-    GPIO.cleanup()
-    sys.exit(0)
-
-# Register to handle shutdown signals
-signal.signal(signal.SIGTERM, shutdown_handler)
-signal.signal(signal.SIGINT, shutdown_handler)
+        global last_balance_time
+        last_balance_time = time.time()  # Update last balance time when exiting balancing
 
 
 def main_program(stdscr):
@@ -588,7 +580,6 @@ def main_program(stdscr):
                         if current_time - last_balance_time > config['General']['BalanceRestPeriodSeconds']:
                             balancing_active = True
                             balance_battery_voltages(stdscr, high_battery, low_battery)
-                            last_balance_time = current_time  # Update the last balance time
                             balancing_active = False
                         else:
                             # Inform user that balancing is deferred
@@ -617,8 +608,6 @@ def main_program(stdscr):
     except Exception as e:
         logging.critical(f"A serious error in the main loop: {e}")
         raise
-
-
 
 if __name__ == '__main__':
     try:
