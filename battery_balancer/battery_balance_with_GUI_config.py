@@ -263,26 +263,24 @@ def set_relay_connection(high_voltage_battery, low_voltage_battery):
                     relay_state |= (1 << 1)  # Turn on relay 2
                     logging.debug("Relays 1 and 2 activated.")
                 elif high_voltage_battery == 1 and low_voltage_battery == 2:
-                    relay_state |= (1 << 2)  # Turn on relay 3
-                    logging.debug("Relay 3 activated.")
+                    relay_state |= (1 << 1)  # Turn on relay 2
+                    logging.debug("Relay 2 activated.")
                 elif high_voltage_battery == 1 and low_voltage_battery == 3:
+                    relay_state |= (1 << 1)  # Turn on relay 2
                     relay_state |= (1 << 2)  # Turn on relay 3
-                    relay_state |= (1 << 3)  # Turn on relay 4
-                    logging.debug("Relays 3 and 4 activated.")
+                    logging.debug("Relays 2 and 3 activated.")
                 elif high_voltage_battery == 2 and low_voltage_battery == 3:
                     relay_state |= (1 << 0)  # Turn on relay 1
                     relay_state |= (1 << 2)  # Turn on relay 3
-                    relay_state |= (1 << 3)  # Turn on relay 4
-                    logging.debug("Relays 1, 3, and 4 activated.")
+                    logging.debug("Relays 1 and 3 activated.")
                 elif high_voltage_battery == 3 and low_voltage_battery == 2:
                     relay_state |= (1 << 1)  # Turn on relay 2
                     relay_state |= (1 << 2)  # Turn on relay 3
-                    relay_state |= (1 << 3)  # Turn on relay 4
-                    logging.debug("Relays 2, 3, and 4 activated.")
+                    logging.debug("Relays 2 and 3 activated.")
 
             logging.debug(f"Final relay state: {bin(relay_state)}")
             logging.info(f"Sending relay state command to hardware.")
-            bus.write_byte_data(config['I2C']['RelayAddress'], 0x10, relay_state)
+            bus.write_byte_data(config['I2C']['RelayAddress'], 0x11, relay_state)  # Changed from 0x10 to 0x11
         finally:
             logging.debug("Releasing shared_lock")
             shared_lock.release()  # Release the lock after all operations
@@ -293,7 +291,7 @@ def set_relay_connection(high_voltage_battery, low_voltage_battery):
     except Exception as e:
         logging.error(f"Unexpected error in set_relay_connection: {e}")
 
-        
+
 def control_dcdc_converter(turn_on):
     """
     Turn the DC-DC converter on or off using GPIO.
