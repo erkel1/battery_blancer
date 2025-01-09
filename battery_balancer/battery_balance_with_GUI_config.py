@@ -497,6 +497,10 @@ def main_program(stdscr):
         balancing_active = False  # Flag to indicate if balancing is active
         last_balance_time = 0  # New global variable for balancing timer
 
+        # For rolling average, we'll use a list to store the last 50 samples (5s at 1/10s interval)
+        voltage_samples = [[] for _ in range(config['General']['NumberOfBatteries'])]  # List of lists for each battery
+        sample_count = 0  # Counter for samples
+
         while True:
             try:
                 stdscr.clear()
@@ -506,6 +510,17 @@ def main_program(stdscr):
                 for i in range(1, config['General']['NumberOfBatteries'] + 1):
                     voltage, _, _ = read_voltage_with_retry(i, number_of_samples=2, max_attempts=2)
                     real_time_voltages.append(voltage if voltage is not None else 0.0)
+
+                    # Add the voltage to the rolling average list
+                    voltage_samples[i-1].append(voltage if voltage is not None else 0.0)
+                    # Keep only the last 50 samples (assuming 5 seconds of data at 10 samples per second)
+                    if len(voltage_samples[i-1]) > 50:
+                        voltage_samples[i-1].pop(0)  # Remove the oldest sample
+
+                # Increment sample count for timing
+                sample_count += 1
+                if sample_count >= 50:  # Reset after 50 samples to avoid overflow
+                    sample_count = 0
 
                 # Total voltage of all batteries for GUI display
                 total_voltage = sum(real_time_voltages)
@@ -578,61 +593,56 @@ def main_program(stdscr):
                         stdscr.addstr(y_offset + i, 0, "  [Readings: No data]", ADC_READINGS_COLOR)
                     y_offset += 1  # Increment y_offset for each battery's readings line
 
-                # Collect voltage readings for 5 seconds for balancing decision
-                voltage_samples = []
-                start_time = time.time()
-                while time.time() - start_time < 5:  # 5 second sampling period
-                    sample_voltages = []
-                    for i in range(1, config['General']['NumberOfBatteries'] + 1):
-                        voltage, _, _ = read_voltage_with_retry(i, number_of_samples=2, max_attempts=2)
-                        sample_voltages.append(voltage if voltage is not None else 0.0)
-                    voltage_samples.append(sample_voltages)
-                    time.sleep(0.1)  # Sample every 0.1 seconds for smoothness, adjust as needed
-
-                if voltage_samples:
-                    # Calculate average voltage for each battery over the samples for balancing decision
-                    averaged_voltages = [sum(voltages) / len(voltages) for voltages in zip(*voltage_samples)]
-                else:
-                    # Fallback in case of no samples, though unlikely
-                    averaged_voltages = real_time_voltages
-
-                if len(averaged_voltages) == config['General']['NumberOfBatteries']:
-                    max_voltage = max(averaged_voltages)
-                    min_voltage = min(averaged_voltages)
-                    high_battery = averaged_voltages.index(max_voltage) + 1  # +1 for 1-indexed
-                    low_battery = averaged_voltages.index(min_voltage) + 1  # +1 for 1-indexed
-
-                    # Check if balancing should be deferred
-                    current_time = time.time()
-                    if max_voltage - min_voltage > config['General']['VoltageDifferenceToBalance'] and min_voltage > 0:
-                        if current_time - last_balance_time > config['General']['BalanceRestPeriodSeconds']:
-                            balancing_active = True
-                            balance_battery_voltages(stdscr, high_battery, low_battery)
-                            last_balance_time = current_time  # Update the last balance time
-                            balancing_active = False
+                # Calculate rolling average for balancing decision
+                if sample_count % 10 == 0:  # Calculate average every 1 second (assuming 10 samples per second)
+                    averaged_voltages = []
+                    for samples in voltage_samples:
+                        if samples:
+                            averaged_voltages.append(sum(samples) / len(samples))
                         else:
-                            # Inform user that balancing is deferred
-                            stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, "  [ WAIT ]", INFO_COLOR)
-                            stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, f"Balancing deferred for {int(config['General']['BalanceRestPeriodSeconds'] - (current_time - last_balance_time))} more seconds.", INFO_COLOR)
-                    else:
-                        stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, "  [ OK ]", OK_VOLTAGE_COLOR)
-                        if min_voltage == 0:
-                            stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, "No balancing possible due to zero voltage battery.", ERROR_COLOR)
+                            averaged_voltages.append(0.0)  # Handle case where no samples collected yet
+
+                    if len(averaged_voltages) == config['General']['NumberOfBatteries']:
+                        max_voltage = max(averaged_voltages)
+                        min_voltage = min(averaged_voltages)
+                        high_battery = averaged_voltages.index(max_voltage) + 1  # +1 for 1-indexed
+                        low_battery = averaged_voltages.index(min_voltage) + 1  # +1 for 1-indexed
+
+                        # Check if balancing should be deferred
+                        current_time = time.time()
+                        if max_voltage - min_voltage > config['General']['VoltageDifferenceToBalance'] and min_voltage > 0:
+                            if current_time - last_balance_time > config['General']['BalanceRestPeriodSeconds']:
+                                balancing_active = True
+                                balance_battery_voltages(stdscr, high_battery, low_battery)
+                                last_balance_time = current_time  # Update the last balance time
+                                balancing_active = False
+                            else:
+                                # Inform user that balancing is deferred
+                                stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, "  [ WAIT ]", INFO_COLOR)
+                                stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, f"Balancing deferred for {int(config['General']['BalanceRestPeriodSeconds'] - (current_time - last_balance_time))} more seconds.", INFO_COLOR)
                         else:
-                            stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, "No need to balance, voltages are good.", INFO_COLOR)
+                            stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, "  [ OK ]", OK_VOLTAGE_COLOR)
+                            if min_voltage == 0:
+                                stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, "No balancing possible due to zero voltage battery.", ERROR_COLOR)
+                            else:
+                                stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, "No need to balance, voltages are good.", INFO_COLOR)
 
                 # Check if we need to sound any alarms - using real-time voltages here
                 check_for_voltage_issues(real_time_voltages)
 
                 stdscr.refresh()
                 
-                time.sleep(config['General']['SleepTimeBetweenChecks'])
+                time.sleep(config['General']['SleepTimeBetweenChecks'] / 10)  # Adjust sleep time to get 10 samples per second
 
             except Exception as e:
                 logging.error(f"Something went wrong in the main loop: {e}")
                 stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 5, 0, f"Error: {e}", ERROR_COLOR)
                 stdscr.refresh()  # Refresh to show the error
                 time.sleep(0.1)  # Keep this brief
+
+    except Exception as e:
+        logging.critical(f"A serious error in the main loop: {e}")
+        raise
 
     except Exception as e:
         logging.critical(f"A serious error in the main loop: {e}")
