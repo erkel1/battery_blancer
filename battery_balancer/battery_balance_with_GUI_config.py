@@ -466,6 +466,7 @@ def main_program(stdscr):
             "  |           | |           | |           |  ",
             "  |___________| |___________| |___________|  "
         ]
+
         while True:
             try:
                 stdscr.clear()
@@ -537,14 +538,19 @@ def main_program(stdscr):
                 y_offset += len(battery_art)  # Move cursor down after drawing
                 for i in range(1, config['General']['NumberOfBatteries'] + 1):
                     voltage, readings, adc_values = read_voltage_with_retry(i, number_of_samples=2, max_attempts=2)
+                    logging.debug(f"Battery {i} - Voltage: {voltage}, ADC: {adc_values}, Readings: {readings}")
                     if voltage is None:
                         voltage = 0.0
                     with shared_lock:
                         stdscr.addstr(y_offset + i - 1, 0, f"Battery {i}: (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_READINGS_COLOR)
-                        
+                    
                     if readings:
                         with shared_lock:
                             stdscr.addstr(y_offset + i, 0, f"[Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_READINGS_COLOR)
+                    else:
+                        with shared_lock:
+                            stdscr.addstr(y_offset + i, 0, "  [Readings: No data]", ADC_READINGS_COLOR)
+                    y_offset += 1  # Increment y_offset for each battery's readings line
 
                 if len(battery_voltages) == config['General']['NumberOfBatteries']:
                     if balancing_task is None or not balancing_task.is_alive():
