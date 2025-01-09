@@ -1,3 +1,4 @@
+python
 import smbus
 import time
 import configparser
@@ -12,8 +13,16 @@ import os
 import signal
 from art import text2art  # Importing the art library
 
+# Load settings from config.ini
+config = configparser.ConfigParser()
+config.read('config.ini')
+
 # Setup logging for tracking what's happening
-logging.basicConfig(level=logging.INFO, 
+# Set logging level from config file
+logging_level = getattr(logging, config['General']['LoggingLevel'].upper(), None)
+if not isinstance(logging_level, int):
+    raise ValueError('Invalid log level: %s' % config['General']['LoggingLevel'])
+logging.basicConfig(level=logging_level, 
                     format='%(asctime)s - %(levelname)s - %(message)s',
                     filename='battery_balancer.log',
                     filemode='a')  
@@ -59,7 +68,8 @@ def load_settings():
                 'NumberOfSamples': config.getint('General', 'NumberOfSamples'),
                 'MaxRetries': config.getint('General', 'MaxRetries'),
                 'EmailAlertIntervalSeconds': config.getint('General', 'EmailAlertIntervalSeconds'),
-                'I2C_BusNumber': config.getint('General', 'I2C_BusNumber')
+                'I2C_BusNumber': config.getint('General', 'I2C_BusNumber'),
+                'LoggingLevel': config.get('General', 'LoggingLevel', fallback='INFO').upper()
             },
             'I2C': {
                 'MultiplexerAddress': int(config.get('I2C', 'MultiplexerAddress'), 16),
