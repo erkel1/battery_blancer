@@ -360,8 +360,8 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
         low_voltage_battery (int): Battery with lower voltage (1-indexed).
     """
     try:
-        global balance_start_time, battery_voltages
-        balancing_active = True  # Flag to indicate balancing is occurring
+        global balance_start_time, battery_voltages, balancing_active
+        balancing_active = True  # Set flag to indicate balancing is occurring
 
         logging.info(f"Starting balance from Battery {high_voltage_battery} to {low_voltage_battery}")
 
@@ -373,6 +373,7 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
             logging.warning(f"Cannot balance to Battery {low_voltage_battery} as it shows 0.00V. Skipping balancing.")
             stdscr.addstr(10, 0, f"Cannot balance to Battery {low_voltage_battery} (0.00V).", curses.color_pair(8))
             stdscr.refresh()
+            balancing_active = False
             return
 
         animation_frames = ['|', '/', '-', '\\']
@@ -408,7 +409,7 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
             stdscr.addstr(11, 0, f"Progress: [{bar}] {int(progress * 100)}%", curses.color_pair(6))  # BALANCE_COLOR
             
             # Update all battery voltages on the GUI
-            y_offset = 12  # Assuming this is where battery art starts; adjust as necessary
+            y_offset = 12  # Adjust based on where battery art starts
             for i, volt in enumerate(battery_voltages):
                 if volt == 0.0:
                     voltage_str = "0.00V"
@@ -447,7 +448,10 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
 
     except Exception as e:
         logging.error(f"Error during balancing process: {e}")
-        balancing_active = False  # Ensure flag is reset on error
+        logging.info("Error occurred, resetting relay connections to default state.")
+        set_relay_connection(1, 1)  # Ensure all relays are turned off
+        control_dcdc_converter(False)  # Ensure DC-DC converter is off
+        balancing_active = False  # Reset the balancing flag
 
 # Handle signals for clean shutdown
 def shutdown_handler(signum, frame):
