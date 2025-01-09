@@ -218,36 +218,51 @@ def set_relay_connection(high_voltage_battery, low_voltage_battery):
         low_voltage_battery (int): Battery with lower voltage (1-indexed).
     """
     try:
+        logging.info(f"Attempting to set relay for connection from Battery {high_voltage_battery} to {low_voltage_battery}")
         with shared_lock:
+            logging.debug("Switching to relay control channel.")
             choose_channel(3)  # Relay module is on channel 3
             relay_state = 0
+            logging.debug(f"Initial relay state: {bin(relay_state)}")
+
             if high_voltage_battery == low_voltage_battery or high_voltage_battery < 1 or low_voltage_battery < 1:
+                logging.debug("No need for relay activation; all relays off.")
                 relay_state = 0  # All relays off, cell 1 links to cell 1
             else:
                 # Relay mapping (actual setup might differ based on hardware)
                 if high_voltage_battery == 2 and low_voltage_battery == 1:
                     relay_state |= (1 << 0)  # Turn on relay 1
+                    logging.debug("Relay 1 activated.")
                 elif high_voltage_battery == 3 and low_voltage_battery == 1:
                     relay_state |= (1 << 0)  # Turn on relay 1
                     relay_state |= (1 << 1)  # Turn on relay 2
+                    logging.debug("Relays 1 and 2 activated.")
                 elif high_voltage_battery == 1 and low_voltage_battery == 2:
                     relay_state |= (1 << 2)  # Turn on relay 3
+                    logging.debug("Relay 3 activated.")
                 elif high_voltage_battery == 1 and low_voltage_battery == 3:
                     relay_state |= (1 << 2)  # Turn on relay 3
                     relay_state |= (1 << 3)  # Turn on relay 4
+                    logging.debug("Relays 3 and 4 activated.")
                 elif high_voltage_battery == 2 and low_voltage_battery == 3:
                     relay_state |= (1 << 0)  # Turn on relay 1
                     relay_state |= (1 << 2)  # Turn on relay 3
                     relay_state |= (1 << 3)  # Turn on relay 4
+                    logging.debug("Relays 1, 3, and 4 activated.")
                 elif high_voltage_battery == 3 and low_voltage_battery == 2:
                     relay_state |= (1 << 1)  # Turn on relay 2
                     relay_state |= (1 << 2)  # Turn on relay 3
                     relay_state |= (1 << 3)  # Turn on relay 4
-                
+                    logging.debug("Relays 2, 3, and 4 activated.")
+
+            logging.debug(f"Final relay state: {bin(relay_state)}")
+            logging.info(f"Sending relay state command to hardware.")
             bus.write_byte_data(config['I2C']['RelayAddress'], 0x10, relay_state)
-        logging.info(f"Set up relay for balancing from Battery {high_voltage_battery} to Battery {low_voltage_battery}")
+        logging.info(f"Relay setup completed for balancing from Battery {high_voltage_battery} to Battery {low_voltage_battery}")
     except IOError as e:
-        logging.error(f"Error setting up relay: {e}")
+        logging.error(f"I/O error while setting up relay: {e}")
+    except Exception as e:
+        logging.error(f"Unexpected error in set_relay_connection: {e}")
 
 def control_dcdc_converter(turn_on):
     """
