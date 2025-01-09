@@ -1,4 +1,3 @@
-python
 import smbus
 import time
 import configparser
