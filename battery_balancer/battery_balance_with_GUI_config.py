@@ -281,6 +281,7 @@ def set_relay_connection(high_voltage_battery, low_voltage_battery):
             logging.debug(f"Final relay state: {bin(relay_state)}")
             logging.info(f"Sending relay state command to hardware.")
             bus.write_byte_data(config['I2C']['RelayAddress'], 0x11, relay_state)  # Changed from 0x10 to 0x11
+            time.sleep(1)
         finally:
             logging.debug("Releasing shared_lock")
             shared_lock.release()  # Release the lock after all operations
