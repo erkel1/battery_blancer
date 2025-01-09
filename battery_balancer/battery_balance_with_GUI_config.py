@@ -497,29 +497,18 @@ def main_program(stdscr):
         balancing_active = False  # Flag to indicate if balancing is active
         last_balance_time = 0  # New global variable for balancing timer
 
-        # For rolling average, we'll use a list to store the last 50 samples
-        voltage_samples = [[] for _ in range(config['General']['NumberOfBatteries'])]  # List of lists for each battery
-
         while True:
             try:
                 stdscr.clear()
-                
-                # For GUI display, use real-time voltages
-                real_time_voltages = []
+                battery_voltages = []
                 for i in range(1, config['General']['NumberOfBatteries'] + 1):
                     voltage, _, _ = read_voltage_with_retry(i, number_of_samples=2, max_attempts=2)
-                    real_time_voltages.append(voltage if voltage is not None else 0.0)
-
-                    # Add the voltage to the rolling average list
-                    voltage_samples[i-1].append(voltage if voltage is not None else 0.0)
-                    # Keep only the last 50 samples
-                    if len(voltage_samples[i-1]) > 50:
-                        voltage_samples[i-1].pop(0)  # Remove the oldest sample
-
-                # Total voltage of all batteries for GUI display
-                total_voltage = sum(real_time_voltages)
+                    battery_voltages.append(voltage if voltage is not None else 0.0)
                 
-                # Determine color based on total battery voltage (for GUI)
+                # Total voltage of all batteries
+                total_voltage = sum(battery_voltages)
+                
+                # Determine color based on total battery voltage
                 total_voltage_high = config['General']['AlarmVoltageThreshold'] * config['General']['NumberOfBatteries']
                 total_voltage_low = total_voltage_high - config['General']['VoltageDifferenceToBalance'] * config['General']['NumberOfBatteries']
                 
@@ -540,7 +529,7 @@ def main_program(stdscr):
                 
                 y_offset = len(roman_voltage.splitlines()) + 2
                 for i, line in enumerate(battery_art):
-                    for j, volt in enumerate(real_time_voltages):
+                    for j, volt in enumerate(battery_voltages):
                         if volt == 0.0:
                             color = ERROR_COLOR
                         elif volt > config['General']['AlarmVoltageThreshold']:
@@ -554,7 +543,7 @@ def main_program(stdscr):
                         end_pos = start_pos + 17
                         stdscr.addstr(i + y_offset, start_pos, line[start_pos:end_pos], color)
 
-                    for j, volt in enumerate(real_time_voltages):
+                    for j, volt in enumerate(battery_voltages):
                         if volt == 0.0:
                             voltage_str = "0.00V"
                             color = ERROR_COLOR
@@ -587,19 +576,11 @@ def main_program(stdscr):
                         stdscr.addstr(y_offset + i, 0, "  [Readings: No data]", ADC_READINGS_COLOR)
                     y_offset += 1  # Increment y_offset for each battery's readings line
 
-                # Calculate rolling average for balancing decision
-                averaged_voltages = []
-                for samples in voltage_samples:
-                    if samples:
-                        averaged_voltages.append(sum(samples) / len(samples))
-                    else:
-                        averaged_voltages.append(0.0)  # Handle case where no samples collected yet
-
-                if len(averaged_voltages) == config['General']['NumberOfBatteries']:
-                    max_voltage = max(averaged_voltages)
-                    min_voltage = min(averaged_voltages)
-                    high_battery = averaged_voltages.index(max_voltage) + 1  # +1 for 1-indexed
-                    low_battery = averaged_voltages.index(min_voltage) + 1  # +1 for 1-indexed
+                if len(battery_voltages) == config['General']['NumberOfBatteries']:
+                    max_voltage = max(battery_voltages)
+                    min_voltage = min(battery_voltages)
+                    high_battery = battery_voltages.index(max_voltage) + 1  # +1 for 1-indexed
+                    low_battery = battery_voltages.index(min_voltage) + 1  # +1 for 1-indexed
 
                     # Check if balancing should be deferred
                     current_time = time.time()
@@ -620,12 +601,12 @@ def main_program(stdscr):
                         else:
                             stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, "No need to balance, voltages are good.", INFO_COLOR)
 
-                # Check if we need to sound any alarms - using real-time voltages here
-                check_for_voltage_issues(real_time_voltages)
+                # Check if we need to sound any alarms
+                check_for_voltage_issues(battery_voltages)
 
                 stdscr.refresh()
                 
-                time.sleep(config['General']['SleepTimeBetweenChecks'])  # Use the original sleep time
+                time.sleep(config['General']['SleepTimeBetweenChecks'])
 
             except Exception as e:
                 logging.error(f"Something went wrong in the main loop: {e}")
@@ -636,6 +617,8 @@ def main_program(stdscr):
     except Exception as e:
         logging.critical(f"A serious error in the main loop: {e}")
         raise
+
+
 
 if __name__ == '__main__':
     try:
