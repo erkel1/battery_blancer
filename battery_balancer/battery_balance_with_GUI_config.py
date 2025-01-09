@@ -219,7 +219,15 @@ def set_relay_connection(high_voltage_battery, low_voltage_battery):
     """
     try:
         logging.info(f"Attempting to set relay for connection from Battery {high_voltage_battery} to {low_voltage_battery}")
-        with shared_lock:
+        logging.debug("Before acquiring shared_lock")
+        
+        # Change to using a timeout for acquiring the lock
+        if not shared_lock.acquire(timeout=5):  # 5 seconds timeout
+            logging.error("Failed to acquire shared_lock after 5 seconds.")
+            return  # or handle as needed
+
+        try:
+            logging.debug("Shared lock acquired")
             logging.debug("Switching to relay control channel.")
             choose_channel(3)  # Relay module is on channel 3
             relay_state = 0
@@ -258,6 +266,9 @@ def set_relay_connection(high_voltage_battery, low_voltage_battery):
             logging.debug(f"Final relay state: {bin(relay_state)}")
             logging.info(f"Sending relay state command to hardware.")
             bus.write_byte_data(config['I2C']['RelayAddress'], 0x10, relay_state)
+        finally:
+            logging.debug("Releasing shared_lock")
+            shared_lock.release()  # Ensure the lock is explicitly released
         logging.info(f"Relay setup completed for balancing from Battery {high_voltage_battery} to Battery {low_voltage_battery}")
     except IOError as e:
         logging.error(f"I/O error while setting up relay: {e}")
@@ -440,11 +451,17 @@ def keep_watching():
     while True:
         time.sleep(60)  # Check every 60 seconds
         if balancing_task and not balancing_task.is_alive():
-            logging.error("Balancing task stopped unexpectedly! Restarting.")
-            os.execv(sys.executable, ['python'] + sys.argv)
+            logging.debug("Before acquiring shared_lock for watchdog")
+            with shared_lock:  # Ensure lock is used correctly here
+                logging.error("Balancing task stopped unexpectedly! Restarting.")
+                os.execv(sys.executable, ['python'] + sys.argv)
+            logging.debug("Shared lock released by watchdog")
         # Reset balancing_task if it was running but has now finished
         elif balancing_task and not balancing_task.is_alive():
-            balancing_task = None
+            logging.debug("Before resetting balancing_task")
+            with shared_lock:  # Use lock even for resetting
+                balancing_task = None
+            logging.debug("Balancing task reset")
         time.sleep(1)  # Small delay to not overload CPU
 
 # Handle signals for clean shutdown
