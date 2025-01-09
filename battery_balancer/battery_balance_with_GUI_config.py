@@ -53,7 +53,7 @@ def load_settings():
                 'NumberOfBatteries': config.getint('General', 'NumberOfBatteries'),
                 'VoltageDifferenceToBalance': config.getfloat('General', 'VoltageDifferenceToBalance'),
                 'BalanceDurationSeconds': config.getint('General', 'BalanceDurationSeconds'),
-                'SleepTimeBetweenChecks': config.getint('General', 'SleepTimeBetweenChecks'),
+                'SleepTimeBetweenChecks': config.getfloat('General', 'SleepTimeBetweenChecks'),
                 'BalanceRestPeriodSeconds': config.getint('General', 'BalanceRestPeriodSeconds'),
                 'AlarmVoltageThreshold': config.getfloat('General', 'AlarmVoltageThreshold'),
                 'NumberOfSamples': config.getint('General', 'NumberOfSamples'),
@@ -146,7 +146,7 @@ def setup_voltage_meter():
     except IOError as e:
         logging.error(f"Couldn't set up the voltage meter: {e}")
 
-def read_voltage_with_retry(battery_id, number_of_samples=5, allowed_difference=0.01, max_attempts=5):
+def read_voltage_with_retry(battery_id, number_of_samples=2, allowed_difference=0.01, max_attempts=2):
     """
     Try to read the voltage of a battery several times to get a reliable measurement.
     
@@ -175,11 +175,11 @@ def read_voltage_with_retry(battery_id, number_of_samples=5, allowed_difference=
                     except IOError:
                         if setup_attempt == 2:  # all attempts failed
                             raise
-                        time.sleep(0.1)  # wait before next attempt
+                        time.sleep(0.01)  # wait before next attempt
                 
                 with shared_lock:
                     bus.write_byte(config['I2C']['VoltageMeterAddress'], 0x01)  # Start conversion
-                time.sleep(0.3)  # Increased delay, adjust if needed
+                time.sleep(0.05)  # Decreased delay for faster readings
                 with shared_lock:
                     raw_adc = bus.read_word_data(config['I2C']['VoltageMeterAddress'], config['ADC']['ConversionRegister']) & 0xFFFF
                 logging.debug(f"Raw ADC value for Battery {battery_id}: {raw_adc}")
@@ -204,7 +204,7 @@ def read_voltage_with_retry(battery_id, number_of_samples=5, allowed_difference=
         except IOError as e:
             logging.warning(f"Couldn't read voltage for Battery {battery_id}: {e}")
             continue
-        time.sleep(5)  # Wait before next attempt
+        time.sleep(0.01)  # Reduced from 5, adjust as needed
 
     logging.error(f"Couldn't get a good voltage reading for Battery {battery_id} after {max_attempts} tries")
     return None, [], []
@@ -390,7 +390,7 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
             stdscr.refresh()
         
         frame_index += 1
-        time.sleep(0.1)  # Small delay to not update too frequently
+        time.sleep(0.01)  # Small delay to not update too frequently
 
     control_dcdc_converter(False)  # Turn off after balancing
 
@@ -399,11 +399,16 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
 
 # Function to keep an eye on the main task
 def keep_watching():
+    global balancing_task
     while True:
         time.sleep(60)  # Check every 60 seconds
-        if not balancing_task or not balancing_task.is_alive():
-            logging.error("Uh-oh, looks like our main task stopped! Let's restart everything.")
-            os.execv(sys.executable, ['python'] + sys.argv)  # Restart the script
+        if balancing_task and not balancing_task.is_alive():
+            logging.error("Balancing task stopped unexpectedly! Restarting.")
+            os.execv(sys.executable, ['python'] + sys.argv)
+        # Reset balancing_task if it was running but has now finished
+        elif balancing_task and not balancing_task.is_alive():
+            balancing_task = None
+        time.sleep(1)  # Small delay to not overload CPU
 
 # Handle signals for clean shutdown
 def shutdown_handler(signum, frame):
@@ -464,7 +469,7 @@ def main_program(stdscr):
                 stdscr.clear()
                 battery_voltages = []
                 for i in range(1, config['General']['NumberOfBatteries'] + 1):
-                    voltage, _, _ = read_voltage_with_retry(i, number_of_samples=config['General']['NumberOfSamples'])
+                    voltage, _, _ = read_voltage_with_retry(i, number_of_samples=2, max_attempts=2)
                     battery_voltages.append(voltage if voltage is not None else 0.0)
                 
                 # Total voltage of all batteries
@@ -509,18 +514,21 @@ def main_program(stdscr):
 
                     for j, volt in enumerate(battery_voltages):
                         if volt == 0.0:
-                            with shared_lock:
-                                stdscr.addstr(y_offset + 6, 17 * j + 3, "0.00V".center(11), ERROR_COLOR)
+                            voltage_str = "0.00V"
+                            color = ERROR_COLOR
                         else:
                             voltage_str = f"{volt:.2f}V"
                             color = OK_VOLTAGE_COLOR if volt <= config['General']['AlarmVoltageThreshold'] else HIGH_VOLTAGE_COLOR
                             color = LOW_VOLTAGE_COLOR if volt < config['General']['AlarmVoltageThreshold'] - config['General']['VoltageDifferenceToBalance'] else color
-                            with shared_lock:
-                                stdscr.addstr(y_offset + 6, 17 * j + 3, voltage_str.center(11), color)
+                        
+                        # Center the voltage text within the cell
+                        center_pos = 17 * j + 3  # Start of cell + 3 to center
+                        with shared_lock:
+                            stdscr.addstr(y_offset + 6, center_pos, voltage_str.center(11), color)
 
                 y_offset += len(battery_art)  # Move cursor down after drawing
                 for i in range(1, config['General']['NumberOfBatteries'] + 1):
-                    voltage, readings, adc_values = read_voltage_with_retry(i, number_of_samples=config['General']['NumberOfSamples'])
+                    voltage, readings, adc_values = read_voltage_with_retry(i, number_of_samples=2, max_attempts=2)
                     if voltage is None:
                         voltage = 0.0
                     with shared_lock:
@@ -579,7 +587,7 @@ def main_program(stdscr):
                 with shared_lock:
                     stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 5, 0, f"Error: {e}", ERROR_COLOR)
                 stdscr.refresh()  # Refresh to show the error
-                time.sleep(5)  # Wait a bit before trying again
+                time.sleep(0.1)  # Keep this brief
 
     except Exception as e:
         logging.critical(f"A serious error in the main loop: {e}")
