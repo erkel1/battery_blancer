@@ -486,7 +486,7 @@ def main_program(stdscr):
         while True:
             try:
                 stdscr.clear()
-                battery_voltages = []  # Reset or initialize if not already done
+                battery_voltages = [0.0] * config['General']['NumberOfBatteries']
                 for i in range(1, config['General']['NumberOfBatteries'] + 1):
                     voltage, _, _ = read_voltage_with_retry(i, number_of_samples=2, max_attempts=2)
                     battery_voltages.append(voltage if voltage is not None else 0.0)
