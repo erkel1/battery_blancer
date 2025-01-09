@@ -446,6 +446,7 @@ def shutdown_handler(signum, frame):
 signal.signal(signal.SIGTERM, shutdown_handler)
 signal.signal(signal.SIGINT, shutdown_handler)
 
+
 def main_program(stdscr):
     global battery_voltages, balance_start_time, balancing_active, last_balance_time
 
@@ -500,14 +501,16 @@ def main_program(stdscr):
             try:
                 stdscr.clear()
                 battery_voltages = []
+                
+                # For GUI display, use real-time voltages
                 for i in range(1, config['General']['NumberOfBatteries'] + 1):
                     voltage, _, _ = read_voltage_with_retry(i, number_of_samples=2, max_attempts=2)
                     battery_voltages.append(voltage if voltage is not None else 0.0)
-                
-                # Total voltage of all batteries
+
+                # Total voltage of all batteries for GUI display
                 total_voltage = sum(battery_voltages)
                 
-                # Determine color based on total battery voltage
+                # Determine color based on total battery voltage (for GUI)
                 total_voltage_high = config['General']['AlarmVoltageThreshold'] * config['General']['NumberOfBatteries']
                 total_voltage_low = total_voltage_high - config['General']['VoltageDifferenceToBalance'] * config['General']['NumberOfBatteries']
                 
@@ -575,11 +578,29 @@ def main_program(stdscr):
                         stdscr.addstr(y_offset + i, 0, "  [Readings: No data]", ADC_READINGS_COLOR)
                     y_offset += 1  # Increment y_offset for each battery's readings line
 
-                if len(battery_voltages) == config['General']['NumberOfBatteries']:
-                    max_voltage = max(battery_voltages)
-                    min_voltage = min(battery_voltages)
-                    high_battery = battery_voltages.index(max_voltage) + 1  # +1 for 1-indexed
-                    low_battery = battery_voltages.index(min_voltage) + 1  # +1 for 1-indexed
+                # Collect voltage readings for 5 seconds for balancing decision
+                voltage_samples = []
+                start_time = time.time()
+                while time.time() - start_time < 5:  # 5 second sampling period
+                    sample_voltages = []
+                    for i in range(1, config['General']['NumberOfBatteries'] + 1):
+                        voltage, _, _ = read_voltage_with_retry(i, number_of_samples=2, max_attempts=2)
+                        sample_voltages.append(voltage if voltage is not None else 0.0)
+                    voltage_samples.append(sample_voltages)
+                    time.sleep(0.1)  # Sample every 0.1 seconds for smoothness, adjust as needed
+
+                if voltage_samples:
+                    # Calculate average voltage for each battery over the samples for balancing decision
+                    averaged_voltages = [sum(voltages) / len(voltages) for voltages in zip(*voltage_samples)]
+                else:
+                    # Fallback in case of no samples, though unlikely
+                    averaged_voltages = battery_voltages
+
+                if len(averaged_voltages) == config['General']['NumberOfBatteries']:
+                    max_voltage = max(averaged_voltages)
+                    min_voltage = min(averaged_voltages)
+                    high_battery = averaged_voltages.index(max_voltage) + 1  # +1 for 1-indexed
+                    low_battery = averaged_voltages.index(min_voltage) + 1  # +1 for 1-indexed
 
                     # Check if balancing should be deferred
                     current_time = time.time()
