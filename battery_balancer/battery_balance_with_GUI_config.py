@@ -373,6 +373,11 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
             logging.warning(f"Cannot balance to Battery {low_voltage_battery} as it shows 0.00V. Skipping balancing.")
             stdscr.addstr(10, 0, f"Cannot balance to Battery {low_voltage_battery} (0.00V).", curses.color_pair(8))
             stdscr.refresh()
+            
+            # Reset relays even if balancing is skipped due to zero voltage
+            logging.info("Resetting relay connections to default state due to zero voltage battery.")
+            set_relay_connection(0, 0)  # All relays off
+            balancing_active = False
             return
 
         animation_frames = ['|', '/', '-', '\\']
@@ -417,15 +422,20 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
         control_dcdc_converter(False)  # Turn off after balancing
 
         # Reset relay state here if necessary
-        logging.info("Resetting relay connections to default state.")
-        set_relay_connection(1, 1)  # Assuming 1 means all off for 1-indexed batteries
-
-        balancing_active = False  # Reset the balancing flag
+        logging.info("Resetting relay connections to default state after balancing.")
+        set_relay_connection(0, 0)  # All relays off
 
     except Exception as e:
         logging.error(f"Error during balancing process: {e}")
-        balancing_active = False  # Ensure flag is reset on error
-
+        # Reset relays on any error
+        logging.info("Error occurred, resetting relay connections to default state.")
+        set_relay_connection(0, 0)  # Ensure all relays are turned off
+    finally:
+        # Ensure relays are off even if an exception occurs outside the try block
+        control_dcdc_converter(False)  # Turn off DC-DC converter
+        set_relay_connection(0, 0)  # All relays off
+        balancing_active = False  # Ensure flag is reset on any exit condition
+        
 # Handle signals for clean shutdown
 def shutdown_handler(signum, frame):
     logging.info("Received shutdown signal, cleaning up.")
