@@ -239,15 +239,14 @@ def set_relay_connection(high_voltage_battery, low_voltage_battery):
         logging.info(f"Attempting to set relay for connection from Battery {high_voltage_battery} to {low_voltage_battery}")
         logging.debug("Before acquiring shared_lock")
         
-        # Change to using a timeout for acquiring the lock
         if not shared_lock.acquire(timeout=5):  # 5 seconds timeout
-            logging.error("Failed to acquire shared_lock after 5 seconds.")
+            logging.error("Failed to acquire shared_lock for relay setup after 5 seconds.")
             return  # or handle as needed
 
         try:
             logging.debug("Shared lock acquired")
             logging.debug("Switching to relay control channel.")
-            choose_channel(3)  # Relay module is on channel 3
+            choose_channel(3)  # Select channel 3 for relay operations
             relay_state = 0
             logging.debug(f"Initial relay state: {bin(relay_state)}")
 
@@ -286,13 +285,15 @@ def set_relay_connection(high_voltage_battery, low_voltage_battery):
             bus.write_byte_data(config['I2C']['RelayAddress'], 0x10, relay_state)
         finally:
             logging.debug("Releasing shared_lock")
-            shared_lock.release()  # Ensure the lock is explicitly released
+            shared_lock.release()  # Release the lock after all operations
+        
         logging.info(f"Relay setup completed for balancing from Battery {high_voltage_battery} to Battery {low_voltage_battery}")
     except IOError as e:
         logging.error(f"I/O error while setting up relay: {e}")
     except Exception as e:
         logging.error(f"Unexpected error in set_relay_connection: {e}")
 
+        
 def control_dcdc_converter(turn_on):
     """
     Turn the DC-DC converter on or off using GPIO.
