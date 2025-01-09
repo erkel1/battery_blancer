@@ -166,16 +166,26 @@ def read_voltage_with_retry(battery_id, number_of_samples=5, allowed_difference=
             for _ in range(number_of_samples):
                 meter_channel = battery_id % 3
                 choose_channel(meter_channel)
-                setup_voltage_meter()
+                
+                # Increased setup attempt in case of initial failure
+                for setup_attempt in range(3):
+                    try:
+                        setup_voltage_meter()
+                        break  # success, exit loop
+                    except IOError:
+                        if setup_attempt == 2:  # all attempts failed
+                            raise
+                        time.sleep(0.1)  # wait before next attempt
+                
                 with shared_lock:
-                    bus.write_byte(config['I2C']['VoltageMeterAddress'], 0x01)
-                time.sleep(0.2)
+                    bus.write_byte(config['I2C']['VoltageMeterAddress'], 0x01)  # Start conversion
+                time.sleep(0.3)  # Increased delay, adjust if needed
                 with shared_lock:
                     raw_adc = bus.read_word_data(config['I2C']['VoltageMeterAddress'], config['ADC']['ConversionRegister']) & 0xFFFF
                 logging.debug(f"Raw ADC value for Battery {battery_id + 1}: {raw_adc}")
                 
                 if raw_adc != 0:
-                    battery_voltage = raw_adc * (6.144 / 32767)
+                    battery_voltage = raw_adc * (6.144 / 32767)  # Ensure this conversion factor matches your setup
                     readings.append(battery_voltage)
                     raw_values.append(raw_adc)
                 else:
@@ -185,7 +195,6 @@ def read_voltage_with_retry(battery_id, number_of_samples=5, allowed_difference=
             if readings:
                 average = sum(readings) / len(readings)
                 if average == 0.0 or all(abs(r - average) / (average if average != 0 else 1) <= allowed_difference for r in readings):
-                    # Only keep readings within 5% of the average to reduce noise
                     valid_readings = [r for r in readings if abs(r - average) / (average if average != 0 else 1) <= 0.05]
                     valid_adc = [raw_values[i] for i, r in enumerate(readings) if abs(r - average) / (average if average != 0 else 1) <= 0.05]
                     if valid_readings:
@@ -195,7 +204,7 @@ def read_voltage_with_retry(battery_id, number_of_samples=5, allowed_difference=
         except IOError as e:
             logging.warning(f"Couldn't read voltage for Battery {battery_id + 1}: {e}")
             continue
-        time.sleep(5)  # Give it a little break before trying again
+        time.sleep(5)  # Wait before next attempt
 
     logging.error(f"Couldn't get a good voltage reading for Battery {battery_id + 1} after {max_attempts} tries")
     return None, [], []
@@ -343,7 +352,8 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
     Balance charge from a battery with higher voltage to one with lower voltage.
     
     This function shows what's happening on the screen, including a progress bar.
-    It controls the hardware to move charge between batteries.
+    It controls the hardware to move charge between batteries. It will not balance
+    if the low voltage battery reads 0.00V to prevent ineffective or harmful operations.
 
     Args:
         stdscr (curses window object): Where we show what's happening.
@@ -356,6 +366,13 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
 
     voltage_high = voltage_high if voltage_high is not None else 0.0
     voltage_low = voltage_low if voltage_low is not None else 0.0
+
+    if voltage_low == 0.0:
+        logging.warning(f"Cannot balance to Battery {low_voltage_battery + 1} as it shows 0.00V. Skipping balancing.")
+        with shared_lock:
+            stdscr.addstr(10, 0, f"Cannot balance to Battery {low_voltage_battery + 1} (0.00V).", ERROR_COLOR)
+            stdscr.refresh()
+        return
 
     animation_frames = ['|', '/', '-', '\\']
     balance_start_time = time.time()  # Start timer for balancing
@@ -451,14 +468,11 @@ def main_program(stdscr):
                 stdscr.clear()
                 battery_voltages = []
                 for i in range(config['General']['NumberOfBatteries']):
-                    voltage, readings, adc_values = read_voltage_with_retry(i, number_of_samples=config['General']['NumberOfSamples'])
-                    if voltage is None:
-                        battery_voltages.append(None)
-                    else:
-                        battery_voltages.append(voltage)
+                    voltage, _, _ = read_voltage_with_retry(i, number_of_samples=config['General']['NumberOfSamples'])
+                    battery_voltages.append(voltage if voltage is not None else 0.0)
                 
                 # Total voltage of all batteries
-                total_voltage = sum([v for v in battery_voltages if v is not None] or [0])
+                total_voltage = sum(battery_voltages)
                 
                 # Determine color based on total battery voltage
                 total_voltage_high = config['General']['AlarmVoltageThreshold'] * config['General']['NumberOfBatteries']
@@ -483,7 +497,7 @@ def main_program(stdscr):
                 y_offset = len(roman_voltage.splitlines()) + 2
                 for i, line in enumerate(battery_art):
                     for j, volt in enumerate(battery_voltages):
-                        if volt is None:
+                        if volt == 0.0:
                             color = ERROR_COLOR
                         elif volt > config['General']['AlarmVoltageThreshold']:
                             color = HIGH_VOLTAGE_COLOR
@@ -498,9 +512,9 @@ def main_program(stdscr):
                             stdscr.addstr(i + y_offset, start_pos, line[start_pos:end_pos], color)
 
                     for j, volt in enumerate(battery_voltages):
-                        if volt is None:
+                        if volt == 0.0:
                             with shared_lock:
-                                stdscr.addstr(y_offset + 6, 17 * j + 3, "Error".center(11), ERROR_COLOR)
+                                stdscr.addstr(y_offset + 6, 17 * j + 3, "0.00V".center(11), ERROR_COLOR)
                         else:
                             voltage_str = f"{volt:.2f}V"
                             color = OK_VOLTAGE_COLOR if volt <= config['General']['AlarmVoltageThreshold'] else HIGH_VOLTAGE_COLOR
@@ -512,24 +526,22 @@ def main_program(stdscr):
                 for i in range(config['General']['NumberOfBatteries']):
                     voltage, readings, adc_values = read_voltage_with_retry(i, number_of_samples=config['General']['NumberOfSamples'])
                     if voltage is None:
-                        with shared_lock:
-                            stdscr.addstr(y_offset + i, 0, f"Battery {i+1}: Error reading voltage", ERROR_COLOR)
-                    else:
-                        with shared_lock:
-                            stdscr.addstr(y_offset + i, 0, f"Battery {i+1}: (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_READINGS_COLOR)
+                        voltage = 0.0
+                    with shared_lock:
+                        stdscr.addstr(y_offset + i, 0, f"Battery {i+1}: (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_READINGS_COLOR)
                         
-                        if readings:
-                            with shared_lock:
-                                stdscr.addstr(y_offset + i + 1, 0, f"  [Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_READINGS_COLOR)
+                    if readings:
+                        with shared_lock:
+                            stdscr.addstr(y_offset + i + 1, 0, f"  [Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_READINGS_COLOR)
 
                 if len(battery_voltages) == config['General']['NumberOfBatteries']:
                     if balancing_task is None or not balancing_task.is_alive():
-                        max_voltage = max([v for v in battery_voltages if isinstance(v, float)], default=0)
-                        min_voltage = min([v for v in battery_voltages if isinstance(v, float)], default=0)
-                        high_battery = [i for i, v in enumerate(battery_voltages) if v == max_voltage][0]
-                        low_battery = [i for i, v in enumerate(battery_voltages) if v == min_voltage][0]
+                        max_voltage = max(battery_voltages)
+                        min_voltage = min(battery_voltages)
+                        high_battery = battery_voltages.index(max_voltage)
+                        low_battery = battery_voltages.index(min_voltage)
 
-                        if max_voltage - min_voltage > config['General']['VoltageDifferenceToBalance']:
+                        if max_voltage - min_voltage > config['General']['VoltageDifferenceToBalance'] and min_voltage > 0:
                             balancing_task = threading.Thread(target=balance_battery_voltages, args=(stdscr, high_battery, low_battery))
                             balancing_task.start()
                             with shared_lock:
@@ -538,7 +550,10 @@ def main_program(stdscr):
                         else:
                             with shared_lock:
                                 stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, "  [ OK ]", OK_VOLTAGE_COLOR)
-                                stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, "No need to balance, voltages are good.", INFO_COLOR)
+                                if min_voltage == 0:
+                                    stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, "No balancing possible due to zero voltage battery.", ERROR_COLOR)
+                                else:
+                                    stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, "No need to balance, voltages are good.", INFO_COLOR)
                     else:
                         # Animation for balancing in progress
                         frame = int(time.time() * 2) % 4  # Change frame every 0.5 seconds
@@ -561,17 +576,13 @@ def main_program(stdscr):
                 with shared_lock:
                     stdscr.refresh()
                 
-                # Here's where we use SleepTimeBetweenChecks:
                 time.sleep(config['General']['SleepTimeBetweenChecks'])
-                # This pause allows the system to rest between checks, reducing CPU usage 
-                # and giving hardware a chance to cool down. It balances system responsiveness 
-                # with efficiency, ensuring we're not checking too often (which could be wasteful) 
-                # or too rarely (which could miss important changes).
 
             except Exception as e:
                 logging.error(f"Something went wrong in the main loop: {e}")
                 with shared_lock:
                     stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 5, 0, f"Error: {e}", ERROR_COLOR)
+                stdscr.refresh()  # Refresh to show the error
                 time.sleep(5)  # Wait a bit before trying again
 
     except Exception as e:
