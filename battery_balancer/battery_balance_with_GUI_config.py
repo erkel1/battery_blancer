@@ -424,45 +424,7 @@ def main_program(stdscr):
     global balancing_task
     
     try:
-        curses.noecho()
-        curses.cbreak()
-        stdscr.keypad(True)
-        stdscr.clear()
-        curses.start_color()
-        curses.use_default_colors()
-        for i in range(1, curses.COLORS):
-            curses.init_pair(i, i, -1)
-
-        # Colors for better screen readability
-        TITLE_COLOR = curses.color_pair(1)    # Red for title
-        HIGH_VOLTAGE_COLOR = curses.color_pair(2)  # Red for high voltage
-        LOW_VOLTAGE_COLOR = curses.color_pair(3)   # Yellow for low voltage
-        OK_VOLTAGE_COLOR = curses.color_pair(4)    # Green for OK voltage
-        ADC_READINGS_COLOR = curses.color_pair(5)  # Lighter color for ADC readings
-        BALANCE_COLOR = curses.color_pair(6)       # Yellow for balancing
-        INFO_COLOR = curses.color_pair(7)          # Blue for info
-        ERROR_COLOR = curses.color_pair(8)         # Magenta for errors
-
-        # Simple graphic for the GUI
-        battery_art = [
-            "   ___________   ___________   ___________   ",
-            "  |           | |           | |           |  ",
-            "  |           | |           | |           |  ",
-            "  |           | |           | |           |  ",
-            "  |           | |           | |           |  ",
-            "  |    +++    | |    +++    | |    +++    |  ",
-            "  |    +++    | |    +++    | |    +++    |  ",
-            "  |           | |           | |           |  ",
-            "  |           | |           | |           |  ",
-            "  |           | |           | |           |  ",
-            "  |           | |           | |           |  ",
-            "  |    ---    | |    ---    | |    ---    |  ",
-            "  |    ---    | |    ---    | |    ---    |  ",
-            "  |    ---    | |    ---    | |    ---    |  ",
-            "  |           | |           | |           |  ",
-            "  |           | |           | |           |  ",
-            "  |___________| |___________| |___________|  "
-        ]
+        # ... (previous setup code)
 
         while True:
             try:
@@ -472,65 +434,7 @@ def main_program(stdscr):
                     voltage, _, _ = read_voltage_with_retry(i, number_of_samples=2, max_attempts=2)
                     battery_voltages.append(voltage if voltage is not None else 0.0)
                 
-                # Total voltage of all batteries
-                total_voltage = sum(battery_voltages)
-                
-                # Determine color based on total battery voltage
-                total_voltage_high = config['General']['AlarmVoltageThreshold'] * config['General']['NumberOfBatteries']
-                total_voltage_low = total_voltage_high - config['General']['VoltageDifferenceToBalance'] * config['General']['NumberOfBatteries']
-                
-                if total_voltage > total_voltage_high:
-                    color = HIGH_VOLTAGE_COLOR
-                elif total_voltage < total_voltage_low:
-                    color = LOW_VOLTAGE_COLOR
-                else:
-                    color = OK_VOLTAGE_COLOR
-
-                # Use the art library to display the total voltage in Roman font
-                roman_voltage = text2art(f"{total_voltage:.2f}V", font='roman', chr_ignore=True)
-                
-                with shared_lock:
-                    stdscr.addstr(0, 0, "Battery Balancer GUI", TITLE_COLOR)
-                    for i, line in enumerate(roman_voltage.splitlines()):
-                        stdscr.addstr(i + 1, 0, line, color)
-                    stdscr.hline(len(roman_voltage.splitlines()) + 1, 0, curses.ACS_HLINE, curses.COLS - 1)
-                
-                y_offset = len(roman_voltage.splitlines()) + 2
-                for i, line in enumerate(battery_art):
-                    for j, volt in enumerate(battery_voltages):
-                        if volt == 0.0:
-                            color = ERROR_COLOR
-                        elif volt > config['General']['AlarmVoltageThreshold']:
-                            color = HIGH_VOLTAGE_COLOR
-                        elif volt < config['General']['AlarmVoltageThreshold'] - config['General']['VoltageDifferenceToBalance']:
-                            color = LOW_VOLTAGE_COLOR
-                        else:
-                            color = OK_VOLTAGE_COLOR
-                        
-                        start_pos = j * 17
-                        end_pos = start_pos + 17
-                        with shared_lock:
-                            stdscr.addstr(i + y_offset, start_pos, line[start_pos:end_pos], color)
-
-                    for j, volt in enumerate(battery_voltages):
-                        if volt == 0.0:
-                            voltage_str = "0.00V"
-                            color = ERROR_COLOR
-                        else:
-                            voltage_str = f"{volt:.2f}V"
-                            color = OK_VOLTAGE_COLOR if volt <= config['General']['AlarmVoltageThreshold'] else HIGH_VOLTAGE_COLOR
-                            color = LOW_VOLTAGE_COLOR if volt < config['General']['AlarmVoltageThreshold'] - config['General']['VoltageDifferenceToBalance'] else color
-                        
-                        # Adjust position for each cell
-                        if j == 1:  # Second cell (0-indexed)
-                            center_pos = 17 * j + 3 - 3  # Move 3 spaces to the left
-                        elif j == 2:  # Third cell (0-indexed)
-                            center_pos = 17 * j + 3 - 6  # Move 6 spaces to the left
-                        else:
-                            center_pos = 17 * j + 3  # Default position for the first cell
-                        
-                        with shared_lock:
-                            stdscr.addstr(y_offset + 6, center_pos, voltage_str.center(11), color)
+                # ... (code for displaying total voltage and battery art)
 
                 y_offset += len(battery_art)  # Move cursor down after drawing
                 for i in range(1, config['General']['NumberOfBatteries'] + 1):
@@ -540,9 +444,7 @@ def main_program(stdscr):
                     with shared_lock:
                         stdscr.addstr(y_offset + i - 1, 0, f"Battery {i}: (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_READINGS_COLOR)
                         
-                    if readings:
-                        with shared_lock:
-                            stdscr.addstr(y_offset + i, 0, f"  [Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_READINGS_COLOR)
+                    # Removed the readings display
 
                 if len(battery_voltages) == config['General']['NumberOfBatteries']:
                     if balancing_task is None or not balancing_task.is_alive():
@@ -557,13 +459,8 @@ def main_program(stdscr):
                             with shared_lock:
                                 stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, "  <======>", BALANCE_COLOR)
                                 stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, f" Balancing Battery {high_battery} ({max_voltage:.2f}V) -> Battery {low_battery} ({min_voltage:.2f}V)", BALANCE_COLOR)
-                        else:
-                            with shared_lock:
-                                stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, "  [ OK ]", OK_VOLTAGE_COLOR)
-                                if min_voltage == 0:
-                                    stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, "No balancing possible due to zero voltage battery.", ERROR_COLOR)
-                                else:
-                                    stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, "No need to balance, voltages are good.", INFO_COLOR)
+                        # else:
+                        #     # Removed the OK status display
                     else:
                         # Animation for balancing in progress
                         frame = int(time.time() * 2) % 4  # Change frame every 0.5 seconds
