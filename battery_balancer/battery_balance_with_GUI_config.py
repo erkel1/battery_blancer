@@ -135,7 +135,9 @@ def choose_channel(channel):
         channel (int): Which channel to talk to (numbered from 0).
     """
     try:
+        logging.debug(f"Aquiring shaared lock")
         with shared_lock:
+            logging.debug(f"About to bus.write_byte {channel}")
             bus.write_byte(config['I2C']['MultiplexerAddress'], 1 << channel)
         logging.debug(f"Switched to channel {channel}")
     except IOError as e:
