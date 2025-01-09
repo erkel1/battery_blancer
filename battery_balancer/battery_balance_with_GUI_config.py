@@ -521,8 +521,14 @@ def main_program(stdscr):
                             color = OK_VOLTAGE_COLOR if volt <= config['General']['AlarmVoltageThreshold'] else HIGH_VOLTAGE_COLOR
                             color = LOW_VOLTAGE_COLOR if volt < config['General']['AlarmVoltageThreshold'] - config['General']['VoltageDifferenceToBalance'] else color
                         
-                        # Center the voltage text within the cell
-                        center_pos = 17 * j + 3  # Start of cell + 3 to center
+                        # Adjust position for each cell
+                        if j == 1:  # Second cell (0-indexed)
+                            center_pos = 17 * j + 3 - 3  # Move 3 spaces to the left
+                        elif j == 2:  # Third cell (0-indexed)
+                            center_pos = 17 * j + 3 - 6  # Move 6 spaces to the left
+                        else:
+                            center_pos = 17 * j + 3  # Default position for the first cell
+                        
                         with shared_lock:
                             stdscr.addstr(y_offset + 6, center_pos, voltage_str.center(11), color)
 
