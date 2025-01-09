@@ -135,11 +135,18 @@ def choose_channel(channel):
         channel (int): Which channel to talk to (numbered from 0).
     """
     try:
-        logging.debug(f"Aquiring shaared lock")
-        with shared_lock:
-            logging.debug(f"About to bus.write_byte {channel}")
+        logging.debug(f"Attempting to acquire shared lock for channel {channel}")
+        if not shared_lock.acquire(timeout=5):  # 5 seconds timeout
+            logging.error(f"Failed to acquire shared_lock for channel {channel} after 5 seconds.")
+            return  # or handle this situation appropriately
+        logging.debug(f"Shared lock acquired for channel {channel}")
+        try:
+            logging.debug(f"About to write to bus for channel {channel}")
             bus.write_byte(config['I2C']['MultiplexerAddress'], 1 << channel)
-        logging.debug(f"Switched to channel {channel}")
+            logging.debug(f"Successfully switched to channel {channel}")
+        finally:
+            logging.debug(f"Releasing shared_lock after operation on channel {channel}")
+            shared_lock.release()
     except IOError as e:
         logging.error(f"Trouble selecting channel {channel}: {e}")
 
