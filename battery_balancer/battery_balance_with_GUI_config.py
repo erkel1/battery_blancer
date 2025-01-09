@@ -310,16 +310,6 @@ def balance_cells(stdscr, high_cell, low_cell):
     control_dc_dc(False)
 
 def main(stdscr):
-    """
-    Main function to run the battery balancer TUI.
-
-    This function initializes the curses interface, reads battery voltages, 
-    updates the display, and manages the balancing process in a way that 
-    doesn't block the UI updates.
-
-    Args:
-        stdscr: Curses window object provided by curses.wrapper.
-    """
     global balancing_thread
     
     try:
@@ -332,27 +322,58 @@ def main(stdscr):
         for i in range(1, curses.COLORS):
             curses.init_pair(i, i, -1)
 
+        # Define colors for better readability
+        TITLE_COLOR = curses.color_pair(1)    # Red for title
+        HIGH_VOLTAGE_COLOR = curses.color_pair(2)  # Red for high voltage
+        LOW_VOLTAGE_COLOR = curses.color_pair(3)   # Yellow for low voltage
+        OK_VOLTAGE_COLOR = curses.color_pair(4)    # Green for OK voltage
+        ADC_READINGS_COLOR = curses.color_pair(5)  # Lighter color for ADC readings
+        BALANCE_COLOR = curses.color_pair(6)       # Yellow for balancing
+        INFO_COLOR = curses.color_pair(7)          # Blue for info
+        ERROR_COLOR = curses.color_pair(8)         # Magenta for errors
+
+        # ASCII art for the GUI
+        ascii_art = [
+            "  _______   _______   _______  ",
+            " |       | |       | |       | ",
+            " |  BAT  | |  BAT  | |  BAT  | ",
+            " |_______| |_______| |_______| ",
+            "   [_____]   [_____]   [_____]",
+            "    |  |       |  |       |  | ",
+            "    |  |       |  |       |  | ",
+            "    |  |       |  |       |  | ",
+            "    |__|       |__|       |__| "
+        ]
+
         while True:
             stdscr.clear()
-            stdscr.addstr(0, 0, "Battery Balancer TUI", curses.color_pair(1))
-            stdscr.hline(1, 0, curses.ACS_HLINE, curses.COLS - 1)
+            # Display ASCII art
+            for i, line in enumerate(ascii_art):
+                stdscr.addstr(i, 0, line, INFO_COLOR)
+
+            stdscr.addstr(len(ascii_art) + 1, 0, "Battery Balancer TUI", TITLE_COLOR)
+            stdscr.hline(len(ascii_art) + 2, 0, curses.ACS_HLINE, curses.COLS - 1)
             
             voltages = []
-            all_readings = []  # To display all raw readings
-            all_adc = []  # To display all raw ADC values
-
+            y_offset = len(ascii_art) + 3
             for i in range(NUM_CELLS):
                 voltage, readings, adc_values = read_voltage_with_retry(i, num_samples=NUM_SAMPLES)
                 if voltage is None:
-                    stdscr.addstr(i + 2, 0, f"Cell {i+1}: Error reading voltage", curses.color_pair(1))
+                    stdscr.addstr(y_offset + i, 0, f"Cell {i+1}: Error reading voltage", ERROR_COLOR)
                 else:
                     voltages.append(voltage)
-                    all_readings.append(readings)
-                    all_adc.append(adc_values)
-                    voltage_color = curses.color_pair(2) if voltage < BALANCE_THRESHOLD else curses.color_pair(3)
-                    stdscr.addstr(i + 2, 0, f"Cell {i+1}: {voltage:.2f}V (ADC: {adc_values[0] if adc_values else 'N/A'})")
-                    if readings:
-                        stdscr.addstr(i + 3, 0, f"  [Readings: {', '.join(f'{v:.2f}' for v in readings)}]")
+                    voltage_color = OK_VOLTAGE_COLOR
+                    if voltage > ALARM_VOLTAGE_THRESHOLD:
+                        voltage_color = HIGH_VOLTAGE_COLOR
+                    elif voltage < ALARM_VOLTAGE_THRESHOLD - BALANCE_THRESHOLD:  # Assuming this is your low voltage threshold
+                        voltage_color = LOW_VOLTAGE_COLOR
+                    
+                    stdscr.addstr(y_offset + i, 0, f"Cell {i+1}: ", INFO_COLOR)
+                    stdscr.addstr(f"{voltage:.2f}V", voltage_color)
+                    stdscr.addstr(f" (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_READINGS_COLOR)
+                
+                if readings:
+                    stdscr.addstr(y_offset + i + 1, 0, f"  [Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_READINGS_COLOR)
 
             if voltages and len(voltages) == NUM_CELLS:
                 if balancing_thread is None or not balancing_thread.is_alive():
@@ -364,16 +385,25 @@ def main(stdscr):
                     if max_voltage - min_voltage > BALANCE_THRESHOLD:
                         balancing_thread = threading.Thread(target=balance_cells, args=(stdscr, high_cell, low_cell))
                         balancing_thread.start()
+                        # Large balancing icon
+                        stdscr.addstr(y_offset + NUM_CELLS + 2, 0, "  <======>", BALANCE_COLOR)
+                        stdscr.addstr(y_offset + NUM_CELLS + 3, 0, f" Balancing Cell {high_cell+1} ({max_voltage:.2f}V) -> Cell {low_cell+1} ({min_voltage:.2f}V)", BALANCE_COLOR)
                     else:
-                        stdscr.addstr(10, 0, "No balancing required; voltages within threshold.")
+                        stdscr.addstr(y_offset + NUM_CELLS + 2, 0, "  [ OK ]", OK_VOLTAGE_COLOR)
+                        stdscr.addstr(y_offset + NUM_CELLS + 3, 0, "No balancing required; voltages within threshold.", INFO_COLOR)
                 else:
-                    stdscr.addstr(10, 0, "Balancing in progress...")
+                    # Large balancing icon with animation
+                    frame = int(time.time() * 2) % 4  # Change frame every 0.5 seconds
+                    animations = ['<======>', '>======<', '<======>', '>======<']
+                    stdscr.addstr(y_offset + NUM_CELLS + 2, 0, f"  {animations[frame]}", BALANCE_COLOR)
+                    stdscr.addstr(y_offset + NUM_CELLS + 3, 0, f" Balancing Cell {high_cell+1} ({max_voltage:.2f}V) -> Cell {low_cell+1} ({min_voltage:.2f}V)", BALANCE_COLOR)
 
             stdscr.refresh()
-            time.sleep(1)  # Update display every second
+            time.sleep(0.5)  # Slower update for animation visibility
+
     except Exception as e:
         logging.error(f"Error in main loop: {e}")
-        stdscr.addstr(12, 0, f"Error: {e}", curses.color_pair(1))
+        stdscr.addstr(y_offset + NUM_CELLS + 4, 0, f"Error: {e}", ERROR_COLOR)
 
 if __name__ == '__main__':
     try:
