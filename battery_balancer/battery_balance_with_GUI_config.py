@@ -435,7 +435,7 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
         control_dcdc_converter(False)  # Turn off DC-DC converter
         set_relay_connection(0, 0)  # All relays off
         balancing_active = False  # Ensure flag is reset on any exit condition
-        
+
 # Handle signals for clean shutdown
 def shutdown_handler(signum, frame):
     logging.info("Received shutdown signal, cleaning up.")
@@ -447,7 +447,7 @@ signal.signal(signal.SIGTERM, shutdown_handler)
 signal.signal(signal.SIGINT, shutdown_handler)
 
 def main_program(stdscr):
-    global battery_voltages, balance_start_time, balancing_active
+    global battery_voltages, balance_start_time, balancing_active, last_balance_time
 
     try:
         curses.noecho()
@@ -494,6 +494,7 @@ def main_program(stdscr):
         ]
 
         balancing_active = False  # Flag to indicate if balancing is active
+        last_balance_time = 0  # New global variable for balancing timer
 
         while True:
             try:
@@ -580,10 +581,18 @@ def main_program(stdscr):
                     high_battery = battery_voltages.index(max_voltage) + 1  # +1 for 1-indexed
                     low_battery = battery_voltages.index(min_voltage) + 1  # +1 for 1-indexed
 
+                    # Check if balancing should be deferred
+                    current_time = time.time()
                     if max_voltage - min_voltage > config['General']['VoltageDifferenceToBalance'] and min_voltage > 0:
-                        balancing_active = True
-                        balance_battery_voltages(stdscr, high_battery, low_battery)
-                        balancing_active = False
+                        if current_time - last_balance_time > config['General']['BalanceRestPeriodSeconds']:
+                            balancing_active = True
+                            balance_battery_voltages(stdscr, high_battery, low_battery)
+                            last_balance_time = current_time  # Update the last balance time
+                            balancing_active = False
+                        else:
+                            # Inform user that balancing is deferred
+                            stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, "  [ WAIT ]", INFO_COLOR)
+                            stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 3, 0, f"Balancing deferred for {int(config['General']['BalanceRestPeriodSeconds'] - (current_time - last_balance_time))} more seconds.", INFO_COLOR)
                     else:
                         stdscr.addstr(y_offset + config['General']['NumberOfBatteries'] + 2, 0, "  [ OK ]", OK_VOLTAGE_COLOR)
                         if min_voltage == 0:
