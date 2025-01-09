@@ -285,14 +285,10 @@ def balance_cells(stdscr, high_cell, low_cell):
         stdscr (curses window object): The curses window for UI updates.
         high_cell (int): Index of the cell with higher voltage (0-indexed).
         low_cell (int): Index of the cell with lower voltage (0-indexed).
-
-    Note:
-    - The function assumes `read_voltage` function exists to read cell voltages.
-    - `animation_frames` should be defined elsewhere, e.g., ['|', '/', '-', '\\'] for a simple animation.
     """
     # Read current voltages
-    adc_raw_high, voltage_high = read_voltage_with_retry(high_cell)
-    _, voltage_low = read_voltage_with_retry(low_cell)
+    voltage_high, _, adc_raw_high = read_voltage_with_retry(high_cell)
+    voltage_low, _, _ = read_voltage_with_retry(low_cell)
 
     # Animation frames for visual feedback in the TUI
     animation_frames = ['|', '/', '-', '\\']
