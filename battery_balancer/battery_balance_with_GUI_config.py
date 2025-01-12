@@ -87,6 +87,11 @@ def load_settings():
                 'ContinuousModeConfig': int(config.get('ADC', 'ContinuousModeConfig'), 16),
                 'SampleRateConfig': int(config.get('ADC', 'SampleRateConfig'), 16),
                 'GainConfig': int(config.get('ADC', 'GainConfig'), 16),
+            },
+            'Calibration': {
+                'Sensor1_Calibration': config.getfloat('Calibration', 'Sensor1_Calibration', fallback=1.0),
+                'Sensor2_Calibration': config.getfloat('Calibration', 'Sensor2_Calibration', fallback=1.0),
+                'Sensor3_Calibration': config.getfloat('Calibration', 'Sensor3_Calibration', fallback=1.0),
             }
         }
 
@@ -163,6 +168,8 @@ def read_voltage_with_retry(battery_id, number_of_samples=2, allowed_difference=
         tuple: (average_actual_voltage, list of actual voltage readings, list of raw ADC values) or (None, [], []) if it fails.
     """
     voltage_divider_ratio = config['General']['VoltageDividerRatio']
+    sensor_id = (battery_id - 1) % 3 + 1  # Assuming each battery is associated with a sensor in sequence
+    calibration_factor = config['Calibration'][f'Sensor{sensor_id}_Calibration']
     for attempt in range(max_attempts):
         try:
             readings = []
@@ -189,11 +196,11 @@ def read_voltage_with_retry(battery_id, number_of_samples=2, allowed_difference=
                 # Ensure we're using little endian by swapping bytes if necessary
                 raw_adc = (raw_adc & 0xFF) << 8 | (raw_adc >> 8)  # Swap bytes for little endian
                 
-                logging.debug(f"Raw ADC value for Battery {battery_id}: {raw_adc}")
+                logging.debug(f"Raw ADC value for Battery {battery_id} (Sensor {sensor_id}): {raw_adc}")
                 
                 if raw_adc != 0:
                     measured_voltage = raw_adc * (6.144 / 32767)  # Measured voltage after divider
-                    actual_voltage = measured_voltage / voltage_divider_ratio  # Actual battery voltage before divider
+                    actual_voltage = (measured_voltage / voltage_divider_ratio) * calibration_factor  # Apply calibration factor here
                     readings.append(actual_voltage)
                     raw_values.append(raw_adc)
                 else:
@@ -208,13 +215,13 @@ def read_voltage_with_retry(battery_id, number_of_samples=2, allowed_difference=
                     if valid_readings:
                         return sum(valid_readings) / len(valid_readings), valid_readings, valid_adc
                 else:
-                    logging.debug(f"Readings for Battery {battery_id} aren't consistent, trying again.")
+                    logging.debug(f"Readings for Battery {battery_id} (Sensor {sensor_id}) aren't consistent, trying again.")
         except IOError as e:
-            logging.warning(f"Couldn't read voltage for Battery {battery_id}: {e}")
+            logging.warning(f"Couldn't read voltage for Battery {battery_id} (Sensor {sensor_id}): {e}")
             continue
         time.sleep(0.01)  # Reduced from 5, adjust as needed
 
-    logging.error(f"Couldn't get a good voltage reading for Battery {battery_id} after {max_attempts} tries")
+    logging.error(f"Couldn't get a good voltage reading for Battery {battery_id} (Sensor {sensor_id}) after {max_attempts} tries")
     return None, [], []
 
 def set_relay_connection(high_voltage_battery, low_voltage_battery):
