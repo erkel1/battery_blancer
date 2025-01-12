@@ -226,9 +226,10 @@ def read_voltage_with_retry(battery_id, number_of_samples=2, allowed_difference=
     logging.error(f"Couldn't get a good voltage reading for Battery {battery_id} (Sensor {sensor_id}) after {max_attempts} tries")
     return None, [], []
 
+
 def set_relay_connection(high_voltage_battery, low_voltage_battery):
     """
-    Set up the relays to balance charge between two batteries using M5Stack 4Relay module.
+    Set up the relays to balance charge between two batteries using the specified relay logic.
     
     Args:
         high_voltage_battery (int): Battery with higher voltage (1-indexed).
@@ -248,26 +249,28 @@ def set_relay_connection(high_voltage_battery, low_voltage_battery):
             # Relay mapping (actual setup might differ based on hardware)
             if high_voltage_battery == 2 and low_voltage_battery == 1:
                 relay_state |= (1 << 0)  # Turn on relay 1
-                logging.debug("Relay 1 activated.")
+                logging.debug("Relay 1 activated for high to low.")
             elif high_voltage_battery == 3 and low_voltage_battery == 1:
                 relay_state |= (1 << 0)  # Turn on relay 1
                 relay_state |= (1 << 1)  # Turn on relay 2
-                logging.debug("Relays 1 and 2 activated.")
+                logging.debug("Relays 1 and 2 activated for high to low.")
             elif high_voltage_battery == 1 and low_voltage_battery == 2:
-                relay_state |= (1 << 1)  # Turn on relay 2
-                logging.debug("Relay 2 activated.")
+                relay_state |= (1 << 2)  # Turn on relay 3 for low to high
+                logging.debug("Relay 3 activated for low to high.")
             elif high_voltage_battery == 1 and low_voltage_battery == 3:
-                relay_state |= (1 << 1)  # Turn on relay 2
                 relay_state |= (1 << 2)  # Turn on relay 3
-                logging.debug("Relays 2 and 3 activated.")
+                relay_state |= (1 << 3)  # Turn on relay 4
+                logging.debug("Relays 3 and 4 activated for low to high.")
             elif high_voltage_battery == 2 and low_voltage_battery == 3:
                 relay_state |= (1 << 0)  # Turn on relay 1
                 relay_state |= (1 << 2)  # Turn on relay 3
-                logging.debug("Relays 1 and 3 activated.")
+                relay_state |= (1 << 3)  # Turn on relay 4
+                logging.debug("Relays 1, 3, and 4 activated for high to low.")
             elif high_voltage_battery == 3 and low_voltage_battery == 2:
+                relay_state |= (1 << 0)  # Turn on relay 1
                 relay_state |= (1 << 1)  # Turn on relay 2
                 relay_state |= (1 << 2)  # Turn on relay 3
-                logging.debug("Relays 2 and 3 activated.")
+                logging.debug("Relays 1, 2, and 3 activated for high to low.")
 
         logging.debug(f"Final relay state: {bin(relay_state)}")
         logging.info(f"Sending relay state command to hardware.")
