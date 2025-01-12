@@ -467,6 +467,7 @@ def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
         last_balance_time = time.time()  # Update last balance time when exiting balancing
 
 
+
 def main_program(stdscr):
     global battery_voltages, balance_start_time, balancing_active, last_balance_time
 
@@ -552,15 +553,12 @@ def main_program(stdscr):
                     for j, volt in enumerate(battery_voltages):
                         if volt == 0.0:
                             color = ERROR_COLOR
+                        elif volt > config['General']['HighVoltageThresholdPerBattery']:
+                            color = HIGH_VOLTAGE_COLOR
+                        elif volt < config['General']['LowVoltageThresholdPerBattery']:
+                            color = LOW_VOLTAGE_COLOR
                         else:
-                            avg_voltage = sum(battery_voltages) / len(battery_voltages)
-                            voltage_diff = volt - avg_voltage
-                            threshold = config['General']['VoltageDifferenceToBalance'] * config['General']['NumberOfCellsInSeries']
-
-                            if abs(voltage_diff) > threshold:
-                                color = HIGH_VOLTAGE_COLOR if voltage_diff > 0 else LOW_VOLTAGE_COLOR
-                            else:
-                                color = OK_VOLTAGE_COLOR
+                            color = OK_VOLTAGE_COLOR
                         
                         start_pos = j * 17
                         end_pos = start_pos + 17
@@ -572,16 +570,13 @@ def main_program(stdscr):
                             color = ERROR_COLOR
                         else:
                             voltage_str = f"{volt:.2f}V"
-                            avg_voltage = sum(battery_voltages) / len(battery_voltages)
-                            voltage_diff = volt - avg_voltage
-                            threshold = config['General']['VoltageDifferenceToBalance'] * config['General']['NumberOfCellsInSeries']
-
-                            if abs(voltage_diff) > threshold:
-                                color = HIGH_VOLTAGE_COLOR if voltage_diff > 0 else LOW_VOLTAGE_COLOR
+                            if volt > config['General']['HighVoltageThresholdPerBattery']:
+                                color = HIGH_VOLTAGE_COLOR
+                            elif volt < config['General']['LowVoltageThresholdPerBattery']:
+                                color = LOW_VOLTAGE_COLOR
                             else:
                                 color = OK_VOLTAGE_COLOR
                         
-                        # Adjust position for each cell
                         if j == 1:  # Second cell (0-indexed)
                             center_pos = 17 * j + 3 - 3  # Move 3 spaces to the left
                         elif j == 2:  # Third cell (0-indexed)
