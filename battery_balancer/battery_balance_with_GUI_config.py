@@ -163,23 +163,6 @@ def read_voltage_with_retry(battery_id, number_of_samples=2, allowed_difference=
         tuple: (average_actual_voltage, list of actual voltage readings, list of raw ADC values) or (None, [], []) if it fails.
     """
     voltage_divider_ratio = config['General']['VoltageDividerRatio']
-    gain_config = config['ADC']['GainConfig']
-    
-    # Determine the full-scale range based on gain setting
-    if gain_config == 0x0000:  # 2/3x gain
-        full_scale_range = 6.144
-    elif gain_config == 0x0200:  # 1x gain
-        full_scale_range = 4.096
-    elif gain_config == 0x0400:  # 2x gain
-        full_scale_range = 2.048
-    elif gain_config == 0x0600:  # 4x gain
-        full_scale_range = 1.024
-    elif gain_config == 0x0800:  # 8x gain
-        full_scale_range = 0.512
-    else:
-        logging.error(f"Unexpected gain configuration: {hex(gain_config)}. Using default 6.144V.")
-        full_scale_range = 6.144
-
     for attempt in range(max_attempts):
         try:
             readings = []
@@ -203,13 +186,13 @@ def read_voltage_with_retry(battery_id, number_of_samples=2, allowed_difference=
                 
                 # Read ADC value in little endian format
                 raw_adc = bus.read_word_data(config['I2C']['VoltageMeterAddress'], config['ADC']['ConversionRegister'])
+                # Ensure we're using little endian by swapping bytes if necessary
                 raw_adc = (raw_adc & 0xFF) << 8 | (raw_adc >> 8)  # Swap bytes for little endian
                 
                 logging.debug(f"Raw ADC value for Battery {battery_id}: {raw_adc}")
                 
                 if raw_adc != 0:
-                    # Convert raw ADC value to measured voltage using the correct full-scale range
-                    measured_voltage = raw_adc * (full_scale_range / 32767)  # Measured voltage after divider
+                    measured_voltage = raw_adc * (6.144 / 32767)  # Measured voltage after divider
                     actual_voltage = measured_voltage / voltage_divider_ratio  # Actual battery voltage before divider
                     readings.append(actual_voltage)
                     raw_values.append(raw_adc)
