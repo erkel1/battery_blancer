@@ -63,7 +63,8 @@ def load_settings():
                 'MaxRetries': config.getint('General', 'MaxRetries'),
                 'EmailAlertIntervalSeconds': config.getint('General', 'EmailAlertIntervalSeconds'),
                 'I2C_BusNumber': config.getint('General', 'I2C_BusNumber'),
-                'LoggingLevel': config.get('General', 'LoggingLevel', fallback='INFO').upper()
+                'LoggingLevel': config.get('General', 'LoggingLevel', fallback='INFO').upper(),
+                'VoltageDividerRatio': config.getfloat('General', 'VoltageDividerRatio', fallback=0.01592)
             },
             'I2C': {
                 'MultiplexerAddress': int(config.get('I2C', 'MultiplexerAddress'), 16),
@@ -150,7 +151,7 @@ def setup_voltage_meter():
 
 def read_voltage_with_retry(battery_id, number_of_samples=2, allowed_difference=0.01, max_attempts=2):
     """
-    Try to read the voltage of a battery several times to get a reliable measurement.
+    Try to read the voltage of a battery several times to get a reliable measurement, accounting for voltage divider.
     
     Args:
         battery_id (int): Which battery we're checking (starts from 1).
@@ -159,8 +160,9 @@ def read_voltage_with_retry(battery_id, number_of_samples=2, allowed_difference=
         max_attempts (int): How many times to try if readings are inconsistent.
 
     Returns:
-        tuple: (average_voltage, list of readings, list of raw ADC values) or (None, [], []) if it fails.
+        tuple: (average_actual_voltage, list of actual voltage readings, list of raw ADC values) or (None, [], []) if it fails.
     """
+    voltage_divider_ratio = config['General']['VoltageDividerRatio']
     for attempt in range(max_attempts):
         try:
             readings = []
@@ -185,8 +187,9 @@ def read_voltage_with_retry(battery_id, number_of_samples=2, allowed_difference=
                 logging.debug(f"Raw ADC value for Battery {battery_id}: {raw_adc}")
                 
                 if raw_adc != 0:
-                    battery_voltage = raw_adc * (6.144 / 32767)  # Ensure this conversion factor matches your setup
-                    readings.append(battery_voltage)
+                    measured_voltage = raw_adc * (6.144 / 32767)  # Measured voltage after divider
+                    actual_voltage = measured_voltage / voltage_divider_ratio  # Actual battery voltage before divider
+                    readings.append(actual_voltage)
                     raw_values.append(raw_adc)
                 else:
                     readings.append(0.0)
