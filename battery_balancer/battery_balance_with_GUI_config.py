@@ -183,7 +183,12 @@ def read_voltage_with_retry(battery_id, number_of_samples=2, allowed_difference=
                 
                 bus.write_byte(config['I2C']['VoltageMeterAddress'], 0x01)  # Start conversion
                 time.sleep(0.05)  # Decreased delay for faster readings
-                raw_adc = bus.read_word_data(config['I2C']['VoltageMeterAddress'], config['ADC']['ConversionRegister']) & 0xFFFF
+                
+                # Read ADC value in little endian format
+                raw_adc = bus.read_word_data(config['I2C']['VoltageMeterAddress'], config['ADC']['ConversionRegister'])
+                # Ensure we're using little endian by swapping bytes if necessary
+                raw_adc = (raw_adc & 0xFF) << 8 | (raw_adc >> 8)  # Swap bytes for little endian
+                
                 logging.debug(f"Raw ADC value for Battery {battery_id}: {raw_adc}")
                 
                 if raw_adc != 0:
