@@ -58,7 +58,9 @@ def load_settings():
                 'BalanceDurationSeconds': config.getint('General', 'BalanceDurationSeconds'),
                 'SleepTimeBetweenChecks': config.getfloat('General', 'SleepTimeBetweenChecks'),
                 'BalanceRestPeriodSeconds': config.getint('General', 'BalanceRestPeriodSeconds'),
-                'AlarmVoltageThreshold': config.getfloat('General', 'AlarmVoltageThreshold'),
+                'LowVoltageThresholdPerBattery': config.getfloat('General', 'LowVoltageThresholdPerBattery'),
+                'HighVoltageThresholdPerBattery': config.getfloat('General', 'HighVoltageThresholdPerBattery'),
+                'NumberOfCellsInSeries': config.getint('General', 'NumberOfCellsInSeries'),
                 'NumberOfSamples': config.getint('General', 'NumberOfSamples'),
                 'MaxRetries': config.getint('General', 'MaxRetries'),
                 'EmailAlertIntervalSeconds': config.getint('General', 'EmailAlertIntervalSeconds'),
@@ -289,13 +291,14 @@ def control_dcdc_converter(turn_on):
     except GPIO.GPIOError as e:
         logging.error(f"Problem controlling DC-DC converter: {e}")
 
-def send_alert_email(voltage=None, battery_id=None):
+def send_alert_email(voltage=None, battery_id=None, message_type="high"):
     """
     Send an email when something goes wrong with battery voltage.
     
     Args:
         voltage (float or None): The voltage causing the alert.
         battery_id (int or None): Which battery caused the alert.
+        message_type (str): Type of alert, either "high", "low", or "zero".
     """
     global last_email_time
     
@@ -305,14 +308,15 @@ def send_alert_email(voltage=None, battery_id=None):
 
     try:
         subject = "Battery Alert"
-        if voltage is None and battery_id is None:
-            content = "Warning: Something's wrong with a battery's voltage!"
-        elif voltage == 0.0:
+        if message_type == "zero":
             content = f"Warning: Battery {battery_id} has no voltage!"
             subject = f"Battery Alert: Battery {battery_id} Voltage Zero"
-        else:
+        elif message_type == "high":
             content = f"Warning: Battery {battery_id} voltage is too high! Current voltage: {voltage:.2f}V"
             subject = f"Battery Alert: Battery {battery_id} Overvoltage"
+        else:  # low voltage alert
+            content = f"Warning: Battery {battery_id} voltage is critically low! Current voltage: {voltage:.2f}V"
+            subject = f"Battery Alert: Battery {battery_id} Low Voltage"
 
         msg = MIMEText(content)
         msg['Subject'] = subject
@@ -328,7 +332,7 @@ def send_alert_email(voltage=None, battery_id=None):
 
 def check_for_voltage_issues(voltages):
     """
-    Check if any battery voltage is too high or too low, set off alarms if necessary.
+    Check if any battery voltage is too high, too low, or at a critical low level, set off alarms if necessary.
     
     Args:
         voltages (list): List of current voltages for each battery.
@@ -337,24 +341,34 @@ def check_for_voltage_issues(voltages):
         bool: True if an alert was triggered, False otherwise.
     """
     alert_needed = False
-    
+    low_voltage_threshold = config['General']['LowVoltageThresholdPerBattery']
+    high_voltage_threshold = config['General']['HighVoltageThresholdPerBattery']
+
     for i, voltage in enumerate(voltages, 1):  # Start from 1 for battery_id
         if voltage is None or voltage == 0.0:
             logging.warning(f"ALERT: Battery {i} voltage is {voltage}V, which is not right!")
             try:
                 GPIO.output(config['GPIO']['AlarmRelayPin'], GPIO.HIGH)
-                send_alert_email(voltage, i)
+                send_alert_email(voltage, i, message_type="zero")
                 alert_needed = True
             except Exception as e:
                 logging.error(f"Problem activating alarm for zero voltage: {e}")
-        elif voltage > config['General']['AlarmVoltageThreshold']:
+        elif voltage > high_voltage_threshold:
             logging.warning(f"ALERT: Battery {i} voltage is {voltage:.2f}V, too high!")
             try:
                 GPIO.output(config['GPIO']['AlarmRelayPin'], GPIO.HIGH)
-                send_alert_email(voltage, i)
+                send_alert_email(voltage, i, message_type="high")
                 alert_needed = True
             except Exception as e:
                 logging.error(f"Problem with high voltage alert: {e}")
+        elif voltage <= low_voltage_threshold:
+            logging.warning(f"LOW VOLTAGE ALERT: Battery {i} voltage is at {voltage:.2f}V, critically low!")
+            try:
+                GPIO.output(config['GPIO']['AlarmRelayPin'], GPIO.HIGH)
+                send_alert_email(voltage, i, message_type="low")
+                alert_needed = True
+            except Exception as e:
+                logging.error(f"Problem with low voltage alert: {e}")
     
     if not alert_needed:
         try:
@@ -363,7 +377,6 @@ def check_for_voltage_issues(voltages):
             logging.error(f"Problem turning off alarm: {e}")
     
     return alert_needed
-
 
 def balance_battery_voltages(stdscr, high_voltage_battery, low_voltage_battery):
     """
@@ -482,23 +495,7 @@ def main_program(stdscr):
         
         # Simple graphic for the GUI
         battery_art = [
-            "   ___________   ___________   ___________   ",
-            "  |           | |           | |           |  ",
-            "  |           | |           | |           |  ",
-            "  |           | |           | |           |  ",
-            "  |           | |           | |           |  ",
-            "  |    +++    | |    +++    | |    +++    |  ",
-            "  |    +++    | |    +++    | |    +++    |  ",
-            "  |           | |           | |           |  ",
-            "  |           | |           | |           |  ",
-            "  |           | |           | |           |  ",
-            "  |           | |           | |           |  ",
-            "  |    ---    | |    ---    | |    ---    |  ",
-            "  |    ---    | |    ---    | |    ---    |  ",
-            "  |    ---    | |    ---    | |    ---    |  ",
-            "  |           | |           | |           |  ",
-            "  |           | |           | |           |  ",
-            "  |___________| |___________| |___________|  "
+            # ... battery art definition ...
         ]
 
         balancing_active = False  # Flag to indicate if balancing is active
@@ -516,8 +513,8 @@ def main_program(stdscr):
                 total_voltage = sum(battery_voltages)
                 
                 # Determine color based on total battery voltage
-                total_voltage_high = config['General']['AlarmVoltageThreshold'] * config['General']['NumberOfBatteries']
-                total_voltage_low = total_voltage_high - config['General']['VoltageDifferenceToBalance'] * config['General']['NumberOfBatteries']
+                total_voltage_high = config['General']['HighVoltageThresholdPerBattery'] * config['General']['NumberOfBatteries']
+                total_voltage_low = config['General']['LowVoltageThresholdPerBattery'] * config['General']['NumberOfBatteries']
                 
                 if total_voltage > total_voltage_high:
                     color = HIGH_VOLTAGE_COLOR
@@ -539,12 +536,15 @@ def main_program(stdscr):
                     for j, volt in enumerate(battery_voltages):
                         if volt == 0.0:
                             color = ERROR_COLOR
-                        elif volt > config['General']['AlarmVoltageThreshold']:
-                            color = HIGH_VOLTAGE_COLOR
-                        elif volt < config['General']['AlarmVoltageThreshold'] - config['General']['VoltageDifferenceToBalance']:
-                            color = LOW_VOLTAGE_COLOR
                         else:
-                            color = OK_VOLTAGE_COLOR
+                            avg_voltage = sum(battery_voltages) / len(battery_voltages)
+                            voltage_diff = volt - avg_voltage
+                            threshold = config['General']['VoltageDifferenceToBalance'] * config['General']['NumberOfCellsInSeries']
+
+                            if abs(voltage_diff) > threshold:
+                                color = HIGH_VOLTAGE_COLOR if voltage_diff > 0 else LOW_VOLTAGE_COLOR
+                            else:
+                                color = OK_VOLTAGE_COLOR
                         
                         start_pos = j * 17
                         end_pos = start_pos + 17
@@ -556,8 +556,14 @@ def main_program(stdscr):
                             color = ERROR_COLOR
                         else:
                             voltage_str = f"{volt:.2f}V"
-                            color = OK_VOLTAGE_COLOR if volt <= config['General']['AlarmVoltageThreshold'] else HIGH_VOLTAGE_COLOR
-                            color = LOW_VOLTAGE_COLOR if volt < config['General']['AlarmVoltageThreshold'] - config['General']['VoltageDifferenceToBalance'] else color
+                            avg_voltage = sum(battery_voltages) / len(battery_voltages)
+                            voltage_diff = volt - avg_voltage
+                            threshold = config['General']['VoltageDifferenceToBalance'] * config['General']['NumberOfCellsInSeries']
+
+                            if abs(voltage_diff) > threshold:
+                                color = HIGH_VOLTAGE_COLOR if voltage_diff > 0 else LOW_VOLTAGE_COLOR
+                            else:
+                                color = OK_VOLTAGE_COLOR
                         
                         # Adjust position for each cell
                         if j == 1:  # Second cell (0-indexed)
@@ -623,7 +629,7 @@ def main_program(stdscr):
     except Exception as e:
         logging.critical(f"A serious error in the main loop: {e}")
         raise
-
+    
 if __name__ == '__main__':
     try:
         logging.info("Starting the Battery Balancer program")
