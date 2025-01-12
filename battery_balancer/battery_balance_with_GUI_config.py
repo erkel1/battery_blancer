@@ -495,7 +495,23 @@ def main_program(stdscr):
         
         # Simple graphic for the GUI
         battery_art = [
-            # ... battery art definition ...
+            "   ___________   ___________   ___________   ",
+            "  |           | |           | |           |  ",
+            "  |           | |           | |           |  ",
+            "  |           | |           | |           |  ",
+            "  |           | |           | |           |  ",
+            "  |    +++    | |    +++    | |    +++    |  ",
+            "  |    +++    | |    +++    | |    +++    |  ",
+            "  |           | |           | |           |  ",
+            "  |           | |           | |           |  ",
+            "  |           | |           | |           |  ",
+            "  |           | |           | |           |  ",
+            "  |    ---    | |    ---    | |    ---    |  ",
+            "  |    ---    | |    ---    | |    ---    |  ",
+            "  |    ---    | |    ---    | |    ---    |  ",
+            "  |           | |           | |           |  ",
+            "  |           | |           | |           |  ",
+            "  |___________| |___________| |___________|  "
         ]
 
         balancing_active = False  # Flag to indicate if balancing is active
@@ -629,7 +645,7 @@ def main_program(stdscr):
     except Exception as e:
         logging.critical(f"A serious error in the main loop: {e}")
         raise
-    
+
 if __name__ == '__main__':
     try:
         logging.info("Starting the Battery Balancer program")
