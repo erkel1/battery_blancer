@@ -36,6 +36,8 @@ last_balance_time = 0
 voltage_history = {1: deque(maxlen=40), 2: deque(maxlen=40), 3: deque(maxlen=40)}
 balance_progress = 0.0
 last_balance_update = 0
+email_error_count = 0
+last_email_error_time = 0
 
 # Color constants
 COLOR_HEADER = 1
@@ -56,7 +58,6 @@ GAIN_FS_VOLTAGE = {
     0x0C00: 0.256,   # 16x
     0x0E00: 0.256    # 16x
 }
-
 
 def validate_config(config):
     """Validate the configuration file to ensure all required fields are present."""
@@ -79,7 +80,6 @@ def validate_config(config):
             if field not in config[section]:
                 raise ValueError(f"Missing field in config: {section}.{field}")
 
-
 def get_config_int(section, option):
     """Helper function to parse config values as either decimal or hexadecimal."""
     value = config.get(section, option)
@@ -87,7 +87,6 @@ def get_config_int(section, option):
         return int(value, 10)  # Try to parse as decimal
     except ValueError:
         return int(value, 16)  # If that fails, try to parse as hexadecimal
-
 
 def load_settings():
     """Load and validate settings from the configuration file."""
@@ -139,7 +138,6 @@ def load_settings():
         logging.error(f"Config error: {e}")
         raise
 
-
 def setup_hardware():
     """Initialize hardware components."""
     global bus, config_values
@@ -154,7 +152,6 @@ def setup_hardware():
         logging.critical(f"Hardware setup failed: {e}")
         raise
 
-
 def choose_channel(channel):
     """Select a channel on the I2C multiplexer."""
     try:
@@ -162,14 +159,13 @@ def choose_channel(channel):
     except IOError as e:
         logging.error(f"Channel select error: {e}")
 
-
 def setup_voltage_meter():
     """Configure the voltage meter ADC."""
     try:
         config_value = (get_config_int('ADC', 'ContinuousModeConfig') |
                         get_config_int('ADC', 'SampleRateConfig') |
                         get_config_int('ADC', 'GainConfig'))
-        
+
         # Swap bytes for correct I2C communication
         config_value_swapped = ((config_value << 8) & 0xFF00) | (config_value >> 8)
         bus.write_word_data(config_values['I2C']['VoltageMeterAddress'],
@@ -178,7 +174,6 @@ def setup_voltage_meter():
     except IOError as e:
         logging.error(f"Voltage meter setup error: {e}")
 
-
 def read_voltage_with_retry(battery_id, samples=2, max_attempts=2):
     """Read voltage from a battery with retry logic."""
     ratio = config_values['General']['VoltageDividerRatio']
@@ -186,7 +181,7 @@ def read_voltage_with_retry(battery_id, samples=2, max_attempts=2):
     calibration = config_values['Calibration'][f'Sensor{sensor_id}_Calibration']
     gain = config_values['ADC']['GainConfig']
     fs_voltage = GAIN_FS_VOLTAGE.get(gain, 2.048)  # Default to 2.048V if unknown
-    
+
     for attempt in range(max_attempts):
         try:
             readings = []
@@ -215,17 +210,16 @@ def read_voltage_with_retry(battery_id, samples=2, max_attempts=2):
         except IOError as e:
             logging.warning(f"Read error battery {battery_id}: {e}")
             time.sleep(0.01)
-    
+
     logging.error(f"Failed reading battery {battery_id}")
     return None, [], []
-
 
 def set_relay_connection(high, low):
     """Set relay connections for balancing."""
     try:
         choose_channel(3)
         relay_state = 0
-        
+
         if high == 2 and low == 1:
             relay_state |= 1 << 0
         elif high == 3 and low == 1:
@@ -243,7 +237,6 @@ def set_relay_connection(high, low):
     except Exception as e:
         logging.error(f"Relay error: {e}")
 
-
 def control_dcdc_converter(enable):
     """Control the DC-DC converter relay."""
     try:
@@ -251,13 +244,17 @@ def control_dcdc_converter(enable):
     except GPIO.GPIOError as e:
         logging.error(f"DC-DC control error: {e}")
 
-
 def send_alert_email(voltage=None, bid=None, alert_type="high"):
     """Send an email alert for voltage issues."""
-    global last_email_time
+    global last_email_time, email_error_count, last_email_error_time
     if time.time() - last_email_time < config_values['General']['EmailAlertIntervalSeconds']:
         return
-    
+
+    # Prevent email spam on credential errors
+    if email_error_count > 3 and (time.time() - last_email_error_time) < 3600:
+        logging.warning("Skipping email due to repeated errors")
+        return
+
     try:
         subject = "Battery Alert - "
         body = ""
@@ -276,26 +273,40 @@ def send_alert_email(voltage=None, bid=None, alert_type="high"):
         msg['From'] = config_values['Email']['SenderEmail']
         msg['To'] = config_values['Email']['RecipientEmail']
         
-        with smtplib.SMTP(config_values['Email']['SMTP_Server'],
-                         config_values['Email']['SMTP_Port']) as server:
-            server.starttls()
+        with smtplib.SMTP_SSL(config_values['Email']['SMTP_Server'],
+                            config_values['Email']['SMTP_Port']) as server:
             server.login(config_values['Email']['SMTP_User'],
                         config_values['Email']['SMTP_Password'])
             server.send_message(msg)
+            
         last_email_time = time.time()
+        email_error_count = 0  # Reset error counter on success
+        
+    except smtplib.SMTPAuthenticationError as e:
+        email_error_count += 1
+        last_email_error_time = time.time()
+        logging.critical(f"Email authentication failed: {e}")
+        GPIO.output(config_values['GPIO']['AlarmRelayPin'], GPIO.HIGH)
+        raise  # Stop further attempts
     except Exception as e:
+        email_error_count += 1
+        last_email_error_time = time.time()
         logging.error(f"Email failed: {e}")
-
 
 def send_alert_email_async(voltage=None, bid=None, alert_type="high"):
     """Send an email alert asynchronously."""
+    if email_error_count > 3:
+        return
     email_thread = threading.Thread(target=send_alert_email, args=(voltage, bid, alert_type))
     email_thread.start()
 
-
 def check_for_voltage_issues(voltages):
     """Check for voltage issues and trigger alerts."""
+    global email_error_count
     alert = False
+    if email_error_count > 3:
+        return True  # Prevent alert spam if email is failing
+        
     for i, v in enumerate(voltages, 1):
         if v is None or v <= 0:
             send_alert_email_async(v, i, "zero")
@@ -309,11 +320,10 @@ def check_for_voltage_issues(voltages):
             send_alert_email_async(v, i, "low")
             alert = True
             GPIO.output(config_values['GPIO']['AlarmRelayPin'], GPIO.HIGH)
-    
+
     if not alert:
         GPIO.output(config_values['GPIO']['AlarmRelayPin'], GPIO.LOW)
     return alert
-
 
 def balance_battery_voltages(stdscr, high_bat, low_bat):
     """Balance the voltages of two batteries."""
@@ -323,7 +333,7 @@ def balance_battery_voltages(stdscr, high_bat, low_bat):
         balance_start_time = time.time()
         set_relay_connection(high_bat, low_bat)
         control_dcdc_converter(True)
-        
+
         while time.time() - balance_start_time < config_values['General']['BalanceDurationSeconds']:
             balance_progress = (time.time() - balance_start_time) / config_values['General']['BalanceDurationSeconds']
             stdscr.noutrefresh()
@@ -337,7 +347,6 @@ def balance_battery_voltages(stdscr, high_bat, low_bat):
         set_relay_connection(0, 0)
         balancing_active = False
 
-
 def draw_header(stdscr):
     """Draw the header of the UI."""
     cols = curses.COLS
@@ -348,18 +357,17 @@ def draw_header(stdscr):
     stdscr.addstr(1, cols-1, "│", curses.color_pair(COLOR_HEADER))
     stdscr.addstr(2, 0, "╰" + "─"*(cols-2) + "╯", curses.color_pair(COLOR_HEADER))
 
-
 def draw_battery(stdscr, y, x, voltage, is_active=False):
     """Draw a battery icon with voltage level."""
     max_v = config_values['General']['HighVoltageThresholdPerBattery']
     fill = min(16, math.ceil(16 * (voltage / max_v)))
-    
+
     color = COLOR_NORMAL
     if voltage > max_v:
         color = COLOR_CRITICAL
     elif voltage < config_values['General']['LowVoltageThresholdPerBattery']:
         color = COLOR_WARNING
-    
+
     attr = curses.A_BOLD if is_active else curses.A_NORMAL
     stdscr.addstr(y, x, "╔════════════════╗", curses.color_pair(color) | attr)
     stdscr.addstr(y+1, x, "║", curses.color_pair(color) | attr)
@@ -369,19 +377,18 @@ def draw_battery(stdscr, y, x, voltage, is_active=False):
     stdscr.addstr(y+2, x, "╚════════════════╝", curses.color_pair(color) | attr)
     stdscr.addstr(y+3, x-1, f"{voltage:.2f}V".center(18), curses.color_pair(color))
 
-
 def draw_graph(stdscr, y, x, history):
     """Draw a voltage history graph."""
     h = 10
     w = 40
     max_v = config_values['General']['HighVoltageThresholdPerBattery']
     min_v = config_values['General']['LowVoltageThresholdPerBattery']
-    
+
     stdscr.addstr(y, x, "╔" + "═"*(w-2) + "╗", curses.color_pair(COLOR_GRAPH_BG))
     for i in range(1, h-1):
         stdscr.addstr(y+i, x, "║" + " "*(w-2) + "║", curses.color_pair(COLOR_GRAPH_BG))
     stdscr.addstr(y+h-1, x, "╚" + "═"*(w-2) + "╯", curses.color_pair(COLOR_GRAPH_BG))
-    
+
     if max_v > min_v:  # Prevent division by zero
         for idx, v in enumerate(history):
             if idx >= w-2: break
@@ -389,7 +396,6 @@ def draw_graph(stdscr, y, x, history):
             y_pos = max(y, min(y+h-2, y_pos))  # Clamp to graph bounds
             if y <= y_pos < y+h-1:
                 stdscr.addch(y_pos, x+1+idx, '•', curses.color_pair(COLOR_NORMAL))
-
 
 def draw_status(stdscr, y, x, voltages, progress):
     """Draw the status panel."""
@@ -400,12 +406,11 @@ def draw_status(stdscr, y, x, voltages, progress):
         if balancing_active else 
         f"Last: {time.strftime('%H:%M:%S', time.localtime(last_balance_time))}"
     ]
-    
+
     stdscr.addstr(y, x, "╭─ STATUS ────────────────────╮", curses.color_pair(COLOR_STATUS))
     for i, line in enumerate(status):
         stdscr.addstr(y+1+i, x, f"│ {line.ljust(26)} │", curses.color_pair(COLOR_STATUS))
     stdscr.addstr(y+len(status)+1, x, "╰────────────────────────────╯", curses.color_pair(COLOR_STATUS))
-
 
 def save_voltage_history(history):
     """Save voltage history to a CSV file."""
@@ -413,22 +418,39 @@ def save_voltage_history(history):
         writer = csv.writer(file)
         writer.writerow([time.time()] + list(history))
 
-
 def main_program(stdscr):
     global last_balance_time, balancing_active, balance_start_time, balance_progress, config_values
     try:
+        # Check terminal size
+        if curses.LINES < 24 or curses.COLS < 80:
+            raise RuntimeError("Terminal too small - minimum 80x24 required")
+
         curses.curs_set(0)
         curses.start_color()
+        
+        # Robust color initialization
         try:
-            curses.init_pair(COLOR_HEADER, curses.COLOR_CYAN, -1)
-            curses.init_pair(COLOR_NORMAL, curses.COLOR_GREEN, -1)
-            curses.init_pair(COLOR_WARNING, curses.COLOR_YELLOW, -1)
-            curses.init_pair(COLOR_CRITICAL, curses.COLOR_RED, -1)
-            curses.init_pair(COLOR_STATUS, curses.COLOR_WHITE, curses.COLOR_BLUE)
-            curses.init_pair(COLOR_GRAPH_BG, curses.COLOR_BLACK, curses.COLOR_WHITE)
+            if curses.can_change_color():
+                curses.use_default_colors()
+                curses.init_pair(COLOR_HEADER, curses.COLOR_CYAN, -1)
+                curses.init_pair(COLOR_NORMAL, curses.COLOR_GREEN, -1)
+                curses.init_pair(COLOR_WARNING, curses.COLOR_YELLOW, -1)
+                curses.init_pair(COLOR_CRITICAL, curses.COLOR_RED, -1)
+                curses.init_pair(COLOR_STATUS, curses.COLOR_WHITE, curses.COLOR_BLUE)
+                curses.init_pair(COLOR_GRAPH_BG, curses.COLOR_BLACK, curses.COLOR_WHITE)
+            else:
+                # Fallback for limited color terminals
+                curses.init_pair(COLOR_HEADER, curses.COLOR_WHITE, curses.COLOR_BLUE)
+                curses.init_pair(COLOR_NORMAL, curses.COLOR_GREEN, curses.COLOR_BLACK)
+                curses.init_pair(COLOR_WARNING, curses.COLOR_YELLOW, curses.COLOR_BLACK)
+                curses.init_pair(COLOR_CRITICAL, curses.COLOR_RED, curses.COLOR_BLACK)
+                curses.init_pair(COLOR_STATUS, curses.COLOR_WHITE, curses.COLOR_BLUE)
         except curses.error as e:
-            logging.warning(f"Color initialization failed: {e}. Using default colors.")
-            curses.use_default_colors()
+            logging.warning(f"Color initialization failed: {e}")
+            curses.init_pair(COLOR_HEADER, 0, 0)
+            curses.init_pair(COLOR_NORMAL, 0, 0)
+            curses.init_pair(COLOR_WARNING, 0, 0)
+            curses.init_pair(COLOR_CRITICAL, 0, 0)
 
         setup_hardware()
         batt_count = config_values['General']['NumberOfBatteries']
@@ -483,7 +505,6 @@ def signal_handler(sig, frame):
     logging.info("Shutting down gracefully...")
     GPIO.cleanup()
     sys.exit(0)
-
 
 if __name__ == '__main__':
     try:
