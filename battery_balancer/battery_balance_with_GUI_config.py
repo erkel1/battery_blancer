@@ -405,61 +405,68 @@ def save_voltage_history(history):
         writer.writerow([time.time()] + list(history))
 
 
-def main_program(stdscr):
-    """Main program loop."""
-    curses.curs_set(0)
-    curses.start_color()
-    curses.init_pair(COLOR_HEADER, curses.COLOR_CYAN, -1)
-    curses.init_pair(COLOR_NORMAL, curses.COLOR_GREEN, -1)
-    curses.init_pair(COLOR_WARNING, curses.COLOR_YELLOW, -1)
-    curses.init_pair(COLOR_CRITICAL, curses.COLOR_RED, -1)
-    curses.init_pair(COLOR_STATUS, curses.COLOR_WHITE, curses.COLOR_BLUE)
-    curses.init_pair(COLOR_GRAPH_BG, curses.COLOR_BLACK, curses.COLOR_WHITE)
+ddef main_program(stdscr):
+    try:
+        curses.curs_set(0)
+        curses.start_color()
+        try:
+            curses.init_pair(COLOR_HEADER, curses.COLOR_CYAN, -1)
+            curses.init_pair(COLOR_NORMAL, curses.COLOR_GREEN, -1)
+            curses.init_pair(COLOR_WARNING, curses.COLOR_YELLOW, -1)
+            curses.init_pair(COLOR_CRITICAL, curses.COLOR_RED, -1)
+            curses.init_pair(COLOR_STATUS, curses.COLOR_WHITE, curses.COLOR_BLUE)
+            curses.init_pair(COLOR_GRAPH_BG, curses.COLOR_BLACK, curses.COLOR_WHITE)
+        except curses.error as e:
+            logging.warning(f"Color initialization failed: {e}. Using default colors.")
+            curses.use_default_colors()
 
-    setup_hardware()
-    batt_count = config_values['General']['NumberOfBatteries']
+        setup_hardware()
+        batt_count = config_values['General']['NumberOfBatteries']
 
-    while True:
-        stdscr.erase()
-        draw_header(stdscr)
-        
-        # Read voltages
-        voltages = []
-        for i in range(1, batt_count+1):
-            v, _, _ = read_voltage_with_retry(i)
-            voltages.append(v if v else 0.0)
-            voltage_history[i].append(v)
-        
-        # Save voltage history
-        save_voltage_history(voltages)
-        
-        # Draw batteries
-        positions = {}
-        for idx, v in enumerate(voltages):
-            x = 4 + idx * 22
-            positions[idx+1] = x
-            draw_battery(stdscr, 4, x, v, balancing_active and (idx+1 == high_bat))
-            draw_graph(stdscr, 9, x-2, list(voltage_history[idx+1]))
-        
-        # Status panel
-        draw_status(stdscr, 4, curses.COLS-32, voltages, balance_progress)
-        
-        # Balance logic
-        max_v = max(voltages)
-        min_v = min(voltages)
-        high_bat = voltages.index(max_v) + 1
-        low_bat = voltages.index(min_v) + 1
-        
-        if (max_v - min_v) > config_values['General']['VoltageDifferenceToBalance']:
-            if not balancing_active and (time.time() - last_balance_time) > config_values['General']['BalanceRestPeriodSeconds']:
-                balance_battery_voltages(stdscr, high_bat, low_bat)
-                last_balance_time = time.time()
-        
-        check_for_voltage_issues(voltages)
-        stdscr.noutrefresh()
-        curses.doupdate()
-        time.sleep(config_values['General']['SleepTimeBetweenChecks'])
+        while True:
+            stdscr.erase()
+            draw_header(stdscr)
+            
+            # Read voltages
+            voltages = []
+            for i in range(1, batt_count+1):
+                v, _, _ = read_voltage_with_retry(i)
+                voltages.append(v if v else 0.0)
+                voltage_history[i].append(v)
+            
+            # Save voltage history
+            save_voltage_history(voltages)
+            
+            # Draw batteries
+            positions = {}
+            for idx, v in enumerate(voltages):
+                x = 4 + idx * 22
+                positions[idx+1] = x
+                draw_battery(stdscr, 4, x, v, balancing_active and (idx+1 == high_bat))
+                draw_graph(stdscr, 9, x-2, list(voltage_history[idx+1]))
+            
+            # Status panel
+            draw_status(stdscr, 4, curses.COLS-32, voltages, balance_progress)
+            
+            # Balance logic
+            max_v = max(voltages)
+            min_v = min(voltages)
+            high_bat = voltages.index(max_v) + 1
+            low_bat = voltages.index(min_v) + 1
+            
+            if (max_v - min_v) > config_values['General']['VoltageDifferenceToBalance']:
+                if not balancing_active and (time.time() - last_balance_time) > config_values['General']['BalanceRestPeriodSeconds']:
+                    balance_battery_voltages(stdscr, high_bat, low_bat)
+                    last_balance_time = time.time()
+            
+            check_for_voltage_issues(voltages)
+            stdscr.noutrefresh()
+            curses.doupdate()
+            time.sleep(config_values['General']['SleepTimeBetweenChecks'])
 
+    except Exception as e:
+        logging.critical(f"Fatal error in main program: {e}")
+        raise
 
 def signal_handler(sig, frame):
     """Handle signals for graceful shutdown."""
