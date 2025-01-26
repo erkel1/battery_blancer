@@ -79,35 +79,45 @@ def validate_config(config):
             if field not in config[section]:
                 raise ValueError(f"Missing field in config: {section}.{field}")
 
+
+def get_config_int(section, option):
+    """Helper function to parse config values as either decimal or hexadecimal."""
+    value = config.get(section, option)
+    try:
+        return int(value, 10)  # Try to parse as decimal
+    except ValueError:
+        return int(value, 16)  # If that fails, try to parse as hexadecimal
+
+
 def load_settings():
     """Load and validate settings from the configuration file."""
     try:
         validate_config(config)
         settings = {
             'General': {
-                'NumberOfBatteries': config.getint('General', 'NumberOfBatteries'),
+                'NumberOfBatteries': get_config_int('General', 'NumberOfBatteries'),
                 'VoltageDifferenceToBalance': config.getfloat('General', 'VoltageDifferenceToBalance'),
-                'BalanceDurationSeconds': config.getint('General', 'BalanceDurationSeconds'),
+                'BalanceDurationSeconds': get_config_int('General', 'BalanceDurationSeconds'),
                 'SleepTimeBetweenChecks': config.getfloat('General', 'SleepTimeBetweenChecks'),
-                'BalanceRestPeriodSeconds': config.getint('General', 'BalanceRestPeriodSeconds'),
+                'BalanceRestPeriodSeconds': get_config_int('General', 'BalanceRestPeriodSeconds'),
                 'LowVoltageThresholdPerBattery': config.getfloat('General', 'LowVoltageThresholdPerBattery'),
                 'HighVoltageThresholdPerBattery': config.getfloat('General', 'HighVoltageThresholdPerBattery'),
-                'I2C_BusNumber': config.getint('General', 'I2C_BusNumber'),
+                'I2C_BusNumber': get_config_int('General', 'I2C_BusNumber'),
                 'VoltageDividerRatio': config.getfloat('General', 'VoltageDividerRatio'),
-                'EmailAlertIntervalSeconds': config.getint('General', 'EmailAlertIntervalSeconds')
+                'EmailAlertIntervalSeconds': get_config_int('General', 'EmailAlertIntervalSeconds')
             },
             'I2C': {
-                'MultiplexerAddress': int(config.get('I2C', 'MultiplexerAddress'), 16),
-                'VoltageMeterAddress': int(config.get('I2C', 'VoltageMeterAddress'), 16),
-                'RelayAddress': int(config.get('I2C', 'RelayAddress'), 16),
+                'MultiplexerAddress': get_config_int('I2C', 'MultiplexerAddress'),
+                'VoltageMeterAddress': get_config_int('I2C', 'VoltageMeterAddress'),
+                'RelayAddress': get_config_int('I2C', 'RelayAddress'),
             },
             'GPIO': {
-                'DC_DC_RelayPin': config.getint('GPIO', 'DC_DC_RelayPin'),
-                'AlarmRelayPin': config.getint('GPIO', 'AlarmRelayPin'),
+                'DC_DC_RelayPin': get_config_int('GPIO', 'DC_DC_RelayPin'),
+                'AlarmRelayPin': get_config_int('GPIO', 'AlarmRelayPin'),
             },
             'Email': {
                 'SMTP_Server': config.get('Email', 'SMTP_Server'),
-                'SMTP_Port': config.getint('Email', 'SMTP_Port'),
+                'SMTP_Port': get_config_int('Email', 'SMTP_Port'),
                 'SenderEmail': config.get('Email', 'SenderEmail'),
                 'RecipientEmail': config.get('Email', 'RecipientEmail'),
                 'SMTP_User': config.get('Email', 'SMTP_User'),
@@ -119,15 +129,16 @@ def load_settings():
                 'Sensor3_Calibration': config.getfloat('Calibration', 'Sensor3_Calibration'),
             },
             'ADC': {
-                'GainConfig': int(config.get('ADC', 'GainConfig'), 16),  # Parse as hex
-                'ContinuousModeConfig': int(config.get('ADC', 'ContinuousModeConfig'), 16),  # Parse as hex
-                'SampleRateConfig': int(config.get('ADC', 'SampleRateConfig'), 16)  # Parse as hex
+                'GainConfig': get_config_int('ADC', 'GainConfig'),  # Parse as hex
+                'ContinuousModeConfig': get_config_int('ADC', 'ContinuousModeConfig'),  # Parse as hex
+                'SampleRateConfig': get_config_int('ADC', 'SampleRateConfig')  # Parse as hex
             }
         }
         return settings
     except Exception as e:
         logging.error(f"Config error: {e}")
         raise
+
 
 def setup_hardware():
     """Initialize hardware components."""
@@ -151,24 +162,18 @@ def choose_channel(channel):
     except IOError as e:
         logging.error(f"Channel select error: {e}")
 
-def get_config_int(section, option):
-    value = config.get(section, option)
-    try:
-        return int(value, 10)  # Try to parse as decimal
-    except ValueError:
-        return int(value, 16)  # If that fails, try to parse as hexadecimal
 
 def setup_voltage_meter():
     """Configure the voltage meter ADC."""
     try:
         config_value = (get_config_int('ADC', 'ContinuousModeConfig') |
-                    get_config_int('ADC', 'SampleRateConfig') |
-                    get_config_int('ADC', 'GainConfig'))
+                        get_config_int('ADC', 'SampleRateConfig') |
+                        get_config_int('ADC', 'GainConfig'))
         
         # Swap bytes for correct I2C communication
         config_value_swapped = ((config_value << 8) & 0xFF00) | (config_value >> 8)
         bus.write_word_data(config_values['I2C']['VoltageMeterAddress'],
-                           config.getint('ADC', 'ConfigRegister'),
+                           get_config_int('ADC', 'ConfigRegister'),
                            config_value_swapped)
     except IOError as e:
         logging.error(f"Voltage meter setup error: {e}")
@@ -196,7 +201,7 @@ def read_voltage_with_retry(battery_id, samples=2, max_attempts=2):
                 time.sleep(0.05)
                 
                 raw_adc = bus.read_word_data(config_values['I2C']['VoltageMeterAddress'],
-                                            config.getint('ADC', 'ConversionRegister'))
+                                            get_config_int('ADC', 'ConversionRegister'))
                 raw_adc = (raw_adc & 0xFF) << 8 | (raw_adc >> 8)  # Correct byte order
                 
                 if raw_adc:
