@@ -405,7 +405,7 @@ def save_voltage_history(history):
         writer.writerow([time.time()] + list(history))
 
 
-ddef main_program(stdscr):
+def main_program(stdscr):
     try:
         curses.curs_set(0)
         curses.start_color()
