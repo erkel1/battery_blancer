@@ -377,6 +377,7 @@ def draw_battery(stdscr, y, x, voltage, is_active=False):
     stdscr.addstr(y+2, x, "╚════════════════╝", curses.color_pair(color) | attr)
     stdscr.addstr(y+3, x-1, f"{voltage:.2f}V".center(18), curses.color_pair(color))
 
+
 def draw_graph(stdscr, y, x, history):
     """Draw a voltage history graph."""
     h = 10
@@ -391,8 +392,11 @@ def draw_graph(stdscr, y, x, history):
 
     if max_v > min_v:  # Prevent division by zero
         for idx, v in enumerate(history):
-            if idx >= w-2: break
-            y_pos = y + h-2 - int((v-min_v)/(max_v-min_v)*(h-2))
+            if v is None:  # Skip invalid entries (ADDED CHECK)
+                continue
+            if idx >= w-2: 
+                break
+            y_pos = y + h-2 - int((v - min_v) / (max_v - min_v) * (h-2))
             y_pos = max(y, min(y+h-2, y_pos))  # Clamp to graph bounds
             if y <= y_pos < y+h-1:
                 stdscr.addch(y_pos, x+1+idx, '•', curses.color_pair(COLOR_NORMAL))
@@ -417,6 +421,7 @@ def save_voltage_history(history):
     with open('voltage_history.csv', 'a', newline='') as file:
         writer = csv.writer(file)
         writer.writerow([time.time()] + list(history))
+
 
 def main_program(stdscr):
     global last_balance_time, balancing_active, balance_start_time, balance_progress, config_values
@@ -459,12 +464,13 @@ def main_program(stdscr):
             stdscr.erase()
             draw_header(stdscr)
             
-            # Read voltages
+            # Read voltages (FIXED SECTION)
             voltages = []
-            for i in range(1, batt_count+1):
-                v, _, _ = read_voltage_with_retry(i)
-                voltages.append(v if v else 0.0)
-                voltage_history[i].append(v)
+            for i in range(1, batt_count + 1):
+                v_read, _, _ = read_voltage_with_retry(i)
+                v = v_read if v_read is not None else 0.0  # Critical fix here
+                voltages.append(v)
+                voltage_history[i].append(v)  # Now stores 0.0 instead of None
             
             # Save voltage history
             save_voltage_history(voltages)
@@ -499,6 +505,7 @@ def main_program(stdscr):
     except Exception as e:
         logging.critical(f"Fatal error in main program: {e}")
         raise
+
 
 def signal_handler(sig, frame):
     """Handle signals for graceful shutdown."""
