@@ -131,6 +131,7 @@ def load_settings():
         raise
 
 
+
 def setup_hardware():
     """Initialize hardware components."""
     global bus, config_values
