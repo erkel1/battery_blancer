@@ -55,6 +55,7 @@ GAIN_FS_VOLTAGE = {
     0x0E00: 0.256    # 16x
 }
 
+
 def load_settings():
     try:
         settings = {
@@ -93,13 +94,16 @@ def load_settings():
                 'Sensor3_Calibration': config.getfloat('Calibration', 'Sensor3_Calibration'),
             },
             'ADC': {
-                'GainConfig': config.getint('ADC', 'GainConfig', fallback=0x0400)
+                'GainConfig': int(config.get('ADC', 'GainConfig'), 16),
+                'ContinuousModeConfig': int(config.get('ADC', 'ContinuousModeConfig'), 16),
+                'SampleRateConfig': int(config.get('ADC', 'SampleRateConfig'), 16)
             }
         }
         return settings
     except Exception as e:
         logging.error(f"Config error: {e}")
         raise
+
 
 def setup_hardware():
     global bus, config_values
