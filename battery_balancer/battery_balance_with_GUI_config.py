@@ -161,7 +161,7 @@ def get_config_int(section, option):
 def setup_voltage_meter():
     """Configure the voltage meter ADC."""
     try:
-        onfig_value = (get_config_int('ADC', 'ContinuousModeConfig') |
+        config_value = (get_config_int('ADC', 'ContinuousModeConfig') |
                     get_config_int('ADC', 'SampleRateConfig') |
                     get_config_int('ADC', 'GainConfig'))
         
