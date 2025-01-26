@@ -43,6 +43,18 @@ COLOR_CRITICAL = 4
 COLOR_STATUS = 5
 COLOR_GRAPH_BG = 6
 
+# ADC Configuration Mappings
+GAIN_FS_VOLTAGE = {
+    0x0E00: 6.144,  # 2/3x
+    0x0000: 4.096,   # 1x
+    0x0400: 2.048,   # 2x
+    0x0600: 1.024,   # 4x
+    0x0800: 0.512,   # 8x
+    0x0A00: 0.256,   # 16x
+    0x0C00: 0.256,   # 16x
+    0x0E00: 0.256    # 16x
+}
+
 def load_settings():
     try:
         settings = {
@@ -55,7 +67,8 @@ def load_settings():
                 'LowVoltageThresholdPerBattery': config.getfloat('General', 'LowVoltageThresholdPerBattery'),
                 'HighVoltageThresholdPerBattery': config.getfloat('General', 'HighVoltageThresholdPerBattery'),
                 'I2C_BusNumber': config.getint('General', 'I2C_BusNumber'),
-                'VoltageDividerRatio': config.getfloat('General', 'VoltageDividerRatio')
+                'VoltageDividerRatio': config.getfloat('General', 'VoltageDividerRatio'),
+                'EmailAlertIntervalSeconds': config.getint('General', 'EmailAlertIntervalSeconds')
             },
             'I2C': {
                 'MultiplexerAddress': int(config.get('I2C', 'MultiplexerAddress'), 16),
@@ -71,11 +84,16 @@ def load_settings():
                 'SMTP_Port': config.getint('Email', 'SMTP_Port'),
                 'SenderEmail': config.get('Email', 'SenderEmail'),
                 'RecipientEmail': config.get('Email', 'RecipientEmail'),
+                'SMTP_User': config.get('Email', 'SMTP_User'),
+                'SMTP_Password': config.get('Email', 'SMTP_Password')
             },
             'Calibration': {
                 'Sensor1_Calibration': config.getfloat('Calibration', 'Sensor1_Calibration'),
                 'Sensor2_Calibration': config.getfloat('Calibration', 'Sensor2_Calibration'),
                 'Sensor3_Calibration': config.getfloat('Calibration', 'Sensor3_Calibration'),
+            },
+            'ADC': {
+                'GainConfig': config.getint('ADC', 'GainConfig', fallback=0x0400)
             }
         }
         return settings
@@ -103,13 +121,16 @@ def choose_channel(channel):
         logging.error(f"Channel select error: {e}")
 
 def setup_voltage_meter():
-    config_value = (int(config.get('ADC', 'ContinuousModeConfig'), 16) |
-                    int(config.get('ADC', 'SampleRateConfig'), 16) |
-                    int(config.get('ADC', 'GainConfig'), 16))
     try:
+        config_value = (config.getint('ADC', 'ContinuousModeConfig') |
+                        config.getint('ADC', 'SampleRateConfig') |
+                        config.getint('ADC', 'GainConfig'))
+        
+        # Swap bytes for correct I2C communication
+        config_value_swapped = ((config_value << 8) & 0xFF00) | (config_value >> 8)
         bus.write_word_data(config_values['I2C']['VoltageMeterAddress'],
-                           int(config.get('ADC', 'ConfigRegister'), 16),
-                           config_value)
+                           config.getint('ADC', 'ConfigRegister'),
+                           config_value_swapped)
     except IOError as e:
         logging.error(f"Voltage meter setup error: {e}")
 
@@ -117,6 +138,8 @@ def read_voltage_with_retry(battery_id, samples=2, max_attempts=2):
     ratio = config_values['General']['VoltageDividerRatio']
     sensor_id = (battery_id - 1) % 3 + 1
     calibration = config_values['Calibration'][f'Sensor{sensor_id}_Calibration']
+    gain = config_values['ADC']['GainConfig']
+    fs_voltage = GAIN_FS_VOLTAGE.get(gain, 2.048)  # Default to 2.048V if unknown
     
     for attempt in range(max_attempts):
         try:
@@ -126,14 +149,17 @@ def read_voltage_with_retry(battery_id, samples=2, max_attempts=2):
                 channel = (battery_id - 1) % 3
                 choose_channel(channel)
                 setup_voltage_meter()
+                
+                # Trigger single-shot conversion
                 bus.write_byte(config_values['I2C']['VoltageMeterAddress'], 0x01)
                 time.sleep(0.05)
+                
                 raw_adc = bus.read_word_data(config_values['I2C']['VoltageMeterAddress'],
-                                            int(config.get('ADC', 'ConversionRegister'), 16))
-                raw_adc = (raw_adc & 0xFF) << 8 | (raw_adc >> 8)
+                                            config.getint('ADC', 'ConversionRegister'))
+                raw_adc = (raw_adc & 0xFF) << 8 | (raw_adc >> 8)  # Correct byte order
                 
                 if raw_adc:
-                    voltage = (raw_adc * 6.144 / 32767) / ratio * calibration
+                    voltage = (raw_adc * fs_voltage / 32767) / ratio * calibration
                     readings.append(voltage)
                     raw_values.append(raw_adc)
             
@@ -200,6 +226,9 @@ def send_alert_email(voltage=None, bid=None, alert_type="high"):
         
         with smtplib.SMTP(config_values['Email']['SMTP_Server'],
                          config_values['Email']['SMTP_Port']) as server:
+            server.starttls()
+            server.login(config_values['Email']['SMTP_User'],
+                        config_values['Email']['SMTP_Password'])
             server.send_message(msg)
         last_email_time = time.time()
     except Exception as e:
@@ -239,11 +268,11 @@ def balance_battery_voltages(stdscr, high_bat, low_bat):
             curses.doupdate()
             time.sleep(0.1)
         
-        control_dcdc_converter(False)
-        set_relay_connection(0, 0)
     except Exception as e:
         logging.error(f"Balance error: {e}")
     finally:
+        control_dcdc_converter(False)
+        set_relay_connection(0, 0)
         balancing_active = False
 
 def draw_header(stdscr):
@@ -259,7 +288,7 @@ def draw_battery(stdscr, y, x, voltage, is_active=False):
     fill = min(16, math.ceil(16 * (voltage / max_v)))
     
     color = COLOR_NORMAL
-    if voltage > config_values['General']['HighVoltageThresholdPerBattery']:
+    if voltage > max_v:
         color = COLOR_CRITICAL
     elif voltage < config_values['General']['LowVoltageThresholdPerBattery']:
         color = COLOR_WARNING
@@ -284,11 +313,13 @@ def draw_graph(stdscr, y, x, history):
         stdscr.addstr(y+i, x, "║" + " "*(w-2) + "║", curses.color_pair(COLOR_GRAPH_BG))
     stdscr.addstr(y+h-1, x, "╚" + "═"*(w-2) + "╯", curses.color_pair(COLOR_GRAPH_BG))
     
-    for idx, v in enumerate(history):
-        if idx >= w-2: break
-        y_pos = y + h-2 - int((v-min_v)/(max_v-min_v)*(h-2))
-        if y <= y_pos < y+h-1:
-            stdscr.addch(y_pos, x+1+idx, '•', curses.color_pair(COLOR_NORMAL))
+    if max_v > min_v:  # Prevent division by zero
+        for idx, v in enumerate(history):
+            if idx >= w-2: break
+            y_pos = y + h-2 - int((v-min_v)/(max_v-min_v)*(h-2))
+            y_pos = max(y, min(y+h-2, y_pos))  # Clamp to graph bounds
+            if y <= y_pos < y+h-1:
+                stdscr.addch(y_pos, x+1+idx, '•', curses.color_pair(COLOR_NORMAL))
 
 def draw_status(stdscr, y, x, voltages, progress):
     status = [
