@@ -79,7 +79,6 @@ def validate_config(config):
             if field not in config[section]:
                 raise ValueError(f"Missing field in config: {section}.{field}")
 
-
 def load_settings():
     """Load and validate settings from the configuration file."""
     try:
@@ -120,17 +119,15 @@ def load_settings():
                 'Sensor3_Calibration': config.getfloat('Calibration', 'Sensor3_Calibration'),
             },
             'ADC': {
-                'GainConfig': int(config.get('ADC', 'GainConfig'), 16),
-                'ContinuousModeConfig': int(config.get('ADC', 'ContinuousModeConfig'), 16),
-                'SampleRateConfig': int(config.get('ADC', 'SampleRateConfig'), 16)
+                'GainConfig': int(config.get('ADC', 'GainConfig'), 16),  # Parse as hex
+                'ContinuousModeConfig': int(config.get('ADC', 'ContinuousModeConfig'), 16),  # Parse as hex
+                'SampleRateConfig': int(config.get('ADC', 'SampleRateConfig'), 16)  # Parse as hex
             }
         }
         return settings
     except Exception as e:
         logging.error(f"Config error: {e}")
         raise
-
-
 
 def setup_hardware():
     """Initialize hardware components."""
