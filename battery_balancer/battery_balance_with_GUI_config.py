@@ -415,6 +415,7 @@ def save_voltage_history(history):
 
 
 def main_program(stdscr):
+    global last_balance_time, balancing_active, balance_start_time, balance_progress, config_values
     try:
         curses.curs_set(0)
         curses.start_color()
