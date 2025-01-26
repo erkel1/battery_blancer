@@ -151,13 +151,19 @@ def choose_channel(channel):
     except IOError as e:
         logging.error(f"Channel select error: {e}")
 
+def get_config_int(section, option):
+    value = config.get(section, option)
+    try:
+        return int(value, 10)  # Try to parse as decimal
+    except ValueError:
+        return int(value, 16)  # If that fails, try to parse as hexadecimal
 
 def setup_voltage_meter():
     """Configure the voltage meter ADC."""
     try:
-        config_value = (config.getint('ADC', 'ContinuousModeConfig') |
-                        config.getint('ADC', 'SampleRateConfig') |
-                        config.getint('ADC', 'GainConfig'))
+        onfig_value = (get_config_int('ADC', 'ContinuousModeConfig') |
+                    get_config_int('ADC', 'SampleRateConfig') |
+                    get_config_int('ADC', 'GainConfig'))
         
         # Swap bytes for correct I2C communication
         config_value_swapped = ((config_value << 8) & 0xFF00) | (config_value >> 8)
