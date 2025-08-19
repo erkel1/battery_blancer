@@ -1,3 +1,24 @@
+"""
+Battery Temperature Monitoring Script
+
+This script connects to a Lantronix EDS4100 device via TCP to read NTC temperature sensor data using Modbus RTU protocol.
+It performs the following key functions:
+- Loads configuration from 'read_battery_temp.ini' with fallback defaults for parameters like IP, thresholds, and scaling.
+- Calculates per-channel calibration offsets at startup (when all channels are valid) to align sensors to a common median reference, assuming initial temperatures are equal and differences are sensor errors.
+- Applies these offsets to raw readings for calibrated values.
+- Detects anomalies: invalid readings, high/low temperatures, deviations from current median (absolute and relative), abnormal rises, group tracking lag, and sudden disconnections.
+- Displays all current alerts every poll without suppression, to show ongoing alert states persistently.
+- Displays raw, offset, and calibrated temperatures in a tabular ASCII GUI in the terminal, along with medians and alerts.
+- Logs events, medians, and alerts to 'battery_log.txt' for persistence.
+- Handles graceful shutdown on Ctrl+C and uses retries with exponential backoff for network errors.
+- Runs in an infinite loop, polling at configurable intervals.
+
+Dependencies: Standard Python libraries (socket, statistics, time, configparser, logging, signal, gc, os).
+No external packages required.
+
+Note: Ensure the EDS4100 is configured for Modbus RTU tunneling over TCP (not native Modbus TCP). Verify port and slave ID.
+"""
+
 import socket  # This imports the socket library, which allows the script to communicate over the network, like connecting to the EDS4100 device.
 import statistics  # This imports the statistics library, used to calculate things like the median (middle value) of the temperatures.
 import time  # This imports the time library, used to add delays in the code, like waiting a short time after sending data.
@@ -18,9 +39,9 @@ def modbus_crc(data):  # This defines a function to calculate the CRC (Cyclic Re
                 crc >>= 1  # Just shifts the CRC right by 1 bit.
     return crc.to_bytes(2, 'little')  # Converts the final CRC to 2 bytes in little-endian order (low byte first) and returns it.
 
-def read_ntc_sensors(ip, port, query_delay, max_retries=3, retry_backoff_base=1):  # This defines the main function to read the sensor data from the device using the given IP address and port, with added retries for timeouts.
-    # Modbus RTU query: Slave 1, Function 03 (read holding registers), Start 0, Count 24 (0x18 in hex), CRC will be calculated.
-    query_base = bytes([1, 3]) + (0).to_bytes(2, 'big') + (24).to_bytes(2, 'big')  # Builds the base part of the query message without CRC: slave ID 1, function 3, start register 0 (2 bytes), quantity 24 (2 bytes).
+def read_ntc_sensors(ip, port, query_delay, num_channels, scaling_factor, max_retries=3, retry_backoff_base=1):  # This defines the main function to read the sensor data from the device using the given IP address and port, with added retries for timeouts.
+    # Modbus RTU query: Slave 1, Function 03 (read holding registers), Start 0, Count num_channels, CRC will be calculated.
+    query_base = bytes([1, 3]) + (0).to_bytes(2, 'big') + (num_channels).to_bytes(2, 'big')  # Builds the base part of the query message without CRC: slave ID 1, function 3, start register 0 (2 bytes), quantity num_channels (2 bytes).
     crc = modbus_crc(query_base)  # Calculates the CRC for the base query.
     query = query_base + crc  # Adds the CRC to the end of the query to complete the message.
     
@@ -39,26 +60,33 @@ def read_ntc_sensors(ip, port, query_delay, max_retries=3, retry_backoff_base=1)
             if len(response) < 5:  # Checks if the response is too short (less than 5 bytes), which means it's invalid.
                 raise ValueError("Short response")  # Raises an error to trigger retry.
             
-            slave, func, byte_count = response[0:3]  # Extracts the first 3 bytes: slave ID, function code, and byte count of data.
-            if slave != 1 or func != 3 or byte_count != 48:  # Verifies the response header: slave should be 1, function 3, and 48 data bytes (2 bytes per channel x 24).
-                if func & 0x80:  # Checks if it's an error response (function code with high bit set).
-                    return f"Error: Modbus exception code {response[2]}"
-                return "Error: Invalid response header. Verify slave ID (1) and function (03)."
+            # Verify response length and CRC for integrity
+            if len(response) != 3 + response[2] + 2:  # Checks if the response length matches the expected structure (header + data + CRC).
+                raise ValueError("Invalid response length")  # Raises an error if length is incorrect.
+            calc_crc = modbus_crc(response[:-2])  # Recalculates CRC on the received data excluding the last 2 bytes.
+            if calc_crc != response[-2:]:  # Compares calculated CRC with received CRC.
+                raise ValueError("CRC mismatch")  # Raises an error if CRC does not match.
             
-            data = response[3:3+48]  # Extracts the 48 data bytes (temperature values).
+            slave, func, byte_count = response[0:3]  # Extracts the first 3 bytes: slave ID, function code, and byte count of data.
+            if slave != 1 or func != 3 or byte_count != num_channels * 2:  # Verifies the response header: slave should be 1, function 3, and byte_count = num_channels * 2 bytes.
+                if func & 0x80:  # Checks if it's an error response (function code with high bit set).
+                    return f"Error: Modbus exception code {response[2]}"  # Returns error message with exception code.
+                return "Error: Invalid response header. Verify slave ID (1) and function (03)."  # Returns error for invalid header.
+            
+            data = response[3:3 + byte_count]  # Extracts the data bytes (temperature values).
             raw_temperatures = []  # Creates an empty list to store the temperatures.
-            for i in range(0, 48, 2):  # Loops through the data in steps of 2 (each temperature is 2 bytes).
+            for i in range(0, len(data), 2):  # Loops through the data in steps of 2 (each temperature is 2 bytes).
                 val = int.from_bytes(data[i:i+2], 'big', signed=True) / scaling_factor  # Converts 2 bytes to a signed integer (big-endian), divides by scaling_factor (from INI).
                 raw_temperatures.append(val)  # Adds the temperature to the list.
             
             return raw_temperatures  # Returns the list of temperatures.
         
         except Exception as e:  # Catches any errors during the attempt.
-            logging.warning(f"Read attempt {attempt+1} failed: {str(e)}. Retrying after {retry_backoff_base ** attempt} seconds.")
-            if attempt < max_retries - 1:
+            logging.warning(f"Read attempt {attempt+1} failed: {str(e)}. Retrying after {retry_backoff_base ** attempt} seconds.")  # Logs the warning with attempt number and error.
+            if attempt < max_retries - 1:  # Checks if there are more retries left.
                 time.sleep(retry_backoff_base ** attempt)  # Exponential backoff: 1s, 2s, 4s, etc.
-            else:
-                return f"Error: Failed after {max_retries} attempts - {str(e)}. Check network/EDS4100."
+            else:  # If no more retries.
+                return f"Error: Failed after {max_retries} attempts - {str(e)}. Check network/EDS4100."  # Returns final error message.
     
 # Signal handler for graceful shutdown (e.g., Ctrl+C)
 def signal_handler(sig, frame):  # Defines a function to handle signals like SIGINT (Ctrl+C).
@@ -84,6 +112,8 @@ try:  # Tries to read and parse the INI file.
     max_retries = int(config['settings']['max_retries'])  # Reads max retries as integer.
     retry_backoff_base = int(config['settings']['retry_backoff_base'])  # Reads retry backoff base as integer.
     query_delay = float(config['settings']['query_delay'])  # Reads query delay as float.
+    num_channels = int(config['settings']['num_channels'])  # Reads number of channels as integer.
+    abs_deviation_threshold = float(config['settings']['abs_deviation_threshold'])  # Reads absolute deviation threshold as float.
 except Exception as e:  # Catches errors like file not found, missing keys, or invalid values.
     logging.warning(f"Config error: {str(e)}. Using defaults. Current dir: {os.getcwd()}")  # Logs the error with current directory for debugging (e.g., to check if INI is in the right place).
     print(f"Config error: {str(e)}. Using defaults. Current dir: {os.getcwd()}")  # Prints the error and directory to console for immediate feedback.
@@ -100,6 +130,8 @@ except Exception as e:  # Catches errors like file not found, missing keys, or i
     max_retries = 3  # Default max retries if INI fails.
     retry_backoff_base = 1  # Default retry backoff base if INI fails.
     query_delay = 0.25  # Default query delay if INI fails.
+    num_channels = 24  # Default number of channels if INI fails.
+    abs_deviation_threshold = 2.0  # Default absolute deviation threshold if INI fails.
 
 # Setup logging to file for persistent records
 logging.basicConfig(filename='battery_log.txt', level=logging.INFO, format='%(asctime)s - %(message)s')  # Configures logging to write INFO level and above to 'battery_log.txt' with timestamp format.
@@ -107,144 +139,175 @@ logging.basicConfig(filename='battery_log.txt', level=logging.INFO, format='%(as
 # Attach signal handler for Ctrl+C (SIGINT) for graceful exit
 signal.signal(signal.SIGINT, signal_handler)  # Registers the signal_handler function to run on SIGINT (Ctrl+C), ensuring clean shutdown.
 
-startup_median = None  # To store the fixed median calculated at startup for calibration (does not update after first run).
-previous_temps = None  # To store previous readings for rise/disconnection detection.
+previous_temps = None  # To store previous calibrated readings for rise/disconnection detection.
 previous_median = None  # To store previous median for group rise check.
 run_count = 0  # Counter to skip detection on first run.
-alert_states = {ch: None for ch in range(1, 25)}  # Track per-channel alert states to suppress repeats (e.g., {'last_alert': 'type', 'count': 0}).
+alert_states = {ch: {'last_type': None, 'count': 0} for ch in range(1, num_channels + 1)}  # Track per-channel alert states to suppress repeats.
+startup_offsets = None  # To store per-channel offsets calculated at startup.
+startup_median = None  # To store the startup median for reference.
+startup_set = False  # Flag to indicate if startup calibration has been set.
 
-def draw_ascii_gui(calibrated_temps, alerts, current_median, startup_median):  # Function to "draw" an ASCII-based "GUI" in the terminal using formatted print statements.
+def draw_ascii_gui(calibrated_temps, alerts, current_median, startup_median, raw_temps, offsets, is_set):  # Function to "draw" an ASCII-based "GUI" in the terminal using formatted print statements.
     os.system('cls' if os.name == 'nt' else 'clear')  # Clears the terminal screen for a "refresh" effect (cls for Windows, clear for Unix-like).
     
     # Battery Status Section - Prints a table-like ASCII box for channel statuses.
-    print("+----------------------- Battery Temperature Monitor -----------------------+")
-    print("| Channel Status (Calibrated):                                              |")
-    print("+---------------------------------------------------------------------------+")
-    for ch, temp in enumerate(calibrated_temps, start=1):  # Loops through calibrated temps.
-        status = f"{temp:.1f} °C" if isinstance(temp, float) else temp  # Formats temp or string.
-        print(f"| Channel {ch:2d}: {status:20} |")  # Prints channel line with padding.
-    print("+---------------------------------------------------------------------------+")
+    print("+-------------------------------- Battery Temperature Monitor --------------------------------+")  # Prints the header for the monitor.
+    print("| Ch |     Raw (°C)     |   Offset (°C)   | Calibrated (°C) |")  # Prints the column headers for the table.
+    print("+----+------------------+-----------------+-----------------+")  # Prints the separator line for the table.
+    for ch in range(1, num_channels + 1):  # Loops through channels.
+        raw = raw_temps[ch-1]  # Gets the raw temperature for the channel.
+        raw_str = f"{raw:.1f}" if raw > valid_min else "Invalid"  # Formats raw temp as string if valid, else "Invalid".
+        if is_set and raw > valid_min:  # Checks if startup is set and raw is valid.
+            offset_str = f"{offsets[ch-1]:.1f}"  # Formats offset as string.
+        else:  # If not set or invalid.
+            offset_str = "N/A"  # Sets offset string to "N/A".
+        calib = calibrated_temps[ch-1]  # Gets the calibrated temperature.
+        calib_str = f"{calib:.1f}" if calib is not None else "Invalid"  # Formats calibrated temp as string if valid, else "Invalid".
+        print(f"| {ch:2d} | {raw_str:16} | {offset_str:15} | {calib_str:15} |")  # Prints the row for the channel.
+    print("+----+------------------+-----------------+-----------------+")  # Prints the closing separator for the table.
     
     # Median Info
-    print(f"| Current Median: {current_median:.1f} °C | Startup Median: {startup_median:.1f} °C |")
-    print("+---------------------------------------------------------------------------+")
+    startup_str = f"{startup_median:.1f} °C" if is_set else "Not set"  # Formats startup median string if set, else "Not set".
+    print(f"| Current Median: {current_median:.1f} °C | Startup Median: {startup_str:10} |")  # Prints current and startup median.
+    print("+---------------------------------------------------------------------------+")  # Prints separator for median section.
     
     # Alerts Section - Prints alerts in a box.
-    print("| Alerts:                                                                   |")
-    print("+---------------------------------------------------------------------------+")
+    print("| Alerts:                                                                   |")  # Prints alerts header.
+    print("+---------------------------------------------------------------------------+")  # Prints separator for alerts.
     if alerts:  # If there are alerts.
         for alert in alerts:  # Loops through alerts.
             print(f"| {alert} |")  # Prints each alert in a "box" line.
     else:  # If no alerts.
-        print("| No alerts.                                                                |")
-    print("+---------------------------------------------------------------------------+")
+        print("| No alerts.                                                                |")  # Prints no alerts message.
+    print("+---------------------------------------------------------------------------+")  # Prints closing separator for alerts.
     
     # Current Alert Section - Highlights the first (most recent) alert or "no active".
     if alerts:  # If there are alerts.
-        print(f"| Current Active Alert: {alerts[0]} |")
+        print(f"| Current Active Alert: {alerts[0]} |")  # Prints the first alert as current active.
     else:  # If no alerts.
-        print("| Current Active Alert: No active alerts.                                   |")
-    print("+---------------------------------------------------------------------------+")
+        print("| Current Active Alert: No active alerts.                                   |")  # Prints no active alerts message.
+    print("+---------------------------------------------------------------------------+")  # Prints closing separator for current alert.
+
+def check_invalid_reading(raw, ch, alerts):  # Helper to check and alert on invalid readings.
+    if raw <= valid_min:  # If the reading is invalid (0 or negative).
+        alerts.append({'channel': ch, 'type': 'invalid', 'message': f"Channel {ch}: Alert - Invalid reading (≤ {valid_min}). Check sensor/wiring."})  # Adds an alert for invalid reading.
+        return True  # Indicates invalid.
+    return False  # Indicates valid.
+
+def check_high_temp(calibrated, ch, alerts):  # Helper to check and alert on high temperature.
+    if calibrated > high_threshold:  # If above high threshold.
+        alerts.append({'channel': ch, 'type': 'high', 'message': f"Channel {ch}: Alert - High temperature ({calibrated:.1f} °C > {high_threshold} °C). Risk of damage!"})  # Adds high temp alert.
+
+def check_low_temp(calibrated, ch, alerts):  # Helper to check and alert on low temperature.
+    if calibrated < low_threshold:  # If below low threshold.
+        alerts.append({'channel': ch, 'type': 'low', 'message': f"Channel {ch}: Alert - Low temperature ({calibrated:.1f} °C < {low_threshold} °C). Check environment."})  # Adds low temp alert.
+
+def check_deviation(calibrated, current_median, ch, alerts):  # Helper to check and alert on deviation from current median.
+    abs_dev = abs(calibrated - current_median)  # Calculates absolute deviation.
+    rel_dev = abs_dev / abs(current_median) if current_median != 0 else 0  # Calculates relative deviation.
+    if abs_dev > abs_deviation_threshold or rel_dev > deviation_threshold:  # If either exceeds threshold.
+        alerts.append({'channel': ch, 'type': 'deviation', 'message': f"Channel {ch}: Alert - Deviation from current median (abs {abs_dev:.1f} °C > {abs_deviation_threshold} °C or {rel_dev:.2%} > {deviation_threshold*100:.0f}%), possible charging/discharging issue or abnormal heating."})  # Adds deviation alert.
+
+def check_abnormal_rise(current, previous_temps, ch, alerts, poll_interval, rise_threshold):  # Helper to check and alert on abnormal temperature rise.
+    previous = previous_temps[ch-1]  # Gets previous calibrated temperature.
+    if previous is not None:  # If previous is valid.
+        rise = current - previous  # Calculate channel-specific rise.
+        if rise > rise_threshold:  # If rise exceeds threshold (e.g., 2°C per poll).
+            alerts.append({'channel': ch, 'type': 'rise', 'message': f"Channel {ch}: Alert - Abnormal temperature rise ({rise:.1f} °C in {poll_interval}s). Check battery!"})  # Adds rise alert.
+
+def check_group_tracking_lag(current, previous_temps, median_rise, ch, alerts, disconnection_lag_threshold):  # Helper to check and alert on temperature not tracking group rise.
+    previous = previous_temps[ch-1]  # Gets previous calibrated temperature.
+    if previous is not None:  # If previous is valid.
+        rise = current - previous  # Calculate channel-specific rise.
+        if abs(rise - median_rise) > disconnection_lag_threshold:  # If channel rise deviates from group rise.
+            alerts.append({'channel': ch, 'type': 'lag', 'message': f"Channel {ch}: Alert - Temperature not tracking group (channel rise {rise:.1f} °C vs group {median_rise:.1f} °C). Possible disconnection or fault."})  # Adds lag/disconnection alert.
+
+def check_sudden_disconnection(current, previous_temps, ch, alerts):  # Helper to check and alert on sudden disconnection.
+    previous = previous_temps[ch-1]  # Gets previous calibrated temperature.
+    if previous is not None and current is None:  # If previous was valid but current is invalid.
+        alerts.append({'channel': ch, 'type': 'sudden_disconnect', 'message': f"Channel {ch}: Alert - Sudden disconnection (was valid {previous:.1f} °C, now invalid). Check sensor/wiring."})  # Adds sudden disconnection alert.
 
 # Main logic - this is where the script starts executing after defining functions.
-startup_median = None  # To store the fixed median calculated at startup for calibration (does not update after first run).
-previous_temps = None  # To store previous readings for rise/disconnection detection.
+previous_temps = None  # To store previous calibrated readings for rise/disconnection detection.
 previous_median = None  # To store previous median for group rise check.
 run_count = 0  # Counter to skip detection on first run.
-alert_states = {ch: None for ch in range(1, 25)}  # Track per-channel alert states to suppress repeats (e.g., {'last_alert': 'type', 'count': 0}).
+alert_states = {ch: {'last_type': None, 'count': 0} for ch in range(1, num_channels + 1)}  # Track per-channel alert states to suppress repeats.
+startup_offsets = None  # To store per-channel offsets calculated at startup.
+startup_median = None  # To store the startup median for reference.
+startup_set = False  # Flag to indicate if startup calibration has been set.
 
 while True:  # Infinite loop to keep reading temperatures every poll_interval seconds for ongoing operation.
-    result = read_ntc_sensors(ip, port, query_delay, max_retries, retry_backoff_base)  # Calls the function to read the sensors with retries.
+    result = read_ntc_sensors(ip, port, query_delay, num_channels, scaling_factor, max_retries, retry_backoff_base)  # Calls the function to read the sensors with retries.
 
     if isinstance(result, str):  # If result is an error string (e.g., from timeouts or invalid response).
         logging.error(result)  # Logs the error to file.
         print(result)  # Prints the error to console.
-        draw_ascii_gui([], [result], 0.0, 0.0)  # Draws GUI with error as alert.
+        draw_ascii_gui([None] * num_channels, [result], 0.0, startup_median if startup_median is not None else 0.0, [valid_min] * num_channels, startup_offsets, startup_set)  # Draws GUI with error as alert.
     else:  # If successful reading, process the data.
-        # Startup validation on first run: Check if all 24 channels are valid.
-        if run_count == 0:  # Only on the first poll.
-            valid_count = sum(1 for t in result if t > valid_min)  # Counts valid readings.
-            if valid_count < 24:  # If less than 24 valid.
-                msg = f"Startup Alert: Only {valid_count}/24 channels valid. Check sensors/wiring."
-                logging.warning(msg)
-                print(msg)
+        # Count valid readings
+        valid_count = sum(1 for t in result if t > valid_min)  # Counts valid readings.
         
-        # Filter valid temperatures (exclude <= valid_min as invalid).
-        valid_temps = [t for t in result if t > valid_min]
+        # Set startup calibration if not set and all channels are valid
+        if not startup_set and valid_count == num_channels:  # Checks if calibration not set and all valid.
+            startup_median = statistics.median(result)  # Median of all raw temps at startup
+            startup_offsets = [startup_median - raw for raw in result]  # Per-channel offsets to align to median
+            startup_set = True  # Sets the flag to true.
+            logging.info(f"Startup calibration set. Median: {startup_median:.1f} °C")  # Logs calibration set.
+            print(f"Startup calibration set. Median: {startup_median:.1f} °C")  # Prints calibration set message.
         
-        if not valid_temps:  # If no valid temperatures.
-            msg = "Error: No valid sensor readings. All channels show invalid values."
-            logging.error(msg)
-            print(msg)
-            draw_ascii_gui([], [msg], 0.0, 0.0)  # Draws GUI with error as alert.
+        if valid_count == 0:  # If no valid temperatures.
+            msg = "Error: No valid sensor readings. All channels show invalid values."  # Sets error message.
+            logging.error(msg)  # Logs the error.
+            print(msg)  # Prints the error.
+            draw_ascii_gui([None] * num_channels, [msg], 0.0, startup_median if startup_median is not None else 0.0, result, startup_offsets, startup_set)  # Draws GUI with error as alert.
         else:  # If there are valid temperatures.
-            # Compute current median - the middle value of valid temperatures for reference.
-            current_median = statistics.median(valid_temps)  # Calculates the median of valid temperatures.
+            # Apply calibration if set, else use raw
+            if startup_set:  # If calibration is set.
+                calibrated_temps = [result[i] + startup_offsets[i] if result[i] > valid_min else None for i in range(num_channels)]  # Applies offsets to valid readings.
+            else:  # If not set.
+                calibrated_temps = [raw if raw > valid_min else None for raw in result]  # Uses raw values for calibrated temps.
+                if run_count == 0:  # Only on the first poll.
+                    msg = "Startup Alert: Calibration not set yet (not all channels valid). Using raw values."  # Sets warning message.
+                    logging.warning(msg)  # Logs the warning.
+                    print(msg)  # Prints the warning.
+            
+            # Filter valid calibrated temperatures
+            valid_temps = [t for t in calibrated_temps if t is not None]  # Filters out None for valid calibrated temps.
+            
+            # Compute current median
+            current_median = statistics.median(valid_temps)  # Calculates the median of valid calibrated temperatures.
             logging.info(f"Current median: {current_median:.1f} °C")  # Logs the current median.
             
-            # Calculate startup median only on first run - locks the reference for calibration.
-            if run_count == 0:  # Only on the first poll.
-                startup_median = current_median  # Sets the startup median to the current one.
-                print(f"Startup median locked at: {startup_median:.1f} °C")  # Prints the locked startup median.
-                logging.info(f"Startup median locked at: {startup_median:.1f} °C")  # Logs the locked startup median.
-            
-            # Use startup_median for calibration - applies fixed reference for deviation and factor calculation.
-            calibrated_temps = []  # List to store adjusted temperatures.
-            alerts = []  # List to store any warnings.
+            alerts = []  # List to store any warnings as dicts.
             
             for ch, raw in enumerate(result, start=1):  # Loops through each channel's raw temperature.
-                if raw <= valid_min:  # If the reading is invalid (0 or negative).
-                    calibrated_temps.append("No sensor/open circuit/invalid")  # Marks it as invalid in the calibrated list.
-                    alerts.append(f"Channel {ch}: Alert - Invalid reading (≤ {valid_min}). Check sensor/wiring.")  # Adds an alert for invalid reading.
-                else:  # If valid reading.
-                    # Absolute high/low alerts - checks if raw is outside safe range.
-                    if raw > high_threshold:  # If above high threshold.
-                        alerts.append(f"Channel {ch}: Alert - High temperature ({raw:.1f} °C > {high_threshold} °C). Risk of damage!")  # Adds high temp alert.
-                    elif raw < low_threshold:  # If below low threshold.
-                        alerts.append(f"Channel {ch}: Alert - Low temperature ({raw:.1f} °C < {low_threshold} °C). Check environment.")  # Adds low temp alert.
-                    
-                    deviation = abs(raw - startup_median) / abs(startup_median) if startup_median != 0 else 0  # Calculates relative deviation from fixed startup median.
-                    if deviation > deviation_threshold:  # If deviation exceeds threshold (e.g., 10%).
-                        calibrated_temps.append(raw)  # Keeps the raw value (no calibration applied).
-                        alerts.append(f"Channel {ch}: Alert - Deviation from startup median ({deviation:.2%} > {deviation_threshold*100:.0f}%), possible charging/discharging issue or abnormal heating. Displaying raw value.")  # Adds deviation alert.
-                    else:  # If within threshold.
-                        factor = startup_median / raw  # Calibration factor to align with startup median.
-                        calibrated = raw * factor  # Applies the factor to the raw value.
-                        calibrated_temps.append(calibrated)  # Adds the calibrated value to the list.
+                if check_invalid_reading(raw, ch, alerts):  # Check for invalid reading.
+                    continue  # Skip further checks for this channel.
+                
+                calibrated = calibrated_temps[ch-1]  # Get calibrated value
+                
+                check_high_temp(calibrated, ch, alerts)  # Check for high temperature on calibrated.
+                check_low_temp(calibrated, ch, alerts)  # Check for low temperature on calibrated.
+                
+                check_deviation(calibrated, current_median, ch, alerts)  # Check for deviation on calibrated.
             
             # Abnormal temperature rise/detection (after first run) - checks for changes since last poll.
-            if run_count > 0 and previous_temps:  # Only if not the first run and previous data exists.
+            if run_count > 0 and previous_temps is not None and previous_median is not None:  # Only if not the first run and previous data exists.
                 median_rise = current_median - previous_median  # Calculate group (median) rise since last poll.
-                for ch, current in enumerate(calibrated_temps, start=1):  # Loops through each channel.
-                    if isinstance(current, float) and isinstance(previous_temps[ch-1], float):  # If both current and previous are valid numbers.
-                        rise = current - previous_temps[ch-1]  # Calculate channel-specific rise.
-                        if rise > rise_threshold:  # If rise exceeds threshold (e.g., 2°C per poll).
-                            alerts.append(f"Channel {ch}: Alert - Abnormal temperature rise ({rise:.1f} °C in {poll_interval}s). Check battery!")  # Adds rise alert.
-                        # Enhanced disconnection/lag: Bidirectional deviation from group rise.
-                        if abs(rise - median_rise) > disconnection_lag_threshold:  # If channel rise deviates from group rise.
-                            alerts.append(f"Channel {ch}: Alert - Temperature not tracking group (channel rise {rise:.1f} °C vs group {median_rise:.1f} °C). Possible disconnection or fault.")  # Adds lag/disconnection alert.
-                    elif isinstance(previous_temps[ch-1], float) and not isinstance(current, float):  # If previous was valid but current is invalid.
-                        alerts.append(f"Channel {ch}: Alert - Sudden disconnection (was valid {previous_temps[ch-1]:.1f} °C, now invalid). Check sensor/wiring.")  # Adds sudden disconnection alert.
+                for ch, calibrated in enumerate(calibrated_temps, start=1):  # Loops through each channel.
+                    if calibrated is not None:  # Only check if current is valid.
+                        check_abnormal_rise(calibrated, previous_temps, ch, alerts, poll_interval, rise_threshold)  # Check for abnormal rise.
+                        check_group_tracking_lag(calibrated, previous_temps, median_rise, ch, alerts, disconnection_lag_threshold)  # Check for group tracking lag.
+                    check_sudden_disconnection(calibrated, previous_temps, ch, alerts)  # Check for sudden disconnection.
             
             # Update previous for next loop - saves current calibrated values and median for the next poll's comparisons.
-            previous_temps = [t if isinstance(t, float) else valid_min for t in calibrated_temps]  # Replaces invalid with valid_min to keep list numeric.
+            previous_temps = calibrated_temps[:]  # Copy list (None for invalids)
             previous_median = current_median  # Updates the previous median.
             
-            # Suppress repeated alerts: Track state per channel to avoid spamming the same alert every poll.
-            current_alerts = []  # List for alerts to display/log this poll.
-            for alert in alerts:  # Loops through new alerts.
-                ch_str = alert.split(':')[0]  # Extracts "Channel X" from alert string.
-                alert_type = alert.split(' - ')[1].split(' (')[0]  # Extracts the alert type (e.g., "Invalid reading").
-                ch_num = int(ch_str.split()[1])  # Gets the channel number as int.
-                if alert_states[ch_num] and alert_states[ch_num]['last_alert'] == alert_type:  # If same type as last alert for this channel.
-                    alert_states[ch_num]['count'] += 1  # Increments the count of consecutive same alerts.
-                    if alert_states[ch_num]['count'] % 5 != 0:  # If not a multiple of 5, skip displaying (suppresses repeats).
-                        continue  # Skips adding to current_alerts.
-                else:  # New alert type for this channel.
-                    alert_states[ch_num] = {'last_alert': alert_type, 'count': 1}  # Resets state for new type.
-                current_alerts.append(alert)  # Adds to display/log list.
+            # No suppression: Always display all current alerts
+            current_alerts = [alert['message'] for alert in alerts]  # Collect all alert messages for display.
             
-            draw_ascii_gui(calibrated_temps, current_alerts, current_median, startup_median)  # Calls the ASCII "GUI" function to print the formatted display.
+            draw_ascii_gui(calibrated_temps, current_alerts, current_median, startup_median if startup_median is not None else 0.0, result, startup_offsets, startup_set)  # Calls the ASCII "GUI" function to print the formatted display.
     
     run_count += 1  # Increment the run counter after processing.
     gc.collect()  # Manually collects garbage to free memory, preventing leaks in long runs.
