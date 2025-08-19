@@ -1,0 +1,9 @@
+All relays off, cell 1 links to cell 1
+relay 1 on, cell 2 links to cell 1
+relay 2 on, cell 2 links to cell 1
+relay 1 and 2 on, cell 3 links to cell 1
+Relay 3 on, cell 1 links to cell 2
+Relay 3 on, cell 1 links to cell 2
+relay 3 and 4 on, cell 1 links to cell 3
+Relay 1 on and relay 3 and 4 on, cell 2 links to cell 3
+Can you finish this pattern?
