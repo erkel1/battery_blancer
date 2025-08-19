@@ -60,7 +60,6 @@ def load_settings():
                 'BalanceRestPeriodSeconds': config.getint('General', 'BalanceRestPeriodSeconds'),
                 'LowVoltageThresholdPerBattery': config.getfloat('General', 'LowVoltageThresholdPerBattery'),
                 'HighVoltageThresholdPerBattery': config.getfloat('General', 'HighVoltageThresholdPerBattery'),
-                'NumberOfSamples': config.getint('General', 'NumberOfSamples'),
                 'MaxRetries': config.getint('General', 'MaxRetries'),
                 'EmailAlertIntervalSeconds': config.getint('General', 'EmailAlertIntervalSeconds'),
                 'I2C_BusNumber': config.getint('General', 'I2C_BusNumber'),
