@@ -1,13 +1,3 @@
-The error you're seeing (`_curses.error: addwstr() returned ERR`) is a curses library issue, likely due to attempting to write text outside the terminal window's bounds (e.g., the calculated y or x position + string length exceeds the current screen height/width). This can happen if the terminal is too small (e.g., not fullscreen or <30-40 lines high for the art). The log file not generating suggests the script crashes before logging is set up (inside main, after curses.wrapper starts).
-
-To fix:
-- Resize your terminal larger before running.
-- I've updated the code to add bounds checks before each addstr (skips if out of bounds, logs warning).
-- Moved logging.basicConfig to top for early setup.
-
-Run the updated script below.
-
-```python
 """
 Combined Battery Temperature Monitoring and Balancing Script (Updated for 3s8p Configuration)
 
@@ -839,4 +829,3 @@ def main(stdscr):
 
 if __name__ == '__main__':
     curses.wrapper(main)  # Run main in curses wrapper
-```
