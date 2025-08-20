@@ -1,0 +1,6 @@
+[file name]: requirements.txt
+[file content begin]
+RPi.GPIO==0.7.1
+art==6.1
+configparser==5.3.0
+[file content end]
