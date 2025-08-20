@@ -14,11 +14,13 @@ What it does:
 - Alerts: Logs issues, activates GPIO alarm relay, sends throttled emails.
 - TUI: ASCII art batteries with voltages/temps inside (full details at startup, compact updates), ADC/readings, alerts; no pauses.
 - Handles shutdown: Ctrl+C cleans GPIO.
+- Startup Self-Check: Validates config, hardware connectivity, initial sensor reads; alarms if fails but continues monitoring.
 
 How it does it:
 - Config loaded from 'battery_monitor.ini' with fallbacks.
 - Hardware setup: I2C bus, GPIO pins.
-- Infinite loop: Poll temps/voltages, process/calibrate, check alerts, balance if needed, draw TUI, sleep.
+- Startup check: Validate config, test connections/reads; alarm on failure.
+- Infinite loop: Poll temps/voltages (retry on invalid), process/calibrate, check alerts, balance if needed, draw TUI, sleep.
 - Logging: To 'battery_monitor.log' at INFO level, verbose for steps/errors.
 - Edges: Retries on reads, guards for None, exponential backoff.
 
@@ -36,6 +38,14 @@ Logic Diagram (ASCII Flowchart of Execution):
 +----------------+
 | Setup Hardware |
 +----------------+
+          |
+          v
++----------------+
+| Startup Check  |
++----------------+
+          | fail
+          v
+  (Alarm + Continue)
           |
           v
 +----------------+
@@ -252,13 +262,20 @@ def load_config():
         'Sensor3_Calibration': config_parser.getfloat('Calibration', 'Sensor3_Calibration', fallback=1.0)  # Sensor 3 calib
     }
     
+    # Startup settings (new)
+    startup_settings = {
+        'test_balance_duration': config_parser.getint('Startup', 'test_balance_duration', fallback=15),  # Balance test duration
+        'min_voltage_delta': config_parser.getfloat('Startup', 'min_voltage_delta', fallback=0.01),  # Min delta for pass
+        'test_read_interval': config_parser.getfloat('Startup', 'test_read_interval', fallback=2.0)  # Read interval during test
+    }
+    
     if voltage_settings['NumberOfBatteries'] != NUM_BANKS:
         logging.warning(f"NumberOfBatteries ({voltage_settings['NumberOfBatteries']}) does not match NUM_BANKS ({NUM_BANKS}); using {NUM_BANKS} for banks.")
     
     alert_states = {ch: {'last_type': None, 'count': 0} for ch in range(1, temp_settings['num_channels'] + 1)}  # Per-channel alert states (unused currently)
     
     logging.info("Configuration loaded successfully.")
-    return {**temp_settings, **voltage_settings}
+    return {**temp_settings, **voltage_settings, **startup_settings}
 
 def setup_hardware(settings):
     """Initialize I2C bus and GPIO pins."""
@@ -412,32 +429,25 @@ def set_relay_connection(high, low, settings):
         logging.info(f"Attempting to set relay for connection from Bank {high} to {low}")
         logging.debug("Switching to relay control channel.")
         choose_channel(3, settings['MultiplexerAddress'])  # Select relay channel
-        relay_state = 0  # Initial state all off
-        logging.debug(f"Initial relay state: {bin(relay_state)}")  # Log initial
-
-        if high == low or high < 1 or low < 1:
-            logging.debug("No need for relay activation; all relays off.")  # No balance needed
-            relay_state = 0  # All off
-        else:
-            # Relay mapping for pairs
-            if high == 2 and low == 1:
-                relay_state |= (1 << 0)  # Relay 1 on
-                logging.debug("Relay 1 activated for high to low.")  # Log activation
-            elif high == 3 and low == 1:
-                relay_state |= (1 << 0) | (1 << 1)  # Relays 1,2 on
-                logging.debug("Relays 1 and 2 activated for high to low.")  # Log activation
-            elif high == 1 and low == 2:
-                relay_state |= (1 << 2)  # Relay 3 on
-                logging.debug("Relay 3 activated for low to high.")  # Log activation
-            elif high == 1 and low == 3:
-                relay_state |= (1 << 2) | (1 << 3)  # Relays 3,4 on
-                logging.debug("Relays 3 and 4 activated for low to high.")  # Log activation
-            elif high == 2 and low == 3:
-                relay_state |= (1 << 0) | (1 << 2) | (1 << 3)  # Relays 1,3,4 on
-                logging.debug("Relays 1, 3, and 4 activated for high to low.")  # Log activation
-            elif high == 3 and low == 2:
-                relay_state |= (1 << 0) | (1 << 1) | (1 << 2)  # Relays 1,2,3 on
-                logging.debug("Relays 1, 2, and 3 activated for high to low.")  # Log activation
+        relay_state = 0  # Initial state
+        if high == 1 and low == 2:
+            relay_state |= (1 << 0) | (1 << 1) | (1 << 3)  # Example: Relays 1,2,4 on
+            logging.debug("Relays 1, 2, and 4 activated for high to low.")
+        elif high == 1 and low == 3:
+            relay_state |= (1 << 1) | (1 << 2) | (1 << 3)  # Relays 2,3,4 on
+            logging.debug("Relays 2, 3, and 4 activated for high to low.")
+        elif high == 2 and low == 1:
+            relay_state |= (1 << 0) | (1 << 2) | (1 << 3)  # Relays 1,3,4 on
+            logging.debug("Relays 1, 3, and 4 activated for high to low.")
+        elif high == 2 and low == 3:
+            relay_state |= (1 << 0) | (1 << 1) | (1 << 2)  # Relays 1,2,3 on
+            logging.debug("Relays 1, 2, and 3 activated for high to low.")
+        elif high == 3 and low == 1:
+            relay_state |= (1 << 0) | (1 << 1) | (1 << 2)  # Relays 1,2,3 on
+            logging.debug("Relays 1, 2, and 3 activated for high to low.")
+        elif high == 3 and low == 2:
+            relay_state |= (1 << 0) | (1 << 1) | (1 << 3)  # Relays 1,2,4 on
+            logging.debug("Relays 1, 2, and 4 activated for high to low.")
 
         logging.debug(f"Final relay state: {bin(relay_state)}")  # Log final state
         logging.info(f"Sending relay state command to hardware.")  # Log send
@@ -536,11 +546,11 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
         if progress_y < height and progress_y + 1 < height:
             try:
                 stdscr.addstr(progress_y, 0, f"Balancing Bank {high} ({voltage_high:.2f}V) -> Bank {low} ({voltage_low:.2f}V)... [{animation_frames[frame_index % 4]}]", curses.color_pair(6))  # Show status if in bounds
-            except _curses.error:
+            except curses.error:
                 logging.warning("addstr error for balancing status.")
             try:
                 stdscr.addstr(progress_y + 1, 0, f"Progress: [{bar}] {int(progress * 100)}%", curses.color_pair(6))  # Show progress if in bounds
-            except _curses.error:
+            except curses.error:
                 logging.warning("addstr error for balancing progress bar.")
         else:
             logging.warning("Skipping balancing progress display - out of bounds.")
@@ -775,12 +785,103 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
     
     stdscr.refresh()  # Refresh screen
 
+def startup_self_test(settings):
+    """Perform startup self-test: config validation, hardware connectivity, initial reads, and balancer verification."""
+    logging.info("Starting self-test: Validating config, connectivity, sensors, and balancer.")
+    alerts = []  # Collect test alerts
+    
+    # Step 1: Validate config (already done in load_config, but re-check key values)
+    if settings['NumberOfBatteries'] != NUM_BANKS:
+        alerts.append("Config mismatch: NumberOfBatteries != 3.")
+    
+    # Step 2: Test hardware connectivity (I2C devices, Modbus)
+    try:
+        # Test I2C: Write/read to multiplexer/ADC/relay (dummy ops)
+        choose_channel(0, settings['MultiplexerAddress'])  # Select channel 0
+        bus.read_byte(settings['VoltageMeterAddress'])  # Dummy read from ADC
+        bus.read_byte(settings['RelayAddress'])  # Dummy read from relay
+    except IOError as e:
+        alerts.append(f"I2C connectivity failure: {str(e)}")
+    
+    try:
+        # Test Modbus: Short read (e.g., first channel only)
+        test_query = read_ntc_sensors(settings['ip'], settings['port'], settings['query_delay'], 1, settings['scaling_factor'], 1, 1)
+        if isinstance(test_query, str) and "Error" in test_query:
+            alerts.append(f"Modbus connectivity failure: {test_query}")
+    except Exception as e:
+        alerts.append(f"Modbus test failure: {str(e)}")
+    
+    # Step 3: Initial sensor reads (temps and voltages)
+    initial_temps = read_ntc_sensors(settings['ip'], settings['port'], settings['query_delay'], settings['num_channels'], settings['scaling_factor'], settings['max_retries'], settings['retry_backoff_base'])
+    if isinstance(initial_temps, str):
+        alerts.append(f"Initial temp read failure: {initial_temps}")
+    initial_voltages = [read_voltage_with_retry(i, settings)[0] or 0.0 for i in range(1, NUM_BANKS + 1)]
+    if any(v == 0.0 for v in initial_voltages):
+        alerts.append("Initial voltage read failure: Zero voltage on one or more banks.")
+    
+    # Step 4: Balancer test - Force cycles on all pairs and monitor trends
+    pairs = [(1,2), (1,3), (2,1), (2,3), (3,1), (3,2)]  # All directional pairs
+    test_duration = settings['test_balance_duration']  # From config
+    read_interval = settings['test_read_interval']  # From config
+    min_delta = settings['min_voltage_delta']  # From config
+    
+    for high, low in pairs:
+        logging.info(f"Testing balance: Bank {high} -> {low} for {test_duration}s.")
+        
+        # Pre-check temps (skip if anomalous)
+        if initial_temps and any(t > settings['high_threshold'] or t < settings['low_threshold'] for t in initial_temps if t is not None):
+            alerts.append(f"Skipping balance test {high}->{low}: Temp anomalies.")
+            continue
+        
+        # Start balancing
+        set_relay_connection(high, low, settings)
+        control_dcdc_converter(True, settings)
+        start_time = time.time()
+        
+        high_trend = []  # List of high bank voltages over time
+        low_trend = []   # List of low bank voltages over time
+        
+        while time.time() - start_time < test_duration:
+            time.sleep(read_interval)
+            high_v = read_voltage_with_retry(high, settings)[0] or 0.0
+            low_v = read_voltage_with_retry(low, settings)[0] or 0.0
+            high_trend.append(high_v)
+            low_trend.append(low_v)
+            logging.debug(f"Trend read: High {high_v:.2f}V, Low {low_v:.2f}V")
+        
+        # Stop balancing
+        control_dcdc_converter(False, settings)
+        set_relay_connection(0, 0, settings)  # Reset
+        
+        # Analyze trends (average delta, ignore noise)
+        if len(high_trend) >= 3:  # Need at least 3 readings for trend
+            high_delta = high_trend[0] - high_trend[-1]  # Expected drop
+            low_delta = low_trend[-1] - low_trend[0]     # Expected rise
+            if high_delta < min_delta or low_delta < min_delta:
+                alerts.append(f"Balance test {high}->{low} failed: Insufficient change (High Δ={high_delta:.3f}V, Low Δ={low_delta:.3f}V).")
+        else:
+            alerts.append(f"Balance test {high}->{low} failed: Insufficient readings.")
+        
+        time.sleep(5)  # Short rest between pair tests
+    
+    # Handle test results
+    if alerts:
+        logging.error("Startup self-test failures: " + "; ".join(alerts))
+        send_alert_email("Startup self-test failures:\n" + "\n".join(alerts), settings)
+        GPIO.output(settings['AlarmRelayPin'], GPIO.HIGH)  # Activate alarm
+        # For mission-critical: Optionally sys.exit(1) to halt; current: continue with warning
+    else:
+        logging.info("Startup self-test passed.")
+    
+    return alerts  # Return for potential use in main
+
 def main(stdscr):
     """Main loop for polling, processing, balancing, and TUI."""
     stdscr.keypad(True)  # Enable keypad
     global previous_temps, previous_bank_medians, run_count, startup_offsets, startup_median, startup_set, battery_voltages
     settings = load_config()  # Load settings
     setup_hardware(settings)  # Setup hardware
+    startup_self_test(settings)  # Perform startup self-test
     signal.signal(signal.SIGINT, signal_handler)  # Register handler
     
     startup_offsets = load_offsets()  # Load offsets
