@@ -130,6 +130,7 @@ startup_median = None  # Startup median temp for reference
 startup_set = False  # Flag if startup calibration done
 alert_states = {}  # Per-channel alert tracking (unused in current version)
 balancing_active = False  # Flag if balancing in progress
+startup_failed = False  # New: Persistent flag for startup failures
 
 # Bank definitions
 BANK_RANGES = [(1, 8), (9, 16), (17, 24)]  # Channel ranges for each bank
@@ -262,7 +263,7 @@ def load_config():
         'Sensor3_Calibration': config_parser.getfloat('Calibration', 'Sensor3_Calibration', fallback=1.0)  # Sensor 3 calib
     }
     
-    # Startup settings (new)
+    # Startup settings
     startup_settings = {
         'test_balance_duration': config_parser.getint('Startup', 'test_balance_duration', fallback=15),  # Balance test duration
         'min_voltage_delta': config_parser.getfloat('Startup', 'min_voltage_delta', fallback=0.01),  # Min delta for pass
@@ -486,13 +487,14 @@ def send_alert_email(message, settings):
 
 def check_for_issues(voltages, temps_alerts, settings):
     """Check voltage/temp issues, trigger alerts/relay."""
+    global startup_failed
     logging.info("Checking for voltage and temp issues.")
-    alert_needed = False
+    alert_needed = startup_failed  # Persistent from startup
     alerts = []
     for i, v in enumerate(voltages, 1):
         if v is None or v == 0.0:
             alerts.append(f"Bank {i}: Zero voltage.")  # Add alert
-            logging.warning(f"Zero voltage alert on Bank {i}.")  # Log
+            logging.warning(f"Zero voltage alert on Bank {i}.")
             alert_needed = True
         elif v > settings['HighVoltageThresholdPerBattery']:
             alerts.append(f"Bank {i}: High voltage ({v:.2f}V).")  # Add alert
@@ -785,52 +787,98 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
     
     stdscr.refresh()  # Refresh screen
 
-def startup_self_test(settings):
-    """Perform startup self-test: config validation, hardware connectivity, initial reads, and balancer verification."""
+def startup_self_test(settings, stdscr):
+    """Perform startup self-test: config validation, hardware connectivity, initial reads, and balancer verification, with TUI progress."""
+    global startup_failed
     logging.info("Starting self-test: Validating config, connectivity, sensors, and balancer.")
     alerts = []  # Collect test alerts
+    stdscr.clear()  # Clear for startup TUI
+    y = 0
+    stdscr.addstr(y, 0, "Startup Self-Test in Progress", curses.color_pair(1))  # Title
+    y += 2
+    stdscr.refresh()
     
-    # Step 1: Validate config (already done in load_config, but re-check key values)
+    # Step 1: Config validation
+    stdscr.addstr(y, 0, "Step 1: Validating config...", curses.color_pair(4))  # Green
+    stdscr.refresh()
+    time.sleep(0.5)  # Sim delay for user read
     if settings['NumberOfBatteries'] != NUM_BANKS:
         alerts.append("Config mismatch: NumberOfBatteries != 3.")
+        stdscr.addstr(y + 1, 0, "Config mismatch detected.", curses.color_pair(2))  # Red
+    else:
+        stdscr.addstr(y + 1, 0, "Config OK.", curses.color_pair(4))
+    y += 2
+    stdscr.refresh()
     
-    # Step 2: Test hardware connectivity (I2C devices, Modbus)
+    # Step 2: Hardware connectivity
+    stdscr.addstr(y, 0, "Step 2: Testing hardware connectivity...", curses.color_pair(4))
+    stdscr.refresh()
+    time.sleep(0.5)
     try:
-        # Test I2C: Write/read to multiplexer/ADC/relay (dummy ops)
-        choose_channel(0, settings['MultiplexerAddress'])  # Select channel 0
-        bus.read_byte(settings['VoltageMeterAddress'])  # Dummy read from ADC
-        bus.read_byte(settings['RelayAddress'])  # Dummy read from relay
+        choose_channel(0, settings['MultiplexerAddress'])
+        bus.read_byte(settings['VoltageMeterAddress'])
+        bus.read_byte(settings['RelayAddress'])
+        stdscr.addstr(y + 1, 0, "I2C OK.", curses.color_pair(4))
     except IOError as e:
         alerts.append(f"I2C connectivity failure: {str(e)}")
-    
+        stdscr.addstr(y + 1, 0, f"I2C failure: {str(e)}", curses.color_pair(2))
     try:
-        # Test Modbus: Short read (e.g., first channel only)
         test_query = read_ntc_sensors(settings['ip'], settings['port'], settings['query_delay'], 1, settings['scaling_factor'], 1, 1)
         if isinstance(test_query, str) and "Error" in test_query:
-            alerts.append(f"Modbus connectivity failure: {test_query}")
+            raise ValueError(test_query)
+        stdscr.addstr(y + 2, 0, "Modbus OK.", curses.color_pair(4))
     except Exception as e:
         alerts.append(f"Modbus test failure: {str(e)}")
+        stdscr.addstr(y + 2, 0, f"Modbus failure: {str(e)}", curses.color_pair(2))
+    y += 3
+    stdscr.refresh()
     
-    # Step 3: Initial sensor reads (temps and voltages)
+    # Step 3: Initial sensor reads
+    stdscr.addstr(y, 0, "Step 3: Initial sensor reads...", curses.color_pair(4))
+    stdscr.refresh()
+    time.sleep(0.5)
     initial_temps = read_ntc_sensors(settings['ip'], settings['port'], settings['query_delay'], settings['num_channels'], settings['scaling_factor'], settings['max_retries'], settings['retry_backoff_base'])
     if isinstance(initial_temps, str):
         alerts.append(f"Initial temp read failure: {initial_temps}")
+        stdscr.addstr(y + 1, 0, "Temp read failure.", curses.color_pair(2))
+    else:
+        stdscr.addstr(y + 1, 0, "Temps OK.", curses.color_pair(4))
     initial_voltages = [read_voltage_with_retry(i, settings)[0] or 0.0 for i in range(1, NUM_BANKS + 1)]
     if any(v == 0.0 for v in initial_voltages):
         alerts.append("Initial voltage read failure: Zero voltage on one or more banks.")
+        stdscr.addstr(y + 2, 0, "Voltage read failure (zero).", curses.color_pair(2))
+    else:
+        stdscr.addstr(y + 2, 0, "Voltages OK.", curses.color_pair(4))
+    y += 3
+    stdscr.refresh()
     
-    # Step 4: Balancer test - Force cycles on all pairs and monitor trends
+    # Step 4: Balancer test
+    stdscr.addstr(y, 0, "Step 4: Balancer verification...", curses.color_pair(4))
+    y += 1
+    stdscr.refresh()
+    time.sleep(0.5)
     pairs = [(1,2), (1,3), (2,1), (2,3), (3,1), (3,2)]  # All directional pairs
     test_duration = settings['test_balance_duration']  # From config
     read_interval = settings['test_read_interval']  # From config
     min_delta = settings['min_voltage_delta']  # From config
     
     for high, low in pairs:
+        stdscr.addstr(y, 0, f"Testing balance: Bank {high} -> {low} for {test_duration}s.", curses.color_pair(6))
+        stdscr.refresh()
         logging.info(f"Testing balance: Bank {high} -> {low} for {test_duration}s.")
         
         # Pre-check temps (skip if anomalous)
-        if initial_temps and any(t > settings['high_threshold'] or t < settings['low_threshold'] for t in initial_temps if t is not None):
+        temp_anomaly = False
+        if initial_temps and isinstance(initial_temps, list):
+            for t in initial_temps:
+                if t > settings['high_threshold'] or t < settings['low_threshold']:
+                    temp_anomaly = True
+                    break
+        if temp_anomaly:
             alerts.append(f"Skipping balance test {high}->{low}: Temp anomalies.")
+            stdscr.addstr(y + 1, 0, "Skipped: Temp anomalies.", curses.color_pair(2))
+            y += 2
+            stdscr.refresh()
             continue
         
         # Start balancing
@@ -840,40 +888,54 @@ def startup_self_test(settings):
         
         high_trend = []  # List of high bank voltages over time
         low_trend = []   # List of low bank voltages over time
-        
+        progress_y = y + 1
         while time.time() - start_time < test_duration:
             time.sleep(read_interval)
             high_v = read_voltage_with_retry(high, settings)[0] or 0.0
             low_v = read_voltage_with_retry(low, settings)[0] or 0.0
             high_trend.append(high_v)
             low_trend.append(low_v)
+            elapsed = time.time() - start_time
+            stdscr.addstr(progress_y, 0, f"Progress: {elapsed:.1f}s, High {high_v:.2f}V, Low {low_v:.2f}V", curses.color_pair(6))
+            stdscr.refresh()
             logging.debug(f"Trend read: High {high_v:.2f}V, Low {low_v:.2f}V")
+            progress_y += 1
         
         # Stop balancing
         control_dcdc_converter(False, settings)
         set_relay_connection(0, 0, settings)  # Reset
         
-        # Analyze trends (average delta, ignore noise)
-        if len(high_trend) >= 3:  # Need at least 3 readings for trend
+        # Analyze trends
+        if len(high_trend) >= 3:
             high_delta = high_trend[0] - high_trend[-1]  # Expected drop
             low_delta = low_trend[-1] - low_trend[0]     # Expected rise
             if high_delta < min_delta or low_delta < min_delta:
                 alerts.append(f"Balance test {high}->{low} failed: Insufficient change (High Δ={high_delta:.3f}V, Low Δ={low_delta:.3f}V).")
+                stdscr.addstr(progress_y, 0, "Test failed: Insufficient voltage change.", curses.color_pair(2))
+            else:
+                stdscr.addstr(progress_y, 0, "Test passed.", curses.color_pair(4))
         else:
             alerts.append(f"Balance test {high}->{low} failed: Insufficient readings.")
+            stdscr.addstr(progress_y, 0, "Test failed: Insufficient readings.", curses.color_pair(2))
+        y = progress_y + 2
+        stdscr.refresh()
+        time.sleep(5)  # Short rest
         
-        time.sleep(5)  # Short rest between pair tests
-    
     # Handle test results
     if alerts:
+        startup_failed = True
         logging.error("Startup self-test failures: " + "; ".join(alerts))
         send_alert_email("Startup self-test failures:\n" + "\n".join(alerts), settings)
         GPIO.output(settings['AlarmRelayPin'], GPIO.HIGH)  # Activate alarm
-        # For mission-critical: Optionally sys.exit(1) to halt; current: continue with warning
+        stdscr.addstr(y, 0, "Self-Test Complete with Failures. Continuing with warnings.", curses.color_pair(2))
     else:
+        stdscr.addstr(y, 0, "Self-Test Complete. All OK.", curses.color_pair(4))
         logging.info("Startup self-test passed.")
-    
-    return alerts  # Return for potential use in main
+    y += 2
+    stdscr.addstr(y, 0, "Press any key to continue...", curses.color_pair(7))
+    stdscr.refresh()
+    stdscr.getkey()  # Wait for user input to proceed
+    return alerts
 
 def main(stdscr):
     """Main loop for polling, processing, balancing, and TUI."""
@@ -881,7 +943,7 @@ def main(stdscr):
     global previous_temps, previous_bank_medians, run_count, startup_offsets, startup_median, startup_set, battery_voltages
     settings = load_config()  # Load settings
     setup_hardware(settings)  # Setup hardware
-    startup_self_test(settings)  # Perform startup self-test
+    startup_self_test(settings, stdscr)  # Perform startup self-test with TUI
     signal.signal(signal.SIGINT, signal_handler)  # Register handler
     
     startup_offsets = load_offsets()  # Load offsets
@@ -948,20 +1010,19 @@ def main(stdscr):
             battery_voltages.append(v if v is not None else 0.0)  # Append or zero
         
         # Check issues (combined)
-        _, all_alerts = check_for_issues(battery_voltages, temps_alerts, settings)  # Check and alert
+        alert_needed, all_alerts = check_for_issues(battery_voltages, temps_alerts, settings)  # Check and alert
         
-        # Balance if needed
+        # Balance if needed, but skip if any alerts (new safety)
         if len(battery_voltages) == NUM_BANKS:
             max_v = max(battery_voltages)  # Max voltage
             min_v = min(battery_voltages)  # Min voltage
             high_b = battery_voltages.index(max_v) + 1  # High bank
             low_b = battery_voltages.index(min_v) + 1  # Low bank
             current_time = time.time()  # Current time
-            if max_v - min_v > settings['VoltageDifferenceToBalance'] and min_v > 0 and current_time - last_balance_time > settings['BalanceRestPeriodSeconds']:
+            if alert_needed:
+                logging.warning("Skipping balancing due to active alerts.")
+            elif max_v - min_v > settings['VoltageDifferenceToBalance'] and min_v > 0 and current_time - last_balance_time > settings['BalanceRestPeriodSeconds']:
                 balance_battery_voltages(stdscr, high_b, low_b, settings, temps_alerts)  # Balance
-            else:
-                # Optional: Display no balance or rest message in TUI if desired
-                pass
         
         # Draw TUI with is_startup
         draw_tui(stdscr, battery_voltages, calibrated_temps, raw_temps, startup_offsets or [0]*settings['num_channels'], bank_medians, startup_median, all_alerts, settings, startup_set, is_startup=(run_count == 0))  # Draw
