@@ -1145,4 +1145,4 @@ def main(stdscr):
         time.sleep(min(settings['poll_interval'], settings['SleepTimeBetweenChecks']))  # Sleep
 
 if __name__ == '__main__':
-    curses.wrapper(main)  # Run main in curses wrapper
+    curses.wrapper(main)  # Run main in curses wrapper 
