@@ -1,64 +1,146 @@
+The error you're seeing (`_curses.error: addwstr() returned ERR`) is a curses library issue, likely due to attempting to write text outside the terminal window's bounds (e.g., the calculated y or x position + string length exceeds the current screen height/width). This can happen if the terminal is too small (e.g., not fullscreen or <30-40 lines high for the art). The log file not generating suggests the script crashes before logging is set up (inside main, after curses.wrapper starts).
+
+To fix:
+- Resize your terminal larger before running.
+- I've updated the code to add bounds checks before each addstr (skips if out of bounds, logs warning).
+- Moved logging.basicConfig to top for early setup.
+
+Run the updated script below.
+
+```python
 """
 Combined Battery Temperature Monitoring and Balancing Script (Updated for 3s8p Configuration)
 
-Updates based on revised balancer script:
-- Removed NumberOfCellsInSeries, NumberOfSamples, MaxRetries from config; hardcoded samples=2, attempts=2 in read_voltage_with_retry.
-- Used tall battery art from revised script, integrated temps into empty lines "inside" the art (C1-C8 on lines 2-9, med on line 10, volt on line 1).
-- Wider art (25 chars) for natural look, centered text.
-- ADC/readings shown below art per bank, as in revised.
-- Balancing progress below, as before.
-- Other logic adjusted to match revised balancer (e.g., no extra keys in config).
-- Enhanced logging throughout for readability, matching original style (debug for steps, info for actions, error for exceptions).
-- Fixed voltage color check bug: low threshold now uses 'LowVoltageThresholdPerBattery' correctly.
-- Fixed startup median formatting: split f-string to avoid error when None.
-- Fixed calibration None error: guard if startup_offsets is None, reset startup_set.
-- Fixed unfinished balancing logic: completed if block.
-- Fixed y_offset scope in balancing: hardcoded progress_y based on art height (17) + adc lines (6) + margins.
+Extensive Summary:
+This script serves as a comprehensive Battery Management System (BMS) for a 3s8p battery configuration (3 series-connected parallel battery banks, each with 8 cells). It integrates temperature monitoring from NTC sensors via a Lantronix EDS4100 device (using Modbus RTU over TCP) with voltage balancing using I2C-based ADC for readings and relays/GPIO for control. The system runs in an infinite infinite loop, polling data at configurable intervals, detecting anomalies, balancing voltages if imbalances exceed thresholds, logging events, sending email alerts for critical issues, and displaying real-time status in a curses-based Text User Interface (TUI).
+
+What it does:
+- Reads temperatures from 24 NTC sensors (grouped into 3 banks: channels 1-8, 9-16, 17-24).
+- Calibrates temperatures at startup (aligns to median offset if all valid) and persists offsets.
+- Detects temp anomalies: invalid, high/low, deviation from bank median, abnormal rise, group lag, sudden disconnection.
+- Reads voltages from 3 banks using ADS1115 ADC over I2C, with retries and calibration.
+- Checks voltage issues: zero, high, low.
+- Balances voltages: If max-min > threshold and no alerts, connects high to low bank via relays, turn on DC-DC converter for duration, shows progress.
+- Alerts: Logs issues, activates GPIO alarm relay, sends throttled emails.
+- TUI: ASCII art batteries with voltages/temps inside (full details at startup, compact updates), ADC/readings, alerts; pauses at startup.
+- Handles shutdown: Ctrl+C cleans GPIO.
+
+How it does it:
+- Config loaded from 'battery_monitor.ini' with fallbacks.
+- Hardware setup: I2C bus, GPIO pins.
+- Infinite loop: Poll temps/voltages, process/calibrate, check alerts, balance if needed, draw TUI, sleep.
+- Logging: To 'battery_monitor.log' at INFO level, verbose for steps/errors.
+- Edges: Retries on reads, guards for None, exponential backoff.
+
+Logic Diagram (ASCII Flowchart of Execution):
++----------------+
+|   Start Script |
++----------------+
+          |
+          v
++----------------+
+|   Load Config  |
++----------------+
+          |
+          v
++----------------+
+| Setup Hardware |
++----------------+
+          |
+          v
++----------------+
+|  Infinite Loop |
++----------------+
+          |
+          v
+  /---------------\   /---------------\
+  |   Read Temps  |   | Read Voltages |
+  \---------------/   \---------------/
+          |                 |
+          v                 v
++----------------+  +----------------+
+| Process Temps  |  | Check Issues   |
+| & Alerts       |  | & Alerts       |
++----------------+  +----------------+
+          |                 |
+          \-----------------/
+          |
+          v
++----------------+
+| Need Balance?  |
++----------------+
+          | yes
+          v
++----------------+
+|   Balance      |
+|   Banks        |
++----------------+
+          | no
+          v
++----------------+
+|    Draw TUI    |
++----------------+
+          |
+          v
++----------------+
+| Sleep & Repeat |
++----------------+
+          ^
+          | (loop back)
+          |
+
+Dependencies: socket, statistics, time, configparser, logging, signal, gc, os, smbus, RPi.GPIO, smtplib, email.mime.text.MIMEText, curses, sys, art (pip install art).
+Note: Ensure EDS4100 configured for Modbus RTU tunneling, INI file present, hardware connected.
 """
 
-import socket
-import statistics
-import time
-import configparser
-import logging
-import signal
-import gc
-import os
-import smbus
-import RPi.GPIO as GPIO
-from email.mime.text import MIMEText
-import smtplib
-import curses
-import sys
-from art import text2art
+# Move logging setup to top for early errors
+logging.basicConfig(filename='battery_monitor.log', level=logging.INFO, format='%(asctime)s - %(message)s')
+
+import socket  # For TCP connection to EDS4100 device
+import statistics  # For median calculations on temperatures
+import time  # For delays and timing
+import configparser  # For loading settings from INI file
+import logging  # For logging events to file
+import signal  # For handling Ctrl+C graceful shutdown
+import gc  # For manual garbage collection in long-running loop
+import os  # For file operations like offsets.txt
+import smbus  # For I2C communication with ADC/relays
+import RPi.GPIO as GPIO  # For GPIO control of relays/converter
+from email.mime.text import MIMEText  # For constructing email messages
+import smtplib  # For sending emails
+import curses  # For terminal-based TUI
+import sys  # For sys.exit on shutdown
+from art import text2art  # For ASCII art total voltage
 
 # Global variables
-config_parser = configparser.ConfigParser()
-bus = None
-last_email_time = 0
-balance_start_time = None
-last_balance_time = 0
-battery_voltages = []
-previous_temps = None
-previous_bank_medians = None
-run_count = 0
-startup_offsets = None
-startup_median = None
-startup_set = False
-alert_states = {}
-balancing_active = False
+config_parser = configparser.ConfigParser()  # Parser for INI config
+bus = None  # I2C bus object
+last_email_time = 0  # Timestamp for email throttling
+balance_start_time = None  # Timestamp for balancing duration
+last_balance_time = 0  # Timestamp for balancing rest period
+battery_voltages = []  # List of current bank voltages
+previous_temps = None  # Previous calibrated temps for rise/lag checks
+previous_bank_medians = None  # Previous bank medians for rise checks
+run_count = 0  # Poll cycle counter (for startup check)
+startup_offsets = None  # Per-channel temp offsets from startup
+startup_median = None  # Startup median temp for reference
+startup_set = False  # Flag if startup calibration done
+alert_states = {}  # Per-channel alert tracking (unused in current version)
+balancing_active = False  # Flag if balancing in progress
 
 # Bank definitions
-BANK_RANGES = [(1, 8), (9, 16), (17, 24)]  # Channels per bank
-NUM_BANKS = 3
+BANK_RANGES = [(1, 8), (9, 16), (17, 24)]  # Channel ranges for each bank
+NUM_BANKS = 3  # Number of banks (hardcoded for 3s8p)
 
 def get_bank_for_channel(ch):
+    """Get bank ID for a given channel."""
     for bank_id, (start, end) in enumerate(BANK_RANGES, 1):
         if start <= ch <= end:
             return bank_id
     return None
 
 def modbus_crc(data):
+    """Calculate Modbus CRC for data integrity."""
     crc = 0xFFFF
     for byte in data:
         crc ^= byte
@@ -70,6 +152,7 @@ def modbus_crc(data):
     return crc.to_bytes(2, 'little')
 
 def read_ntc_sensors(ip, port, query_delay, num_channels, scaling_factor, max_retries, retry_backoff_base):
+    """Read NTC sensor temperatures via Modbus over TCP with retries."""
     logging.info("Starting temperature sensor read.")
     query_base = bytes([1, 3]) + (0).to_bytes(2, 'big') + (num_channels).to_bytes(2, 'big')
     crc = modbus_crc(query_base)
@@ -78,33 +161,33 @@ def read_ntc_sensors(ip, port, query_delay, num_channels, scaling_factor, max_re
     for attempt in range(max_retries):
         try:
             logging.debug(f"Temp read attempt {attempt+1}: Connecting to {ip}:{port}")
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(3)
-            s.connect((ip, port))
-            s.send(query)
-            time.sleep(query_delay)
-            response = s.recv(1024)
-            s.close()
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # Create TCP socket
+            s.settimeout(3)  # Set timeout for operations
+            s.connect((ip, port))  # Connect to device
+            s.send(query)  # Send Modbus query
+            time.sleep(query_delay)  # Delay for device response
+            response = s.recv(1024)  # Receive response
+            s.close()  # Close socket
             
             if len(response) < 5:
-                raise ValueError("Short response")
+                raise ValueError("Short response")  # Check minimum length
             
             if len(response) != 3 + response[2] + 2:
-                raise ValueError("Invalid response length")
-            calc_crc = modbus_crc(response[:-2])
+                raise ValueError("Invalid response length")  # Validate length
+            calc_crc = modbus_crc(response[:-2])  # Recalculate CRC
             if calc_crc != response[-2:]:
-                raise ValueError("CRC mismatch")
+                raise ValueError("CRC mismatch")  # Check CRC
             
-            slave, func, byte_count = response[0:3]
+            slave, func, byte_count = response[0:3]  # Parse header
             if slave != 1 or func != 3 or byte_count != num_channels * 2:
                 if func & 0x80:
-                    return f"Error: Modbus exception code {response[2]}"
-                return "Error: Invalid response header."
+                    return f"Error: Modbus exception code {response[2]}"  # Handle exception
+                return "Error: Invalid response header."  # Invalid header
             
-            data = response[3:3 + byte_count]
-            raw_temperatures = []
+            data = response[3:3 + byte_count]  # Extract data
+            raw_temperatures = []  # List for raw temps
             for i in range(0, len(data), 2):
-                val = int.from_bytes(data[i:i+2], 'big', signed=True) / scaling_factor
+                val = int.from_bytes(data[i:i+2], 'big', signed=True) / scaling_factor  # Convert to temp
                 raw_temperatures.append(val)
             
             logging.info("Temperature read successful.")
@@ -113,12 +196,13 @@ def read_ntc_sensors(ip, port, query_delay, num_channels, scaling_factor, max_re
         except Exception as e:
             logging.warning(f"Temp read attempt {attempt+1} failed: {str(e)}. Retrying.")
             if attempt < max_retries - 1:
-                time.sleep(retry_backoff_base ** attempt)
+                time.sleep(retry_backoff_base ** attempt)  # Exponential backoff
             else:
                 logging.error(f"Temp read failed after {max_retries} attempts - {str(e)}.")
                 return f"Error: Failed after {max_retries} attempts - {str(e)}."
 
 def load_config():
+    """Load settings from 'battery_monitor.ini' with fallbacks."""
     logging.info("Loading configuration from 'battery_monitor.ini'.")
     global alert_states
     if not config_parser.read('battery_monitor.ini'):
@@ -127,370 +211,401 @@ def load_config():
     
     # Temp settings
     temp_settings = {
-        'ip': config_parser.get('Temp', 'ip', fallback='192.168.15.240'),
-        'port': config_parser.getint('Temp', 'port', fallback=10001),
-        'poll_interval': config_parser.getfloat('Temp', 'poll_interval', fallback=10.0),
-        'rise_threshold': config_parser.getfloat('Temp', 'rise_threshold', fallback=2.0),
-        'deviation_threshold': config_parser.getfloat('Temp', 'deviation_threshold', fallback=0.1),
-        'disconnection_lag_threshold': config_parser.getfloat('Temp', 'disconnection_lag_threshold', fallback=0.5),
-        'high_threshold': config_parser.getfloat('Temp', 'high_threshold', fallback=60.0),
-        'low_threshold': config_parser.getfloat('Temp', 'low_threshold', fallback=0.0),
-        'scaling_factor': config_parser.getfloat('Temp', 'scaling_factor', fallback=100.0),
-        'valid_min': config_parser.getfloat('Temp', 'valid_min', fallback=0.0),
-        'max_retries': config_parser.getint('Temp', 'max_retries', fallback=3),
-        'retry_backoff_base': config_parser.getint('Temp', 'retry_backoff_base', fallback=1),
-        'query_delay': config_parser.getfloat('Temp', 'query_delay', fallback=0.25),
-        'num_channels': config_parser.getint('Temp', 'num_channels', fallback=24),
-        'abs_deviation_threshold': config_parser.getfloat('Temp', 'abs_deviation_threshold', fallback=2.0)
+        'ip': config_parser.get('Temp', 'ip', fallback='192.168.15.240'),  # Device IP
+        'port': config_parser.getint('Temp', 'port', fallback=10001),  # Device port
+        'poll_interval': config_parser.getfloat('Temp', 'poll_interval', fallback=10.0),  # Poll frequency
+        'rise_threshold': config_parser.getfloat('Temp', 'rise_threshold', fallback=2.0),  # Rise alert threshold
+        'deviation_threshold': config_parser.getfloat('Temp', 'deviation_threshold', fallback=0.1),  # Relative deviation
+        'disconnection_lag_threshold': config_parser.getfloat('Temp', 'disconnection_lag_threshold', fallback=0.5),  # Lag threshold
+        'high_threshold': config_parser.getfloat('Temp', 'high_threshold', fallback=60.0),  # High temp threshold
+        'low_threshold': config_parser.getfloat('Temp', 'low_threshold', fallback=0.0),  # Low temp threshold
+        'scaling_factor': config_parser.getfloat('Temp', 'scaling_factor', fallback=100.0),  # Raw value scaling
+        'valid_min': config_parser.getfloat('Temp', 'valid_min', fallback=0.0),  # Min valid temp
+        'max_retries': config_parser.getint('Temp', 'max_retries', fallback=3),  # Read retries
+        'retry_backoff_base': config_parser.getint('Temp', 'retry_backoff_base', fallback=1),  # Backoff base
+        'query_delay': config_parser.getfloat('Temp', 'query_delay', fallback=0.25),  # Query delay
+        'num_channels': config_parser.getint('Temp', 'num_channels', fallback=24),  # Number of channels
+        'abs_deviation_threshold': config_parser.getfloat('Temp', 'abs_deviation_threshold', fallback=2.0)  # Absolute deviation
     }
     
     # Voltage/Balance settings (updated from revised)
     voltage_settings = {
-        'NumberOfBatteries': config_parser.getint('General', 'NumberOfBatteries', fallback=3),
-        'VoltageDifferenceToBalance': config_parser.getfloat('General', 'VoltageDifferenceToBalance', fallback=0.1),
-        'BalanceDurationSeconds': config_parser.getint('General', 'BalanceDurationSeconds', fallback=10),
-        'SleepTimeBetweenChecks': config_parser.getfloat('General', 'SleepTimeBetweenChecks', fallback=5.0),
-        'BalanceRestPeriodSeconds': config_parser.getint('General', 'BalanceRestPeriodSeconds', fallback=30),
-        'LowVoltageThresholdPerBattery': config_parser.getfloat('General', 'LowVoltageThresholdPerBattery', fallback=3.0),
-        'HighVoltageThresholdPerBattery': config_parser.getfloat('General', 'HighVoltageThresholdPerBattery', fallback=4.2),
-        'EmailAlertIntervalSeconds': config_parser.getint('General', 'EmailAlertIntervalSeconds', fallback=300),
-        'I2C_BusNumber': config_parser.getint('General', 'I2C_BusNumber', fallback=1),
-        'VoltageDividerRatio': config_parser.getfloat('General', 'VoltageDividerRatio', fallback=0.01592),
-        'MultiplexerAddress': int(config_parser.get('I2C', 'MultiplexerAddress', fallback='0x70'), 16),
-        'VoltageMeterAddress': int(config_parser.get('I2C', 'VoltageMeterAddress', fallback='0x48'), 16),
-        'RelayAddress': int(config_parser.get('I2C', 'RelayAddress', fallback='0x10'), 16),
-        'DC_DC_RelayPin': config_parser.getint('GPIO', 'DC_DC_RelayPin', fallback=17),
-        'AlarmRelayPin': config_parser.getint('GPIO', 'AlarmRelayPin', fallback=27),
-        'SMTP_Server': config_parser.get('Email', 'SMTP_Server', fallback='smtp.example.com'),
-        'SMTP_Port': config_parser.getint('Email', 'SMTP_Port', fallback=587),
-        'SenderEmail': config_parser.get('Email', 'SenderEmail', fallback='alert@example.com'),
-        'RecipientEmail': config_parser.get('Email', 'RecipientEmail', fallback='admin@example.com'),
-        'ConfigRegister': int(config_parser.get('ADC', 'ConfigRegister', fallback='0x01'), 16),
-        'ConversionRegister': int(config_parser.get('ADC', 'ConversionRegister', fallback='0x00'), 16),
-        'ContinuousModeConfig': int(config_parser.get('ADC', 'ContinuousModeConfig', fallback='0x4000'), 16),
-        'SampleRateConfig': int(config_parser.get('ADC', 'SampleRateConfig', fallback='0x1400'), 16),
-        'GainConfig': int(config_parser.get('ADC', 'GainConfig', fallback='0x2000'), 16),
-        'Sensor1_Calibration': config_parser.getfloat('Calibration', 'Sensor1_Calibration', fallback=1.0),
-        'Sensor2_Calibration': config_parser.getfloat('Calibration', 'Sensor2_Calibration', fallback=1.0),
-        'Sensor3_Calibration': config_parser.getfloat('Calibration', 'Sensor3_Calibration', fallback=1.0)
+        'NumberOfBatteries': config_parser.getint('General', 'NumberOfBatteries', fallback=3),  # Number of banks
+        'VoltageDifferenceToBalance': config_parser.getfloat('General', 'VoltageDifferenceToBalance', fallback=0.1),  # Balance trigger
+        'BalanceDurationSeconds': config_parser.getint('General', 'BalanceDurationSeconds', fallback=10),  # Balance time
+        'SleepTimeBetweenChecks': config_parser.getfloat('General', 'SleepTimeBetweenChecks', fallback=5.0),  # Poll sleep
+        'BalanceRestPeriodSeconds': config_parser.getint('General', 'BalanceRestPeriodSeconds', fallback=30),  # Rest after balance
+        'LowVoltageThresholdPerBattery': config_parser.getfloat('General', 'LowVoltageThresholdPerBattery', fallback=3.0),  # Low volt threshold
+        'HighVoltageThresholdPerBattery': config_parser.getfloat('General', 'HighVoltageThresholdPerBattery', fallback=4.2),  # High volt threshold
+        'EmailAlertIntervalSeconds': config_parser.getint('General', 'EmailAlertIntervalSeconds', fallback=300),  # Email throttle
+        'I2C_BusNumber': config_parser.getint('General', 'I2C_BusNumber', fallback=1),  # I2C bus
+        'VoltageDividerRatio': config_parser.getfloat('General', 'VoltageDividerRatio', fallback=0.01592),  # Divider ratio
+        'MultiplexerAddress': int(config_parser.get('I2C', 'MultiplexerAddress', fallback='0x70'), 16),  # Multiplexer addr
+        'VoltageMeterAddress': int(config_parser.get('I2C', 'VoltageMeterAddress', fallback='0x48'), 16),  # ADC addr
+        'RelayAddress': int(config_parser.get('I2C', 'RelayAddress', fallback='0x10'), 16),  # Relay addr
+        'DC_DC_RelayPin': config_parser.getint('GPIO', 'DC_DC_RelayPin', fallback=17),  # DC-DC pin
+        'AlarmRelayPin': config_parser.getint('GPIO', 'AlarmRelayPin', fallback=27),  # Alarm pin
+        'SMTP_Server': config_parser.get('Email', 'SMTP_Server', fallback='smtp.example.com'),  # SMTP server
+        'SMTP_Port': config_parser.getint('Email', 'SMTP_Port', fallback=587),  # SMTP port
+        'SenderEmail': config_parser.get('Email', 'SenderEmail', fallback='alert@example.com'),  # Sender email
+        'RecipientEmail': config_parser.get('Email', 'RecipientEmail', fallback='admin@example.com'),  # Recipient email
+        'ConfigRegister': int(config_parser.get('ADC', 'ConfigRegister', fallback='0x01'), 16),  # ADC config reg
+        'ConversionRegister': int(config_parser.get('ADC', 'ConversionRegister', fallback='0x00'), 16),  # ADC conv reg
+        'ContinuousModeConfig': int(config_parser.get('ADC', 'ContinuousModeConfig', fallback='0x4000'), 16),  # ADC mode
+        'SampleRateConfig': int(config_parser.get('ADC', 'SampleRateConfig', fallback='0x1400'), 16),  # ADC rate
+        'GainConfig': int(config_parser.get('ADC', 'GainConfig', fallback='0x2000'), 16),  # ADC gain
+        'Sensor1_Calibration': config_parser.getfloat('Calibration', 'Sensor1_Calibration', fallback=1.0),  # Sensor 1 calib
+        'Sensor2_Calibration': config_parser.getfloat('Calibration', 'Sensor2_Calibration', fallback=1.0),  # Sensor 2 calib
+        'Sensor3_Calibration': config_parser.getfloat('Calibration', 'Sensor3_Calibration', fallback=1.0)  # Sensor 3 calib
     }
     
     if voltage_settings['NumberOfBatteries'] != NUM_BANKS:
         logging.warning(f"NumberOfBatteries ({voltage_settings['NumberOfBatteries']}) does not match NUM_BANKS ({NUM_BANKS}); using {NUM_BANKS} for banks.")
     
-    alert_states = {ch: {'last_type': None, 'count': 0} for ch in range(1, temp_settings['num_channels'] + 1)}
+    alert_states = {ch: {'last_type': None, 'count': 0} for ch in range(1, temp_settings['num_channels'] + 1)}  # Per-channel alert states (unused currently)
     
     logging.info("Configuration loaded successfully.")
     return {**temp_settings, **voltage_settings}
 
 def setup_hardware(settings):
+    """Initialize I2C bus and GPIO pins."""
     global bus
     logging.info("Setting up hardware.")
-    bus = smbus.SMBus(settings['I2C_BusNumber'])
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setup(settings['DC_DC_RelayPin'], GPIO.OUT, initial=GPIO.LOW)
-    GPIO.setup(settings['AlarmRelayPin'], GPIO.OUT, initial=GPIO.LOW)
+    bus = smbus.SMBus(settings['I2C_BusNumber'])  # Initialize I2C bus
+    GPIO.setmode(GPIO.BCM)  # Set GPIO mode
+    GPIO.setup(settings['DC_DC_RelayPin'], GPIO.OUT, initial=GPIO.LOW)  # Setup DC-DC pin low
+    GPIO.setup(settings['AlarmRelayPin'], GPIO.OUT, initial=GPIO.LOW)  # Setup alarm pin low
     logging.info("Hardware setup complete.")
 
 def signal_handler(sig, frame):
+    """Handle SIGINT for graceful shutdown."""
     logging.info("Script stopped by user or signal.")
-    GPIO.cleanup()
-    sys.exit(0)
+    GPIO.cleanup()  # Clean GPIO
+    sys.exit(0)  # Exit script
 
 def load_offsets():
+    """Load temp offsets from file if exists."""
     logging.info("Loading startup offsets from 'offsets.txt'.")
     if os.path.exists('offsets.txt'):
         with open('offsets.txt', 'r') as f:
-            offsets = [float(line.strip()) for line in f]
+            offsets = [float(line.strip()) for line in f]  # Read floats line by line
             logging.debug(f"Loaded {len(offsets)} offsets.")
             return offsets
     logging.warning("No 'offsets.txt' found; using none.")
     return None
 
 def save_offsets(offsets):
+    """Save temp offsets to file."""
     logging.info("Saving startup offsets to 'offsets.txt'.")
     with open('offsets.txt', 'w') as f:
         for offset in offsets:
-            f.write(f"{offset}\n")
+            f.write(f"{offset}\n")  # Write each offset on new line
     logging.debug("Offsets saved.")
 
 def check_invalid_reading(raw, ch, alerts, valid_min):
+    """Check if raw temp is invalid."""
     if raw <= valid_min:
-        bank = get_bank_for_channel(ch)
-        alerts.append(f"Bank {bank} Ch {ch}: Invalid reading (≤ {valid_min}).")
-        logging.warning(f"Invalid reading on Bank {bank} Ch {ch}: {raw} ≤ {valid_min}.")
-        return True
-    return False
+        bank = get_bank_for_channel(ch)  # Get bank
+        alerts.append(f"Bank {bank} Ch {ch}: Invalid reading (≤ {valid_min}).")  # Add alert
+        logging.warning(f"Invalid reading on Bank {bank} Ch {ch}: {raw} ≤ {valid_min}.")  # Log warning
+        return True  # Invalid
+    return False  # Valid
 
 def check_high_temp(calibrated, ch, alerts, high_threshold):
+    """Check for high temperature."""
     if calibrated > high_threshold:
-        bank = get_bank_for_channel(ch)
-        alerts.append(f"Bank {bank} Ch {ch}: High temp ({calibrated:.1f}°C > {high_threshold}°C).")
-        logging.warning(f"High temp alert on Bank {bank} Ch {ch}: {calibrated:.1f} > {high_threshold}.")
+        bank = get_bank_for_channel(ch)  # Get bank
+        alerts.append(f"Bank {bank} Ch {ch}: High temp ({calibrated:.1f}°C > {high_threshold}°C).")  # Add alert
+        logging.warning(f"High temp alert on Bank {bank} Ch {ch}: {calibrated:.1f} > {high_threshold}.")  # Log warning
 
 def check_low_temp(calibrated, ch, alerts, low_threshold):
+    """Check for low temperature."""
     if calibrated < low_threshold:
-        bank = get_bank_for_channel(ch)
-        alerts.append(f"Bank {bank} Ch {ch}: Low temp ({calibrated:.1f}°C < {low_threshold}°C).")
-        logging.warning(f"Low temp alert on Bank {bank} Ch {ch}: {calibrated:.1f} < {low_threshold}.")
+        bank = get_bank_for_channel(ch)  # Get bank
+        alerts.append(f"Bank {bank} Ch {ch}: Low temp ({calibrated:.1f}°C < {low_threshold}°C).")  # Add alert
+        logging.warning(f"Low temp alert on Bank {bank} Ch {ch}: {calibrated:.1f} < {low_threshold}.")  # Log warning
 
 def check_deviation(calibrated, bank_median, ch, alerts, abs_deviation_threshold, deviation_threshold):
-    abs_dev = abs(calibrated - bank_median)
-    rel_dev = abs_dev / abs(bank_median) if bank_median != 0 else 0
+    """Check deviation from bank median."""
+    abs_dev = abs(calibrated - bank_median)  # Absolute deviation
+    rel_dev = abs_dev / abs(bank_median) if bank_median != 0 else 0  # Relative deviation
     if abs_dev > abs_deviation_threshold or rel_dev > deviation_threshold:
-        bank = get_bank_for_channel(ch)
-        alerts.append(f"Bank {bank} Ch {ch}: Deviation from bank median (abs {abs_dev:.1f}°C or {rel_dev:.2%}).")
-        logging.warning(f"Deviation alert on Bank {bank} Ch {ch}: abs {abs_dev:.1f}, rel {rel_dev:.2%}.")
+        bank = get_bank_for_channel(ch)  # Get bank
+        alerts.append(f"Bank {bank} Ch {ch}: Deviation from bank median (abs {abs_dev:.1f}°C or {rel_dev:.2%}).")  # Add alert
+        logging.warning(f"Deviation alert on Bank {bank} Ch {ch}: abs {abs_dev:.1f}, rel {rel_dev:.2%}.")  # Log warning
 
 def check_abnormal_rise(current, previous_temps, ch, alerts, poll_interval, rise_threshold):
-    previous = previous_temps[ch-1]
+    """Check for abnormal temp rise since last poll."""
+    previous = previous_temps[ch-1]  # Previous calib
     if previous is not None:
-        rise = current - previous
+        rise = current - previous  # Calculate rise
         if rise > rise_threshold:
-            bank = get_bank_for_channel(ch)
-            alerts.append(f"Bank {bank} Ch {ch}: Abnormal rise ({rise:.1f}°C in {poll_interval}s).")
-            logging.warning(f"Abnormal rise alert on Bank {bank} Ch {ch}: {rise:.1f}°C.")
+            bank = get_bank_for_channel(ch)  # Get bank
+            alerts.append(f"Bank {bank} Ch {ch}: Abnormal rise ({rise:.1f}°C in {poll_interval}s).")  # Add alert
+            logging.warning(f"Abnormal rise alert on Bank {bank} Ch {ch}: {rise:.1f}°C.")  # Log warning
 
 def check_group_tracking_lag(current, previous_temps, bank_median_rise, ch, alerts, disconnection_lag_threshold):
-    previous = previous_temps[ch-1]
+    """Check if channel rise lags bank median rise."""
+    previous = previous_temps[ch-1]  # Previous calib
     if previous is not None:
-        rise = current - previous
+        rise = current - previous  # Calculate rise
         if abs(rise - bank_median_rise) > disconnection_lag_threshold:
-            bank = get_bank_for_channel(ch)
-            alerts.append(f"Bank {bank} Ch {ch}: Lag from bank group ({rise:.1f}°C vs {bank_median_rise:.1f}°C).")
-            logging.warning(f"Lag alert on Bank {bank} Ch {ch}: rise {rise:.1f} vs median {bank_median_rise:.1f}.")
+            bank = get_bank_for_channel(ch)  # Get bank
+            alerts.append(f"Bank {bank} Ch {ch}: Lag from bank group ({rise:.1f}°C vs {bank_median_rise:.1f}°C).")  # Add alert
+            logging.warning(f"Lag alert on Bank {bank} Ch {ch}: rise {rise:.1f} vs median {bank_median_rise:.1f}.")  # Log warning
 
 def check_sudden_disconnection(current, previous_temps, ch, alerts):
-    previous = previous_temps[ch-1]
+    """Check for sudden sensor disconnection."""
+    previous = previous_temps[ch-1]  # Previous calib
     if previous is not None and current is None:
-        bank = get_bank_for_channel(ch)
-        alerts.append(f"Bank {bank} Ch {ch}: Sudden disconnection.")
-        logging.warning(f"Sudden disconnection alert on Bank {bank} Ch {ch}.")
+        bank = get_bank_for_channel(ch)  # Get bank
+        alerts.append(f"Bank {bank} Ch {ch}: Sudden disconnection.")  # Add alert
+        logging.warning(f"Sudden disconnection alert on Bank {bank} Ch {ch}.")  # Log warning
 
 def choose_channel(channel, multiplexer_address):
+    """Select I2C multiplexer channel."""
     logging.debug(f"Switching to I2C channel {channel}.")
-    bus.write_byte(multiplexer_address, 1 << channel)
+    bus.write_byte(multiplexer_address, 1 << channel)  # Write channel select
 
 def setup_voltage_meter(settings):
+    """Configure ADC for voltage measurement."""
     logging.debug("Configuring voltage meter ADC.")
     config_value = (settings['ContinuousModeConfig'] | 
                     settings['SampleRateConfig'] | 
-                    settings['GainConfig'])
-    bus.write_word_data(settings['VoltageMeterAddress'], settings['ConfigRegister'], config_value)
+                    settings['GainConfig'])  # Combine config bits
+    bus.write_word_data(settings['VoltageMeterAddress'], settings['ConfigRegister'], config_value)  # Write to ADC
 
 def read_voltage_with_retry(bank_id, settings):
+    """Read bank voltage with retries and averaging."""
     logging.info(f"Starting voltage read for Bank {bank_id}.")
-    voltage_divider_ratio = settings['VoltageDividerRatio']
-    sensor_id = bank_id
-    calibration_factor = settings[f'Sensor{sensor_id}_Calibration']
-    for attempt in range(2):
+    voltage_divider_ratio = settings['VoltageDividerRatio']  # Divider ratio
+    sensor_id = bank_id  # Sensor ID matches bank
+    calibration_factor = settings[f'Sensor{sensor_id}_Calibration']  # Calibration factor
+    for attempt in range(2):  # 2 attempts
         logging.debug(f"Voltage read attempt {attempt+1} for Bank {bank_id}.")
-        readings = []
-        raw_values = []
-        for _ in range(2):
-            meter_channel = (bank_id - 1) % 3
-            choose_channel(meter_channel, settings['MultiplexerAddress'])
-            setup_voltage_meter(settings)
-            bus.write_byte(settings['VoltageMeterAddress'], 0x01)
-            time.sleep(0.05)
-            raw_adc = bus.read_word_data(settings['VoltageMeterAddress'], settings['ConversionRegister'])
-            raw_adc = (raw_adc & 0xFF) << 8 | (raw_adc >> 8)
-            logging.debug(f"Raw ADC for Bank {bank_id} (Sensor {sensor_id}): {raw_adc}")
+        readings = []  # List for voltage readings
+        raw_values = []  # List for raw ADC
+        for _ in range(2):  # 2 samples
+            meter_channel = (bank_id - 1) % 3  # Channel for bank
+            choose_channel(meter_channel, settings['MultiplexerAddress'])  # Select channel
+            setup_voltage_meter(settings)  # Configure ADC
+            bus.write_byte(settings['VoltageMeterAddress'], 0x01)  # Start conversion
+            time.sleep(0.05)  # Delay for conversion
+            raw_adc = bus.read_word_data(settings['VoltageMeterAddress'], settings['ConversionRegister'])  # Read raw
+            raw_adc = (raw_adc & 0xFF) << 8 | (raw_adc >> 8)  # Swap for little-endian
+            logging.debug(f"Raw ADC for Bank {bank_id} (Sensor {sensor_id}): {raw_adc}")  # Log raw
             if raw_adc != 0:
-                measured_voltage = raw_adc * (6.144 / 32767)
-                actual_voltage = (measured_voltage / voltage_divider_ratio) * calibration_factor
-                readings.append(actual_voltage)
-                raw_values.append(raw_adc)
+                measured_voltage = raw_adc * (6.144 / 32767)  # Convert to voltage
+                actual_voltage = (measured_voltage / voltage_divider_ratio) * calibration_factor  # Apply divider/calib
+                readings.append(actual_voltage)  # Add reading
+                raw_values.append(raw_adc)  # Add raw
             else:
-                readings.append(0.0)
-                raw_values.append(0)
+                readings.append(0.0)  # Zero reading
+                raw_values.append(0)  # Zero raw
         if readings:
-            average = sum(readings) / len(readings)
-            valid_readings = [r for r in readings if abs(r - average) / (average if average != 0 else 1) <= 0.05]
-            valid_adc = [raw_values[i] for i, r in enumerate(readings) if abs(r - average) / (average if average != 0 else 1) <= 0.05]
+            average = sum(readings) / len(readings)  # Average readings
+            valid_readings = [r for r in readings if abs(r - average) / (average if average != 0 else 1) <= 0.05]  # Filter outliers
+            valid_adc = [raw_values[i] for i, r in enumerate(readings) if abs(r - average) / (average if average != 0 else 1) <= 0.05]  # Filter ADC
             if valid_readings:
                 logging.info(f"Voltage read successful for Bank {bank_id}: {average:.2f}V.")
-                return sum(valid_readings) / len(valid_readings), valid_readings, valid_adc
+                return sum(valid_readings) / len(valid_readings), valid_readings, valid_adc  # Return average, readings, ADC
         logging.debug(f"Readings for Bank {bank_id} inconsistent, retrying.")
     logging.error(f"Couldn't get good voltage reading for Bank {bank_id} after 2 tries.")
-    return None, [], []
+    return None, [], []  # Failure return
 
 def set_relay_connection(high, low, settings):
+    """Set relays for balancing between banks."""
     try:
         logging.info(f"Attempting to set relay for connection from Bank {high} to {low}")
         logging.debug("Switching to relay control channel.")
-        choose_channel(3, settings['MultiplexerAddress'])
-        relay_state = 0
-        logging.debug(f"Initial relay state: {bin(relay_state)}")
+        choose_channel(3, settings['MultiplexerAddress'])  # Select relay channel
+        relay_state = 0  # Initial state all off
+        logging.debug(f"Initial relay state: {bin(relay_state)}")  # Log initial
 
         if high == low or high < 1 or low < 1:
-            logging.debug("No need for relay activation; all relays off.")
-            relay_state = 0
+            logging.debug("No need for relay activation; all relays off.")  # No balance needed
+            relay_state = 0  # All off
         else:
+            # Relay mapping for pairs
             if high == 2 and low == 1:
-                relay_state |= (1 << 0)
-                logging.debug("Relay 1 activated for high to low.")
+                relay_state |= (1 << 0)  # Relay 1 on
+                logging.debug("Relay 1 activated for high to low.")  # Log activation
             elif high == 3 and low == 1:
-                relay_state |= (1 << 0) | (1 << 1)
-                logging.debug("Relays 1 and 2 activated for high to low.")
+                relay_state |= (1 << 0) | (1 << 1)  # Relays 1,2 on
+                logging.debug("Relays 1 and 2 activated for high to low.")  # Log activation
             elif high == 1 and low == 2:
-                relay_state |= (1 << 2)
-                logging.debug("Relay 3 activated for low to high.")
+                relay_state |= (1 << 2)  # Relay 3 on
+                logging.debug("Relay 3 activated for low to high.")  # Log activation
             elif high == 1 and low == 3:
-                relay_state |= (1 << 2) | (1 << 3)
-                logging.debug("Relays 3 and 4 activated for low to high.")
+                relay_state |= (1 << 2) | (1 << 3)  # Relays 3,4 on
+                logging.debug("Relays 3 and 4 activated for low to high.")  # Log activation
             elif high == 2 and low == 3:
-                relay_state |= (1 << 0) | (1 << 2) | (1 << 3)
-                logging.debug("Relays 1, 3, and 4 activated for high to low.")
+                relay_state |= (1 << 0) | (1 << 2) | (1 << 3)  # Relays 1,3,4 on
+                logging.debug("Relays 1, 3, and 4 activated for high to low.")  # Log activation
             elif high == 3 and low == 2:
-                relay_state |= (1 << 0) | (1 << 1) | (1 << 2)
-                logging.debug("Relays 1, 2, and 3 activated for high to low.")
+                relay_state |= (1 << 0) | (1 << 1) | (1 << 2)  # Relays 1,2,3 on
+                logging.debug("Relays 1, 2, and 3 activated for high to low.")  # Log activation
 
-        logging.debug(f"Final relay state: {bin(relay_state)}")
-        logging.info(f"Sending relay state command to hardware.")
-        bus.write_byte_data(settings['RelayAddress'], 0x11, relay_state)
-        logging.info(f"Relay setup completed for balancing from Bank {high} to {low}")
+        logging.debug(f"Final relay state: {bin(relay_state)}")  # Log final state
+        logging.info(f"Sending relay state command to hardware.")  # Log send
+        bus.write_byte_data(settings['RelayAddress'], 0x11, relay_state)  # Write state
+        logging.info(f"Relay setup completed for balancing from Bank {high} to {low}")  # Log completion
     except IOError as e:
-        logging.error(f"I/O error while setting up relay: {e}")
+        logging.error(f"I/O error while setting up relay: {e}")  # Log IO error
     except Exception as e:
-        logging.error(f"Unexpected error in set_relay_connection: {e}")
+        logging.error(f"Unexpected error in set_relay_connection: {e}")  # Log unexpected
 
 def control_dcdc_converter(turn_on, settings):
+    """Turn DC-DC converter on/off via GPIO."""
     try:
-        GPIO.output(settings['DC_DC_RelayPin'], GPIO.HIGH if turn_on else GPIO.LOW)
-        logging.info(f"DC-DC Converter is now {'on' if turn_on else 'off'}")
+        GPIO.output(settings['DC_DC_RelayPin'], GPIO.HIGH if turn_on else GPIO.LOW)  # Set pin state
+        logging.info(f"DC-DC Converter is now {'on' if turn_on else 'off'}")  # Log state
     except Exception as e:
-        logging.error(f"Problem controlling DC-DC converter: {e}")
+        logging.error(f"Problem controlling DC-DC converter: {e}")  # Log error
 
 def send_alert_email(message, settings):
+    """Send email alert with throttling."""
     global last_email_time
     if time.time() - last_email_time < settings['EmailAlertIntervalSeconds']:
-        logging.debug("Skipping alert email to avoid flooding.")
+        logging.debug("Skipping alert email to avoid flooding.")  # Log skip
         return
     try:
-        msg = MIMEText(message)
-        msg['Subject'] = "Battery Monitor Alert"
-        msg['From'] = settings['SenderEmail']
-        msg['To'] = settings['RecipientEmail']
+        msg = MIMEText(message)  # Create message
+        msg['Subject'] = "Battery Monitor Alert"  # Set subject
+        msg['From'] = settings['SenderEmail']  # Set from
+        msg['To'] = settings['RecipientEmail']  # Set to
         with smtplib.SMTP(settings['SMTP_Server'], settings['SMTP_Port']) as server:
-            server.send_message(msg)
-        last_email_time = time.time()
-        logging.info(f"Alert email sent: {message}")
+            server.send_message(msg)  # Send email
+        last_email_time = time.time()  # Update timestamp
+        logging.info(f"Alert email sent: {message}")  # Log sent
     except Exception as e:
-        logging.error(f"Failed to send alert email: {e}")
+        logging.error(f"Failed to send alert email: {e}")  # Log failure
 
 def check_for_issues(voltages, temps_alerts, settings):
+    """Check voltage/temp issues, trigger alerts/relay."""
     logging.info("Checking for voltage and temp issues.")
     alert_needed = False
     alerts = []
     for i, v in enumerate(voltages, 1):
         if v is None or v == 0.0:
-            alerts.append(f"Bank {i}: Zero voltage.")
-            logging.warning(f"Zero voltage alert on Bank {i}.")
+            alerts.append(f"Bank {i}: Zero voltage.")  # Add alert
+            logging.warning(f"Zero voltage alert on Bank {i}.")  # Log
             alert_needed = True
         elif v > settings['HighVoltageThresholdPerBattery']:
-            alerts.append(f"Bank {i}: High voltage ({v:.2f}V).")
-            logging.warning(f"High voltage alert on Bank {i}: {v:.2f}V.")
+            alerts.append(f"Bank {i}: High voltage ({v:.2f}V).")  # Add alert
+            logging.warning(f"High voltage alert on Bank {i}: {v:.2f}V.")  # Log
             alert_needed = True
         elif v < settings['LowVoltageThresholdPerBattery']:
-            alerts.append(f"Bank {i}: Low voltage ({v:.2f}V).")
-            logging.warning(f"Low voltage alert on Bank {i}: {v:.2f}V.")
+            alerts.append(f"Bank {i}: Low voltage ({v:.2f}V).")  # Add alert
+            logging.warning(f"Low voltage alert on Bank {i}: {v:.2f}V.")  # Log
             alert_needed = True
     if temps_alerts:
-        alerts.extend(temps_alerts)
+        alerts.extend(temps_alerts)  # Add temp alerts
         alert_needed = True
     if alert_needed:
-        GPIO.output(settings['AlarmRelayPin'], GPIO.HIGH)
-        logging.info("Alarm relay activated.")
-        send_alert_email("\n".join(alerts), settings)
+        GPIO.output(settings['AlarmRelayPin'], GPIO.HIGH)  # Activate relay
+        logging.info("Alarm relay activated.")  # Log activation
+        send_alert_email("\n".join(alerts), settings)  # Send email
     else:
-        GPIO.output(settings['AlarmRelayPin'], GPIO.LOW)
-        logging.info("No issues; alarm relay deactivated.")
+        GPIO.output(settings['AlarmRelayPin'], GPIO.LOW)  # Deactivate relay
+        logging.info("No issues; alarm relay deactivated.")  # Log no issues
     return alert_needed, alerts
 
 def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
+    """Balance voltages between high and low banks with progress in TUI."""
     global balance_start_time, last_balance_time, balancing_active
     if temps_alerts:
         logging.warning("Skipping balancing due to temperature anomalies in banks.")
         return
     logging.info(f"Starting balance from Bank {high} to {low}.")
     balancing_active = True
-    voltage_high, _, _ = read_voltage_with_retry(high, settings)
-    voltage_low, _, _ = read_voltage_with_retry(low, settings)
+    voltage_high, _, _ = read_voltage_with_retry(high, settings)  # Read high
+    voltage_low, _, _ = read_voltage_with_retry(low, settings)  # Read low
     if voltage_low == 0.0:
         logging.warning(f"Cannot balance to Bank {low} (0.00V). Skipping.")
         balancing_active = False
         return
-    set_relay_connection(high, low, settings)
-    control_dcdc_converter(True, settings)
-    balance_start_time = time.time()
-    animation_frames = ['|', '/', '-', '\\']
-    frame_index = 0
-    progress_y = 17 + 6 + 2  # Hardcoded: art_height=17, adc_lines=6 (2 per bank), margin=2
+    set_relay_connection(high, low, settings)  # Set relays
+    control_dcdc_converter(True, settings)  # Turn on converter
+    balance_start_time = time.time()  # Start timer
+    animation_frames = ['|', '/', '-', '\\']  # Spinner frames
+    frame_index = 0  # Spinner index
+    progress_y = 17 + 6 + 2  # Hardcoded position below art + ADC + margin
     while time.time() - balance_start_time < settings['BalanceDurationSeconds']:
-        elapsed = time.time() - balance_start_time
-        progress = min(1.0, elapsed / settings['BalanceDurationSeconds'])
-        voltage_high, _, _ = read_voltage_with_retry(high, settings)
-        voltage_low, _, _ = read_voltage_with_retry(low, settings)
-        bar_length = 20
-        filled = int(bar_length * progress)
-        bar = '=' * filled + ' ' * (bar_length - filled)
-        stdscr.addstr(progress_y, 0, f"Balancing Bank {high} ({voltage_high:.2f}V) -> Bank {low} ({voltage_low:.2f}V)... [{animation_frames[frame_index % 4]}]", curses.color_pair(6))
-        stdscr.addstr(progress_y + 1, 0, f"Progress: [{bar}] {int(progress * 100)}%", curses.color_pair(6))
-        stdscr.refresh()
-        logging.debug(f"Balancing progress: {progress * 100:.2f}%, High: {voltage_high:.2f}V, Low: {voltage_low:.2f}V")
-        frame_index += 1
-        time.sleep(0.01)
+        elapsed = time.time() - balance_start_time  # Elapsed time
+        progress = min(1.0, elapsed / settings['BalanceDurationSeconds'])  # Progress fraction
+        voltage_high, _, _ = read_voltage_with_retry(high, settings)  # Re-read high
+        voltage_low, _, _ = read_voltage_with_retry(low, settings)  # Re-read low
+        bar_length = 20  # Bar length
+        filled = int(bar_length * progress)  # Filled part
+        bar = '=' * filled + ' ' * (bar_length - filled)  # Build bar
+        stdscr.addstr(progress_y, 0, f"Balancing Bank {high} ({voltage_high:.2f}V) -> Bank {low} ({voltage_low:.2f}V)... [{animation_frames[frame_index % 4]}]", curses.color_pair(6))  # Show status
+        stdscr.addstr(progress_y + 1, 0, f"Progress: [{bar}] {int(progress * 100)}%", curses.color_pair(6))  # Show progress
+        stdscr.refresh()  # Refresh TUI
+        logging.debug(f"Balancing progress: {progress * 100:.2f}%, High: {voltage_high:.2f}V, Low: {voltage_low:.2f}V")  # Log progress
+        frame_index += 1  # Next frame
+        time.sleep(0.01)  # Small delay
     logging.info("Balancing process completed.")
-    control_dcdc_converter(False, settings)
+    control_dcdc_converter(False, settings)  # Turn off converter
     logging.info("Turning off DC-DC converter.")
-    set_relay_connection(0, 0, settings)
+    set_relay_connection(0, 0, settings)  # Reset relays
     logging.info("Resetting relay connections to default state.")
-    balancing_active = False
-    last_balance_time = time.time()
+    balancing_active = False  # Reset flag
+    last_balance_time = time.time()  # Update last time
 
 def compute_bank_medians(calibrated_temps, valid_min):
+    """Compute median temps per bank."""
     bank_medians = []
     for start, end in BANK_RANGES:
-        bank_temps = [calibrated_temps[i-1] for i in range(start, end+1) if calibrated_temps[i-1] is not None]
-        bank_median = statistics.median(bank_temps) if bank_temps else 0.0
+        bank_temps = [calibrated_temps[i-1] for i in range(start, end+1) if calibrated_temps[i-1] is not None]  # Valid temps
+        bank_median = statistics.median(bank_temps) if bank_temps else 0.0  # Median or 0
         bank_medians.append(bank_median)
     return bank_medians
 
 def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_medians, startup_median, alerts, settings, startup_set, is_startup):
+    """Draw the TUI with battery art, temps inside, ADC, alerts."""
     logging.debug("Refreshing TUI.")
-    stdscr.clear()
+    stdscr.clear()  # Clear screen
     # Colors
-    curses.start_color()
-    curses.use_default_colors()
-    TITLE_COLOR = curses.color_pair(1)  # Red
-    HIGH_V = curses.color_pair(2)  # Red
-    LOW_V = curses.color_pair(3)  # Yellow
-    OK_V = curses.color_pair(4)  # Green
-    ADC_C = curses.color_pair(5)  # Light
-    BAL_C = curses.color_pair(6)  # Yellow
-    INFO_C = curses.color_pair(7)  # Cyan
-    ERR_C = curses.color_pair(8)  # Magenta
-    curses.init_pair(1, curses.COLOR_RED, -1)
-    curses.init_pair(2, curses.COLOR_RED, -1)
-    curses.init_pair(3, curses.COLOR_YELLOW, -1)
-    curses.init_pair(4, curses.COLOR_GREEN, -1)
-    curses.init_pair(5, curses.COLOR_WHITE, -1)
-    curses.init_pair(6, curses.COLOR_YELLOW, -1)
-    curses.init_pair(7, curses.COLOR_CYAN, -1)
-    curses.init_pair(8, curses.COLOR_MAGENTA, -1)
+    curses.start_color()  # Start color mode
+    curses.use_default_colors()  # Use terminal defaults
+    TITLE_COLOR = curses.color_pair(1)  # Red for title
+    HIGH_V = curses.color_pair(2)  # Red for high
+    LOW_V = curses.color_pair(3)  # Yellow for low
+    OK_V = curses.color_pair(4)  # Green for OK
+    ADC_C = curses.color_pair(5)  # Light for ADC
+    BAL_C = curses.color_pair(6)  # Yellow for balancing
+    INFO_C = curses.color_pair(7)  # Cyan for info
+    ERR_C = curses.color_pair(8)  # Magenta for errors
+    curses.init_pair(1, curses.COLOR_RED, -1)  # Init pair 1
+    curses.init_pair(2, curses.COLOR_RED, -1)  # Init pair 2
+    curses.init_pair(3, curses.COLOR_YELLOW, -1)  # Init pair 3
+    curses.init_pair(4, curses.COLOR_GREEN, -1)  # Init pair 4
+    curses.init_pair(5, curses.COLOR_WHITE, -1)  # Init pair 5
+    curses.init_pair(6, curses.COLOR_YELLOW, -1)  # Init pair 6
+    curses.init_pair(7, curses.COLOR_CYAN, -1)  # Init pair 7
+    curses.init_pair(8, curses.COLOR_MAGENTA, -1)  # Init pair 8
+    
+    # Get screen dimensions for bounds checks
+    height, width = stdscr.getmaxyx()  # Screen height/width
     
     # Total voltage
-    total_v = sum(voltages)
-    total_high = settings['HighVoltageThresholdPerBattery'] * NUM_BANKS
-    total_low = settings['LowVoltageThresholdPerBattery'] * NUM_BANKS
-    v_color = HIGH_V if total_v > total_high else LOW_V if total_v < total_low else OK_V
-    roman_v = text2art(f"{total_v:.2f}V", font='roman', chr_ignore=True)
-    stdscr.addstr(0, 0, "Battery Monitor GUI (3s8p)", TITLE_COLOR)
-    for i, line in enumerate(roman_v.splitlines()):
-        stdscr.addstr(i + 1, 0, line, v_color)
+    total_v = sum(voltages)  # Sum bank voltages
+    total_high = settings['HighVoltageThresholdPerBattery'] * NUM_BANKS  # High threshold total
+    total_low = settings['LowVoltageThresholdPerBattery'] * NUM_BANKS  # Low threshold total
+    v_color = HIGH_V if total_v > total_high else LOW_V if total_v < total_low else OK_V  # Color for total
+    roman_v = text2art(f"{total_v:.2f}V", font='roman', chr_ignore=True)  # Art for total
+    roman_lines = roman_v.splitlines()  # Split lines
+    for i, line in enumerate(roman_lines):
+        if i + 1 < height and len(line) < width:
+            stdscr.addstr(i + 1, 0, line, v_color)  # Draw if in bounds
+        else:
+            logging.warning(f"Skipping total voltage art line {i+1} - out of bounds.")
     
-    y_offset = len(roman_v.splitlines()) + 2
+    y_offset = len(roman_lines) + 2  # Offset after total art
+    if y_offset >= height:
+        logging.warning("TUI y_offset exceeds height; skipping art.")
+        return  # Early exit if no space
     
     # Tall battery art with temps inside
     battery_art_base = [
@@ -512,176 +627,216 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
         "  |           |  ",
         "  |___________|  "
     ]
-    art_height = len(battery_art_base)
-    art_width = len(battery_art_base[0])
+    art_height = len(battery_art_base)  # Art height
+    art_width = len(battery_art_base[0])  # Art width per bank
     
     # Draw base art for all banks side-by-side
     for row, line in enumerate(battery_art_base):
-        full_line = line * NUM_BANKS
-        stdscr.addstr(y_offset + row, 0, full_line, OK_V)
+        full_line = line * NUM_BANKS  # Repeat for banks
+        if y_offset + row < height and len(full_line) < width:
+            stdscr.addstr(y_offset + row, 0, full_line, OK_V)  # Draw line if in bounds
+        else:
+            logging.warning(f"Skipping art row {row} - out of bounds.")
     
     # Overlay content inside each bank
     for bank_id in range(NUM_BANKS):
-        start_pos = bank_id * art_width
+        start_pos = bank_id * art_width  # Start position for bank
         # Voltage on line 1, centered
-        v_str = f"{voltages[bank_id]:.2f}V" if voltages[bank_id] > 0 else "0.00V"
-        v_color = ERR_C if voltages[bank_id] == 0.0 else HIGH_V if voltages[bank_id] > settings['HighVoltageThresholdPerBattery'] else LOW_V if voltages[bank_id] < settings['LowVoltageThresholdPerBattery'] else OK_V
-        v_center = start_pos + (art_width - len(v_str)) // 2
-        stdscr.addstr(y_offset + 1, v_center, v_str, v_color)
+        v_str = f"{voltages[bank_id]:.2f}V" if voltages[bank_id] > 0 else "0.00V"  # Voltage string
+        v_color = ERR_C if voltages[bank_id] == 0.0 else HIGH_V if voltages[bank_id] > settings['HighVoltageThresholdPerBattery'] else LOW_V if voltages[bank_id] < settings['LowVoltageThresholdPerBattery'] else OK_V  # Fixed color check
+        v_center = start_pos + (art_width - len(v_str)) // 2  # Center position
+        if y_offset + 1 < height and v_center + len(v_str) < width:
+            stdscr.addstr(y_offset + 1, v_center, v_str, v_color)  # Overlay if in bounds
+        else:
+            logging.warning(f"Skipping voltage overlay for Bank {bank_id+1} - out of bounds.")
         
         # Temps on lines 2-9 (C1-C8)
-        start, end = BANK_RANGES[bank_id]
+        start, end = BANK_RANGES[bank_id]  # Channel range
         for local_ch, ch in enumerate(range(start, end + 1), 0):
-            idx = ch - 1
-            raw = raw_temps[idx] if idx < len(raw_temps) else 0
-            calib = calibrated_temps[idx]
-            calib_str = f"{calib:.1f}" if calib is not None else "Inv"
+            idx = ch - 1  # Index
+            raw = raw_temps[idx] if idx < len(raw_temps) else 0  # Raw temp
+            calib = calibrated_temps[idx]  # Calib temp
+            calib_str = f"{calib:.1f}" if calib is not None else "Inv"  # Calib string
             if is_startup:
-                raw_str = f"{raw:.1f}" if raw > settings['valid_min'] else "Inv"
-                offset_str = f"{offsets[idx]:.1f}" if startup_set and raw > settings['valid_min'] else "N/A"
-                detail = f" ({raw_str}/{offset_str})"
+                raw_str = f"{raw:.1f}" if raw > settings['valid_min'] else "Inv"  # Raw string
+                offset_str = f"{offsets[idx]:.1f}" if startup_set and raw > settings['valid_min'] else "N/A"  # Offset string
+                detail = f" ({raw_str}/{offset_str})"  # Detail for startup
             else:
-                detail = ""
-            t_str = f"C{local_ch+1}: {calib_str}{detail}"
-            t_color = ERR_C if "Inv" in calib_str else HIGH_V if calib > settings['high_threshold'] else LOW_V if calib < settings['low_threshold'] else OK_V
-            t_center = start_pos + (art_width - len(t_str)) // 2
-            stdscr.addstr(y_offset + 2 + local_ch, t_center, t_str, t_color)
+                detail = ""  # No detail for update
+            t_str = f"C{local_ch+1}: {calib_str}{detail}"  # Temp string
+            t_color = ERR_C if "Inv" in calib_str else HIGH_V if calib > settings['high_threshold'] else LOW_V if calib < settings['low_threshold'] else OK_V  # Color for temp
+            t_center = start_pos + (art_width - len(t_str)) // 2  # Center position
+            t_y = y_offset + 2 + local_ch  # Y position
+            if t_y < height and t_center + len(t_str) < width:
+                stdscr.addstr(t_y, t_center, t_str, t_color)  # Overlay temp if in bounds
+            else:
+                logging.warning(f"Skipping temp overlay for Bank {bank_id+1} C{local_ch+1} - out of bounds.")
         
         # Median on line 15
-        med_str = f"Med: {bank_medians[bank_id]:.1f}°C"
-        med_center = start_pos + (art_width - len(med_str)) // 2
-        stdscr.addstr(y_offset + 15, med_center, med_str, INFO_C)
+        med_str = f"Med: {bank_medians[bank_id]:.1f}°C"  # Median string
+        med_center = start_pos + (art_width - len(med_str)) // 2  # Center position
+        med_y = y_offset + 15  # Y position
+        if med_y < height and med_center + len(med_str) < width:
+            stdscr.addstr(med_y, med_center, med_str, INFO_C)  # Overlay if in bounds
+        else:
+            logging.warning(f"Skipping median overlay for Bank {bank_id+1} - out of bounds.")
     
-    y_offset += art_height + 2
+    y_offset += art_height + 2  # Offset after art
     
     # ADC/readings
     for i in range(1, NUM_BANKS + 1):
-        voltage, readings, adc_values = read_voltage_with_retry(i, settings)
-        logging.debug(f"Bank {i} - Voltage: {voltage}, ADC: {adc_values}, Readings: {readings}")
+        voltage, readings, adc_values = read_voltage_with_retry(i, settings)  # Read with retry
+        logging.debug(f"Bank {i} - Voltage: {voltage}, ADC: {adc_values}, Readings: {readings}")  # Log
         if voltage is None:
-            voltage = 0.0
-        stdscr.addstr(y_offset, 0, f"Bank {i}: (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_C)
-        y_offset += 1
-        if readings:
-            stdscr.addstr(y_offset, 0, f"[Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_C)
+            voltage = 0.0  # Default on failure
+        adc_y = y_offset  # Y for ADC
+        if adc_y < height:
+            stdscr.addstr(adc_y, 0, f"Bank {i}: (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_C)  # Show ADC if in bounds
         else:
-            stdscr.addstr(y_offset, 0, "  [Readings: No data]", ADC_C)
-        y_offset += 1
+            logging.warning(f"Skipping ADC for Bank {i} - out of bounds.")
+        y_offset += 1  # Next line
+        read_y = y_offset  # Y for readings
+        if read_y < height:
+            if readings:
+                stdscr.addstr(read_y, 0, f"[Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_C)  # Show readings if in bounds
+            else:
+                stdscr.addstr(read_y, 0, "  [Readings: No data]", ADC_C)  # No data
+        else:
+            logging.warning(f"Skipping readings for Bank {i} - out of bounds.")
+        y_offset += 1  # Next line
     
-    y_offset += 1
+    y_offset += 1  # Extra space
     
     # Startup median, fixed formatting
-    med_str = f"{startup_median:.1f}°C" if startup_median else "N/A"
-    stdscr.addstr(y_offset, 0, f"Startup Median Temp: {med_str}", INFO_C)
-    y_offset += 2
+    med_str = f"{startup_median:.1f}°C" if startup_median else "N/A"  # Safe string
+    med_y = y_offset  # Y for median
+    if med_y < height:
+        stdscr.addstr(med_y, 0, f"Startup Median Temp: {med_str}", INFO_C)  # Show median if in bounds
+    else:
+        logging.warning("Skipping startup median - out of bounds.")
+    y_offset += 2  # Next lines
     
     # Alerts
-    stdscr.addstr(y_offset, 0, "Alerts:", INFO_C)
-    y_offset += 1
+    alert_header_y = y_offset  # Y for alerts header
+    if alert_header_y < height:
+        stdscr.addstr(alert_header_y, 0, "Alerts:", INFO_C)  # Alerts header if in bounds
+    y_offset += 1  # Next line
     if alerts:
         for alert in alerts:
-            stdscr.addstr(y_offset, 0, alert, ERR_C)
-            y_offset += 1
+            if y_offset < height:
+                stdscr.addstr(y_offset, 0, alert, ERR_C)  # Show alert if in bounds
+            else:
+                logging.warning(f"Skipping alert '{alert}' - out of bounds.")
+            y_offset += 1  # Next line
     else:
-        stdscr.addstr(y_offset, 0, "No alerts.", OK_V)
+        if y_offset < height:
+            stdscr.addstr(y_offset, 0, "No alerts.", OK_V)  # No alerts if in bounds
+        else:
+            logging.warning("Skipping no alerts message - out of bounds.")
     
     if is_startup:
-        stdscr.addstr(y_offset + 1, 0, "Press any key to continue...", INFO_C)
-        stdscr.getch()
+        prompt_y = y_offset + 1  # Y for prompt
+        if prompt_y < height:
+            stdscr.addstr(prompt_y, 0, "Press any key to continue...", INFO_C)  # Pause prompt if in bounds
+        stdscr.getch()  # Wait for key (even if prompt skipped)
     
-    stdscr.refresh()
+    stdscr.refresh()  # Refresh screen
 
 def main(stdscr):
-    stdscr.keypad(True)
+    """Main loop for polling, processing, balancing, and TUI."""
+    stdscr.keypad(True)  # Enable keypad
     global previous_temps, previous_bank_medians, run_count, startup_offsets, startup_median, startup_set, battery_voltages
-    settings = load_config()
-    setup_hardware(settings)
-    signal.signal(signal.SIGINT, signal_handler)
-    logging.basicConfig(filename='battery_monitor.log', level=logging.INFO, format='%(asctime)s - %(message)s')
+    settings = load_config()  # Load settings
+    setup_hardware(settings)  # Setup hardware
+    signal.signal(signal.SIGINT, signal_handler)  # Register handler
     
-    startup_offsets = load_offsets()
+    startup_offsets = load_offsets()  # Load offsets
     if startup_offsets and len(startup_offsets) == settings['num_channels']:
-        startup_set = True
-        startup_median = statistics.median(startup_offsets)  # Approx
-    previous_temps = None
-    previous_bank_medians = [None] * NUM_BANKS
-    run_count = 0
+        startup_set = True  # Set flag
+        startup_median = statistics.median(startup_offsets)  # Calculate median
+    previous_temps = None  # Init previous temps
+    previous_bank_medians = [None] * NUM_BANKS  # Init previous medians
+    run_count = 0  # Init run count
     
     while True:
-        logging.info("Starting poll cycle.")
+        logging.info("Starting poll cycle.")  # Log cycle start
         # Read temps
-        temp_result = read_ntc_sensors(settings['ip'], settings['port'], settings['query_delay'], settings['num_channels'], settings['scaling_factor'], settings['max_retries'], settings['retry_backoff_base'])
-        temps_alerts = []
+        temp_result = read_ntc_sensors(settings['ip'], settings['port'], settings['query_delay'], settings['num_channels'], settings['scaling_factor'], settings['max_retries'], settings['retry_backoff_base'])  # Read temps
+        temps_alerts = []  # Temp alerts list
         if isinstance(temp_result, str):
-            temps_alerts.append(temp_result)
-            calibrated_temps = [None] * settings['num_channels']
-            raw_temps = [settings['valid_min']] * settings['num_channels']
-            bank_medians = [0.0] * NUM_BANKS
+            temps_alerts.append(temp_result)  # Error as alert
+            calibrated_temps = [None] * settings['num_channels']  # None calibrated
+            raw_temps = [settings['valid_min']] * settings['num_channels']  # Min raw
+            bank_medians = [0.0] * NUM_BANKS  # Zero medians
         else:
-            valid_count = sum(1 for t in temp_result if t > settings['valid_min'])
+            valid_count = sum(1 for t in temp_result if t > settings['valid_min'])  # Count valid
             if not startup_set and valid_count == settings['num_channels']:
-                startup_median = statistics.median(temp_result)
-                startup_offsets = [startup_median - raw for raw in temp_result]
-                save_offsets(startup_offsets)
-                startup_set = True
-                logging.info(f"Temp calibration set. Median: {startup_median:.1f}°C")
+                startup_median = statistics.median(temp_result)  # Calculate median
+                startup_offsets = [startup_median - raw for raw in temp_result]  # Calculate offsets
+                save_offsets(startup_offsets)  # Save
+                startup_set = True  # Set flag
+                logging.info(f"Temp calibration set. Median: {startup_median:.1f}°C")  # Log
             # Guard for None offsets
             if startup_set and startup_offsets is None:
-                startup_set = False
-            calibrated_temps = [temp_result[i] + startup_offsets[i] if startup_set and temp_result[i] > settings['valid_min'] else temp_result[i] if temp_result[i] > settings['valid_min'] else None for i in range(settings['num_channels'])]
-            raw_temps = temp_result
-            bank_medians = compute_bank_medians(calibrated_temps, settings['valid_min'])
+                startup_set = False  # Reset if None
+            calibrated_temps = [temp_result[i] + startup_offsets[i] if startup_set and temp_result[i] > settings['valid_min'] else temp_result[i] if temp_result[i] > settings['valid_min'] else None for i in range(settings['num_channels'])]  # Calibrate temps
+            raw_temps = temp_result  # Raw list
+            bank_medians = compute_bank_medians(calibrated_temps, settings['valid_min'])  # Bank medians
             
             for ch, raw in enumerate(raw_temps, 1):
                 if check_invalid_reading(raw, ch, temps_alerts, settings['valid_min']):
-                    continue
-                calib = calibrated_temps[ch-1]
-                bank_id = get_bank_for_channel(ch)
-                bank_median = bank_medians[bank_id - 1]
-                check_high_temp(calib, ch, temps_alerts, settings['high_threshold'])
-                check_low_temp(calib, ch, temps_alerts, settings['low_threshold'])
-                check_deviation(calib, bank_median, ch, temps_alerts, settings['abs_deviation_threshold'], settings['deviation_threshold'])
+                    continue  # Skip invalid
+                calib = calibrated_temps[ch-1]  # Get calib
+                bank_id = get_bank_for_channel(ch)  # Get bank
+                bank_median = bank_medians[bank_id - 1]  # Bank median
+                check_high_temp(calib, ch, temps_alerts, settings['high_threshold'])  # Check high
+                check_low_temp(calib, ch, temps_alerts, settings['low_threshold'])  # Check low
+                check_deviation(calib, bank_median, ch, temps_alerts, settings['abs_deviation_threshold'], settings['deviation_threshold'])  # Check deviation
             
             if run_count > 0 and previous_temps and previous_bank_medians is not None:
                 for bank_id in range(1, NUM_BANKS + 1):
-                    bank_median_rise = bank_medians[bank_id - 1] - previous_bank_medians[bank_id - 1]
-                    start, end = BANK_RANGES[bank_id - 1]
+                    bank_median_rise = bank_medians[bank_id - 1] - previous_bank_medians[bank_id - 1]  # Rise
+                    start, end = BANK_RANGES[bank_id - 1]  # Range
                     for ch in range(start, end + 1):
-                        calib = calibrated_temps[ch - 1]
+                        calib = calibrated_temps[ch - 1]  # Calib
                         if calib is not None:
-                            check_abnormal_rise(calib, previous_temps, ch, temps_alerts, settings['poll_interval'], settings['rise_threshold'])
-                            check_group_tracking_lag(calib, previous_temps, bank_median_rise, ch, temps_alerts, settings['disconnection_lag_threshold'])
-                        check_sudden_disconnection(calib, previous_temps, ch, temps_alerts)
+                            check_abnormal_rise(calib, previous_temps, ch, temps_alerts, settings['poll_interval'], settings['rise_threshold'])  # Check rise
+                            check_group_tracking_lag(calib, previous_temps, bank_median_rise, ch, temps_alerts, settings['disconnection_lag_threshold'])  # Check lag
+                        check_sudden_disconnection(calib, previous_temps, ch, temps_alerts)  # Check disconnect
             
-            previous_temps = calibrated_temps[:]
-            previous_bank_medians = bank_medians[:]
+            previous_temps = calibrated_temps[:]  # Update previous
+            previous_bank_medians = bank_medians[:]  # Update medians
         
         # Read voltages (per bank)
         battery_voltages = []
         for i in range(1, NUM_BANKS + 1):
-            v, _, _ = read_voltage_with_retry(i, settings)
-            battery_voltages.append(v if v is not None else 0.0)
+            v, _, _ = read_voltage_with_retry(i, settings)  # Read voltage
+            battery_voltages.append(v if v is not None else 0.0)  # Append or zero
         
         # Check issues (combined)
-        _, all_alerts = check_for_issues(battery_voltages, temps_alerts, settings)
+        _, all_alerts = check_for_issues(battery_voltages, temps_alerts, settings)  # Check and alert
         
         # Balance if needed
         if len(battery_voltages) == NUM_BANKS:
-            max_v = max(battery_voltages)
-            min_v = min(battery_voltages)
-            high_b = battery_voltages.index(max_v) + 1
-            low_b = battery_voltages.index(min_v) + 1
-            current_time = time.time()
+            max_v = max(battery_voltages)  # Max voltage
+            min_v = min(battery_voltages)  # Min voltage
+            high_b = battery_voltages.index(max_v) + 1  # High bank
+            low_b = battery_voltages.index(min_v) + 1  # Low bank
+            current_time = time.time()  # Current time
             if max_v - min_v > settings['VoltageDifferenceToBalance'] and min_v > 0 and current_time - last_balance_time > settings['BalanceRestPeriodSeconds']:
-                balance_battery_voltages(stdscr, high_b, low_b, settings, temps_alerts)
+                balance_battery_voltages(stdscr, high_b, low_b, settings, temps_alerts)  # Balance
+            else:
+                # Optional: Display no balance or rest message in TUI if desired
+                pass
         
         # Draw TUI with is_startup
-        draw_tui(stdscr, battery_voltages, calibrated_temps, raw_temps, startup_offsets or [0]*settings['num_channels'], bank_medians, startup_median, all_alerts, settings, startup_set, is_startup=(run_count == 0))
+        draw_tui(stdscr, battery_voltages, calibrated_temps, raw_temps, startup_offsets or [0]*settings['num_channels'], bank_medians, startup_median, all_alerts, settings, startup_set, is_startup=(run_count == 0))  # Draw
         
-        run_count += 1
-        gc.collect()
-        logging.info("Poll cycle complete.")
-        time.sleep(min(settings['poll_interval'], settings['SleepTimeBetweenChecks']))
+        run_count += 1  # Increment count
+        gc.collect()  # Collect garbage
+        logging.info("Poll cycle complete.")  # Log end
+        time.sleep(min(settings['poll_interval'], settings['SleepTimeBetweenChecks']))  # Sleep
 
 if __name__ == '__main__':
-    curses.wrapper(main)
+    curses.wrapper(main)  # Run main in curses wrapper
+```
