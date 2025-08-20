@@ -546,19 +546,27 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
         filled = int(bar_length * progress)  # Filled part
         bar = '=' * filled + ' ' * (bar_length - filled)  # Build bar
         if progress_y < height and progress_y + 1 < height:
-            safe_addstr(stdscr, progress_y, 0, f"Balancing Bank {high} ({voltage_high:.2f}V) -> Bank {low} ({voltage_low:.2f}V)... [{animation_frames[frame_index % 4]}]", curses.color_pair(6))
-            safe_addstr(stdscr, progress_y + 1, 0, f"Progress: [{bar}] {int(progress * 100)}%", curses.color_pair(6))
-        stdscr.refresh()
-        logging.debug(f"Balancing progress: {progress * 100:.2f}%, High: {voltage_high:.2f}V, Low: {voltage_low:.2f}V")
-        frame_index += 1
-        time.sleep(0.01)
+            try:
+                stdscr.addstr(progress_y, 0, f"Balancing Bank {high} ({voltage_high:.2f}V) -> Bank {low} ({voltage_low:.2f}V)... [{animation_frames[frame_index % 4]}]", curses.color_pair(6))  # Show status if in bounds
+            except curses.error:
+                logging.warning("addstr error for balancing status.")
+            try:
+                stdscr.addstr(progress_y + 1, 0, f"Progress: [{bar}] {int(progress * 100)}%", curses.color_pair(6))  # Show progress if in bounds
+            except curses.error:
+                logging.warning("addstr error for balancing progress bar.")
+        else:
+            logging.warning("Skipping balancing progress display - out of bounds.")
+        stdscr.refresh()  # Refresh TUI
+        logging.debug(f"Balancing progress: {progress * 100:.2f}%, High: {voltage_high:.2f}V, Low: {voltage_low:.2f}V")  # Log progress
+        frame_index += 1  # Next frame
+        time.sleep(0.01)  # Small delay
     logging.info("Balancing process completed.")
-    control_dcdc_converter(False, settings)
+    control_dcdc_converter(False, settings)  # Turn off converter
     logging.info("Turning off DC-DC converter.")
-    set_relay_connection(0, 0, settings)
+    set_relay_connection(0, 0, settings)  # Reset relays
     logging.info("Resetting relay connections to default state.")
-    balancing_active = False
-    last_balance_time = time.time()
+    balancing_active = False  # Reset flag
+    last_balance_time = time.time()  # Update last time
 
 def compute_bank_medians(calibrated_temps, valid_min):
     """Compute median temps per bank."""
@@ -568,17 +576,6 @@ def compute_bank_medians(calibrated_temps, valid_min):
         bank_median = statistics.median(bank_temps) if bank_temps else 0.0  # Median or 0
         bank_medians.append(bank_median)
     return bank_medians
-
-def safe_addstr(stdscr, y, x, text, attr=0):
-    """Safe wrapper for addstr to avoid errors on bounds or other issues."""
-    height, width = stdscr.getmaxyx()
-    if y < height and x + len(text) < width:
-        try:
-            stdscr.addstr(y, x, text, attr)
-        except curses.error:
-            logging.warning(f"addstr error at ({y}, {x}): {text}")
-    else:
-        logging.warning(f"Skipping addstr at ({y}, {x}) - out of bounds: {text}")
 
 def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_medians, startup_median, alerts, settings, startup_set, is_startup):
     """Draw the TUI with battery art, temps inside, ADC, alerts."""
@@ -615,7 +612,13 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
     roman_v = text2art(f"{total_v:.2f}V", font='roman', chr_ignore=True)  # Art for total
     roman_lines = roman_v.splitlines()  # Split lines
     for i, line in enumerate(roman_lines):
-        safe_addstr(stdscr, i + 1, 0, line, v_color)
+        if i + 1 < height and len(line) < width:
+            try:
+                stdscr.addstr(i + 1, 0, line, v_color)  # Draw if in bounds
+            except curses.error:
+                logging.warning(f"addstr error for total voltage art line {i+1}.")
+        else:
+            logging.warning(f"Skipping total voltage art line {i+1} - out of bounds.")
     
     y_offset = len(roman_lines) + 2  # Offset after total art
     if y_offset >= height:
@@ -648,7 +651,13 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
     # Draw base art for all banks side-by-side
     for row, line in enumerate(battery_art_base):
         full_line = line * NUM_BANKS  # Repeat for banks
-        safe_addstr(stdscr, y_offset + row, 0, full_line, OK_V)
+        if y_offset + row < height and len(full_line) < width:
+            try:
+                stdscr.addstr(y_offset + row, 0, full_line, OK_V)  # Draw line if in bounds
+            except curses.error:
+                logging.warning(f"addstr error for art row {row}.")
+        else:
+            logging.warning(f"Skipping art row {row} - out of bounds.")
     
     # Overlay content inside each bank
     for bank_id in range(NUM_BANKS):
@@ -657,7 +666,14 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
         v_str = f"{voltages[bank_id]:.2f}V" if voltages[bank_id] > 0 else "0.00V"  # Voltage string
         v_color = ERR_C if voltages[bank_id] == 0.0 else HIGH_V if voltages[bank_id] > settings['HighVoltageThresholdPerBattery'] else LOW_V if voltages[bank_id] < settings['LowVoltageThresholdPerBattery'] else OK_V  # Fixed color check
         v_center = start_pos + (art_width - len(v_str)) // 2  # Center position
-        safe_addstr(stdscr, y_offset + 1, v_center, v_str, v_color)
+        v_y = y_offset + 1  # Y position
+        if v_y < height and v_center + len(v_str) < width:
+            try:
+                stdscr.addstr(v_y, v_center, v_str, v_color)  # Overlay if in bounds
+            except curses.error:
+                logging.warning(f"addstr error for voltage overlay Bank {bank_id+1}.")
+        else:
+            logging.warning(f"Skipping voltage overlay for Bank {bank_id+1} - out of bounds.")
         
         # Temps on lines 2-9 (C1-C8)
         start, end = BANK_RANGES[bank_id]  # Channel range
@@ -675,12 +691,26 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
             t_str = f"C{local_ch+1}: {calib_str}{detail}"  # Temp string
             t_color = ERR_C if "Inv" in calib_str else HIGH_V if calib > settings['high_threshold'] else LOW_V if calib < settings['low_threshold'] else OK_V  # Color for temp
             t_center = start_pos + (art_width - len(t_str)) // 2  # Center position
-            safe_addstr(stdscr, y_offset + 2 + local_ch, t_center, t_str, t_color)
+            t_y = y_offset + 2 + local_ch  # Y position
+            if t_y < height and t_center + len(t_str) < width:
+                try:
+                    stdscr.addstr(t_y, t_center, t_str, t_color)  # Overlay temp if in bounds
+                except curses.error:
+                    logging.warning(f"addstr error for temp overlay Bank {bank_id+1} C{local_ch+1}.")
+            else:
+                logging.warning(f"Skipping temp overlay for Bank {bank_id+1} C{local_ch+1} - out of bounds.")
         
         # Median on line 15
         med_str = f"Med: {bank_medians[bank_id]:.1f}°C"  # Median string
         med_center = start_pos + (art_width - len(med_str)) // 2  # Center position
-        safe_addstr(stdscr, y_offset + 15, med_center, med_str, INFO_C)
+        med_y = y_offset + 15  # Y position
+        if med_y < height and med_center + len(med_str) < width:
+            try:
+                stdscr.addstr(med_y, med_center, med_str, INFO_C)  # Overlay if in bounds
+            except curses.error:
+                logging.warning(f"addstr error for median overlay Bank {bank_id+1}.")
+        else:
+            logging.warning(f"Skipping median overlay for Bank {bank_id+1} - out of bounds.")
     
     y_offset += art_height + 2  # Offset after art
     if y_offset >= height:
@@ -692,30 +722,64 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
             logging.debug(f"Bank {i} - Voltage: {voltage}, ADC: {adc_values}, Readings: {readings}")  # Log
             if voltage is None:
                 voltage = 0.0  # Default on failure
-            safe_addstr(stdscr, y_offset, 0, f"Bank {i}: (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_C)
-            y_offset += 1
-            if readings:
-                safe_addstr(stdscr, y_offset, 0, f"[Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_C)
+            if y_offset < height:
+                try:
+                    stdscr.addstr(y_offset, 0, f"Bank {i}: (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_C)  # Show ADC if in bounds
+                except curses.error:
+                    logging.warning(f"addstr error for ADC Bank {i}.")
             else:
-                safe_addstr(stdscr, y_offset, 0, "  [Readings: No data]", ADC_C)
-            y_offset += 1
+                logging.warning(f"Skipping ADC for Bank {i} - out of bounds.")
+            y_offset += 1  # Next line
+            if y_offset < height:
+                try:
+                    if readings:
+                        stdscr.addstr(y_offset, 0, f"[Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_C)  # Show readings if in bounds
+                    else:
+                        stdscr.addstr(y_offset, 0, "  [Readings: No data]", ADC_C)  # No data
+                except curses.error:
+                    logging.warning(f"addstr error for readings Bank {i}.")
+            else:
+                logging.warning(f"Skipping readings for Bank {i} - out of bounds.")
+            y_offset += 1  # Next line
     
     y_offset += 1  # Extra space
     
     # Startup median, fixed formatting
     med_str = f"{startup_median:.1f}°C" if startup_median else "N/A"  # Safe string
-    safe_addstr(stdscr, y_offset, 0, f"Startup Median Temp: {med_str}", INFO_C)
-    y_offset += 2
+    if y_offset < height:
+        try:
+            stdscr.addstr(y_offset, 0, f"Startup Median Temp: {med_str}", INFO_C)  # Show median if in bounds
+        except curses.error:
+            logging.warning("addstr error for startup median.")
+    else:
+        logging.warning("Skipping startup median - out of bounds.")
+    y_offset += 2  # Next lines
     
     # Alerts
-    safe_addstr(stdscr, y_offset, 0, "Alerts:", INFO_C)
-    y_offset += 1
+    if y_offset < height:
+        try:
+            stdscr.addstr(y_offset, 0, "Alerts:", INFO_C)  # Alerts header if in bounds
+        except curses.error:
+            logging.warning("addstr error for alerts header.")
+    y_offset += 1  # Next line
     if alerts:
         for alert in alerts:
-            safe_addstr(stdscr, y_offset, 0, alert, ERR_C)
-            y_offset += 1
+            if y_offset < height:
+                try:
+                    stdscr.addstr(y_offset, 0, alert, ERR_C)  # Show alert if in bounds
+                except curses.error:
+                    logging.warning(f"addstr error for alert '{alert}'.")
+            else:
+                logging.warning(f"Skipping alert '{alert}' - out of bounds.")
+            y_offset += 1  # Next line
     else:
-        safe_addstr(stdscr, y_offset, 0, "No alerts.", OK_V)
+        if y_offset < height:
+            try:
+                stdscr.addstr(y_offset, 0, "No alerts.", OK_V)  # No alerts if in bounds
+            except curses.error:
+                logging.warning("addstr error for no alerts message.")
+        else:
+            logging.warning("Skipping no alerts message - out of bounds.")
     
     stdscr.refresh()  # Refresh screen
 
@@ -726,61 +790,117 @@ def startup_self_test(settings, stdscr):
     alerts = []  # Collect test alerts
     stdscr.clear()  # Clear for startup TUI
     y = 0
-    safe_addstr(stdscr, y, 0, "Startup Self-Test in Progress", curses.color_pair(1))
+    if y < stdscr.getmaxyx()[0]:
+        try:
+            stdscr.addstr(y, 0, "Startup Self-Test in Progress", curses.color_pair(1))  # Title
+        except curses.error:
+            logging.warning("addstr error for title.")
     y += 2
     stdscr.refresh()
     
     # Step 1: Config validation
-    safe_addstr(stdscr, y, 0, "Step 1: Validating config...", curses.color_pair(4))
+    if y < stdscr.getmaxyx()[0]:
+        try:
+            stdscr.addstr(y, 0, "Step 1: Validating config...", curses.color_pair(4))  # Green
+        except curses.error:
+            logging.warning("addstr error for step 1.")
     stdscr.refresh()
-    time.sleep(0.5)
+    time.sleep(0.5)  # Sim delay for user read
     if settings['NumberOfBatteries'] != NUM_BANKS:
         alerts.append("Config mismatch: NumberOfBatteries != 3.")
-        safe_addstr(stdscr, y + 1, 0, "Config mismatch detected.", curses.color_pair(2))
+        if y + 1 < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y + 1, 0, "Config mismatch detected.", curses.color_pair(2))  # Red
+            except curses.error:
+                logging.warning("addstr error for config mismatch.")
     else:
-        safe_addstr(stdscr, y + 1, 0, "Config OK.", curses.color_pair(4))
+        if y + 1 < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y + 1, 0, "Config OK.", curses.color_pair(4))
+            except curses.error:
+                logging.warning("addstr error for config OK.")
     y += 2
     stdscr.refresh()
     
     # Step 2: Hardware connectivity
-    safe_addstr(stdscr, y, 0, "Step 2: Testing hardware connectivity...", curses.color_pair(4))
+    if y < stdscr.getmaxyx()[0]:
+        try:
+            stdscr.addstr(y, 0, "Step 2: Testing hardware connectivity...", curses.color_pair(4))
+        except curses.error:
+            logging.warning("addstr error for step 2.")
     stdscr.refresh()
     time.sleep(0.5)
     try:
         choose_channel(0, settings['MultiplexerAddress'])
         bus.read_byte(settings['VoltageMeterAddress'])
         bus.read_byte(settings['RelayAddress'])
-        safe_addstr(stdscr, y + 1, 0, "I2C OK.", curses.color_pair(4))
+        if y + 1 < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y + 1, 0, "I2C OK.", curses.color_pair(4))
+            except curses.error:
+                logging.warning("addstr error for I2C OK.")
     except IOError as e:
         alerts.append(f"I2C connectivity failure: {str(e)}")
-        safe_addstr(stdscr, y + 1, 0, f"I2C failure: {str(e)}", curses.color_pair(2))
+        if y + 1 < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y + 1, 0, f"I2C failure: {str(e)}", curses.color_pair(2))
+            except curses.error:
+                logging.warning("addstr error for I2C failure.")
     try:
         test_query = read_ntc_sensors(settings['ip'], settings['port'], settings['query_delay'], 1, settings['scaling_factor'], 1, 1)
         if isinstance(test_query, str) and "Error" in test_query:
             raise ValueError(test_query)
-        safe_addstr(stdscr, y + 2, 0, "Modbus OK.", curses.color_pair(4))
+        if y + 2 < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y + 2, 0, "Modbus OK.", curses.color_pair(4))
+            except curses.error:
+                logging.warning("addstr error for Modbus OK.")
     except Exception as e:
         alerts.append(f"Modbus test failure: {str(e)}")
-        safe_addstr(stdscr, y + 2, 0, f"Modbus failure: {str(e)}", curses.color_pair(2))
+        if y + 2 < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y + 2, 0, f"Modbus failure: {str(e)}", curses.color_pair(2))
+            except curses.error:
+                logging.warning("addstr error for Modbus failure.")
     y += 3
     stdscr.refresh()
     
     # Step 3: Initial sensor reads
-    safe_addstr(stdscr, y, 0, "Step 3: Initial sensor reads...", curses.color_pair(4))
+    if y < stdscr.getmaxyx()[0]:
+        try:
+            stdscr.addstr(y, 0, "Step 3: Initial sensor reads...", curses.color_pair(4))
+        except curses.error:
+            logging.warning("addstr error for step 3.")
     stdscr.refresh()
     time.sleep(0.5)
     initial_temps = read_ntc_sensors(settings['ip'], settings['port'], settings['query_delay'], settings['num_channels'], settings['scaling_factor'], settings['max_retries'], settings['retry_backoff_base'])
     if isinstance(initial_temps, str):
         alerts.append(f"Initial temp read failure: {initial_temps}")
-        safe_addstr(stdscr, y + 1, 0, "Temp read failure.", curses.color_pair(2))
+        if y + 1 < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y + 1, 0, "Temp read failure.", curses.color_pair(2))
+            except curses.error:
+                logging.warning("addstr error for temp failure.")
     else:
-        safe_addstr(stdscr, y + 1, 0, "Temps OK.", curses.color_pair(4))
+        if y + 1 < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y + 1, 0, "Temps OK.", curses.color_pair(4))
+            except curses.error:
+                logging.warning("addstr error for temps OK.")
     initial_voltages = [read_voltage_with_retry(i, settings)[0] or 0.0 for i in range(1, NUM_BANKS + 1)]
     if any(v == 0.0 for v in initial_voltages):
         alerts.append("Initial voltage read failure: Zero voltage on one or more banks.")
-        safe_addstr(stdscr, y + 2, 0, "Voltage read failure (zero).", curses.color_pair(2))
+        if y + 2 < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y + 2, 0, "Voltage read failure (zero).", curses.color_pair(2))
+            except curses.error:
+                logging.warning("addstr error for voltage failure.")
     else:
-        safe_addstr(stdscr, y + 2, 0, "Voltages OK.", curses.color_pair(4))
+        if y + 2 < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y + 2, 0, "Voltages OK.", curses.color_pair(4))
+            except curses.error:
+                logging.warning("addstr error for voltages OK.")
     # Set calibration if all temps valid
     if isinstance(initial_temps, list):
         valid_count = sum(1 for t in initial_temps if t > settings['valid_min'])
@@ -794,7 +914,11 @@ def startup_self_test(settings, stdscr):
     stdscr.refresh()
     
     # Step 4: Balancer test
-    safe_addstr(stdscr, y, 0, "Step 4: Balancer verification...", curses.color_pair(4))
+    if y < stdscr.getmaxyx()[0]:
+        try:
+            stdscr.addstr(y, 0, "Step 4: Balancer verification...", curses.color_pair(4))
+        except curses.error:
+            logging.warning("addstr error for step 4.")
     y += 1
     stdscr.refresh()
     time.sleep(0.5)
@@ -804,7 +928,11 @@ def startup_self_test(settings, stdscr):
     min_delta = settings['min_voltage_delta']  # From config
     
     for high, low in pairs:
-        safe_addstr(stdscr, y, 0, f"Testing balance: Bank {high} -> {low} for {test_duration}s.", curses.color_pair(6))
+        if y < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y, 0, f"Testing balance: Bank {high} -> {low} for {test_duration}s.", curses.color_pair(6))
+            except curses.error:
+                logging.warning("addstr error for testing balance.")
         stdscr.refresh()
         logging.info(f"Testing balance: Bank {high} -> {low} for {test_duration}s.")
         
@@ -817,7 +945,11 @@ def startup_self_test(settings, stdscr):
                     break
         if temp_anomaly:
             alerts.append(f"Skipping balance test {high}->{low}: Temp anomalies.")
-            safe_addstr(stdscr, y + 1, 0, "Skipped: Temp anomalies.", curses.color_pair(2))
+            if y + 1 < stdscr.getmaxyx()[0]:
+                try:
+                    stdscr.addstr(y + 1, 0, "Skipped: Temp anomalies.", curses.color_pair(2))
+                except curses.error:
+                    logging.warning("addstr error for skipped temp.")
             y += 2
             stdscr.refresh()
             continue
@@ -837,8 +969,12 @@ def startup_self_test(settings, stdscr):
             high_trend.append(high_v)
             low_trend.append(low_v)
             elapsed = time.time() - start_time
-            safe_addstr(stdscr, progress_y, 0, " " * 80, curses.color_pair(6))  # Clear line
-            safe_addstr(stdscr, progress_y, 0, f"Progress: {elapsed:.1f}s, High {high_v:.2f}V, Low {low_v:.2f}V", curses.color_pair(6))
+            if progress_y < stdscr.getmaxyx()[0]:
+                try:
+                    stdscr.addstr(progress_y, 0, " " * 80, curses.color_pair(6))  # Clear line
+                    stdscr.addstr(progress_y, 0, f"Progress: {elapsed:.1f}s, High {high_v:.2f}V, Low {low_v:.2f}V", curses.color_pair(6))
+                except curses.error:
+                    logging.warning("addstr error in startup balance progress.")
             stdscr.refresh()
             logging.debug(f"Trend read: High {high_v:.2f}V, Low {low_v:.2f}V")
         
@@ -847,19 +983,35 @@ def startup_self_test(settings, stdscr):
         set_relay_connection(0, 0, settings)  # Reset
         
         # Analyze trends
-        safe_addstr(stdscr, progress_y + 1, 0, "Analyzing...", curses.color_pair(6))
+        if progress_y + 1 < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(progress_y + 1, 0, "Analyzing...", curses.color_pair(6))
+            except curses.error:
+                logging.warning("addstr error for analyzing.")
         stdscr.refresh()
         if len(high_trend) >= 3:  # Need at least 3 readings for trend
             high_delta = high_trend[0] - high_trend[-1]  # Expected drop
             low_delta = low_trend[-1] - low_trend[0]     # Expected rise
             if high_delta < min_delta or low_delta < min_delta:
                 alerts.append(f"Balance test {high}->{low} failed: Insufficient change (High Δ={high_delta:.3f}V, Low Δ={low_delta:.3f}V).")
-                safe_addstr(stdscr, progress_y + 1, 0, "Test failed: Insufficient voltage change.", curses.color_pair(2))
+                if progress_y + 1 < stdscr.getmaxyx()[0]:
+                    try:
+                        stdscr.addstr(progress_y + 1, 0, "Test failed: Insufficient voltage change.", curses.color_pair(2))
+                    except curses.error:
+                        logging.warning("addstr error for test failed insufficient change.")
             else:
-                safe_addstr(stdscr, progress_y + 1, 0, "Test passed.", curses.color_pair(4))
+                if progress_y + 1 < stdscr.getmaxyx()[0]:
+                    try:
+                        stdscr.addstr(progress_y + 1, 0, "Test passed.", curses.color_pair(4))
+                    except curses.error:
+                        logging.warning("addstr error for test passed.")
         else:
             alerts.append(f"Balance test {high}->{low} failed: Insufficient readings.")
-            safe_addstr(stdscr, progress_y + 1, 0, "Test failed: Insufficient readings.", curses.color_pair(2))
+            if progress_y + 1 < stdscr.getmaxyx()[0]:
+                try:
+                    stdscr.addstr(progress_y + 1, 0, "Test failed: Insufficient readings.", curses.color_pair(2))
+                except curses.error:
+                    logging.warning("addstr error for test failed insufficient readings.")
         stdscr.refresh()
         y = progress_y + 2
         time.sleep(5)  # Short rest between pair tests
@@ -870,9 +1022,17 @@ def startup_self_test(settings, stdscr):
         logging.error("Startup self-test failures: " + "; ".join(alerts))
         send_alert_email("Startup self-test failures:\n" + "\n".join(alerts), settings)
         GPIO.output(settings['AlarmRelayPin'], GPIO.HIGH)  # Activate alarm
-        safe_addstr(stdscr, y, 0, "Self-Test Complete with Failures. Continuing with warnings.", curses.color_pair(2))
+        if y < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y, 0, "Self-Test Complete with Failures. Continuing with warnings.", curses.color_pair(2))
+            except curses.error:
+                logging.warning("addstr error for self-test failures.")
     else:
-        safe_addstr(stdscr, y, 0, "Self-Test Complete. All OK.", curses.color_pair(4))
+        if y < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y, 0, "Self-Test Complete. All OK.", curses.color_pair(4))
+            except curses.error:
+                logging.warning("addstr error for self-test OK.")
         logging.info("Startup self-test passed.")
     stdscr.refresh()
     time.sleep(5)  # Pause to view results, no user input
@@ -881,6 +1041,17 @@ def startup_self_test(settings, stdscr):
 def main(stdscr):
     """Main loop for polling, processing, balancing, and TUI."""
     stdscr.keypad(True)  # Enable keypad
+    # Initialize colors early, before any TUI drawing
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_RED, -1)
+    curses.init_pair(2, curses.COLOR_RED, -1)
+    curses.init_pair(3, curses.COLOR_YELLOW, -1)
+    curses.init_pair(4, curses.COLOR_GREEN, -1)
+    curses.init_pair(5, curses.COLOR_WHITE, -1)
+    curses.init_pair(6, curses.COLOR_YELLOW, -1)
+    curses.init_pair(7, curses.COLOR_CYAN, -1)
+    curses.init_pair(8, curses.COLOR_MAGENTA, -1)
     global previous_temps, previous_bank_medians, run_count, startup_offsets, startup_median, startup_set, battery_voltages
     settings = load_config()  # Load settings
     setup_hardware(settings)  # Setup hardware
