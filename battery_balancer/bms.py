@@ -2,7 +2,7 @@
 Combined Battery Temperature Monitoring and Balancing Script (Updated for 3s8p Configuration)
 
 Extensive Summary:
-This script serves as a comprehensive Battery Management System (BMS) for a 3s8p battery configuration (3 series-connected parallel battery banks, each with 8 cells). It integrates temperature monitoring from NTC sensors via a Lantronix EDS4100 device (using Modbus RTU over TCP) with voltage balancing using I2C-based ADC for readings and relays/GPIO for control. The system runs in an infinite infinite loop, polling data at configurable intervals, detecting anomalies, balancing voltages if imbalances exceed thresholds, logging events, sending email alerts for critical issues, and displaying real-time status in a curses-based Text User Interface (TUI).
+This script serves as a comprehensive Battery Management System (BMS) for a 3s8p battery configuration (3 series-connected parallel battery banks, each with 8 cells). It integrates temperature monitoring from NTC sensors via a Lantronix EDS4100 device (using Modbus RTU over TCP) with voltage balancing using I2C-based ADC for readings and relays/GPIO for control. The system runs in an infinite loop, polling data at configurable intervals, detecting anomalies, balancing voltages if imbalances exceed thresholds, logging events, sending email alerts for critical issues, and displaying real-time status in a curses-based Text User Interface (TUI).
 
 What it does:
 - Reads temperatures from 24 NTC sensors (grouped into 3 banks: channels 1-8, 9-16, 17-24).
@@ -10,7 +10,7 @@ What it does:
 - Detects temp anomalies: invalid, high/low, deviation from bank median, abnormal rise, group lag, sudden disconnection.
 - Reads voltages from 3 banks using ADS1115 ADC over I2C, with retries and calibration.
 - Checks voltage issues: zero, high, low.
-- Balances voltages: If max-min > threshold and no alerts, connects high to low bank via relays, turn on DC-DC converter for duration, shows progress.
+- Balances voltages: If max-min > threshold and no alerts, connects high to low bank via relays, turns on DC-DC converter for duration, shows progress.
 - Alerts: Logs issues, activates GPIO alarm relay, sends throttled emails.
 - TUI: ASCII art batteries with voltages/temps inside (full details at startup, compact updates), ADC/readings, alerts; pauses at startup.
 - Handles shutdown: Ctrl+C cleans GPIO.
@@ -83,9 +83,6 @@ Dependencies: socket, statistics, time, configparser, logging, signal, gc, os, s
 Note: Ensure EDS4100 configured for Modbus RTU tunneling, INI file present, hardware connected.
 """
 
-# Move logging setup to top for early errors
-logging.basicConfig(filename='battery_monitor.log', level=logging.INFO, format='%(asctime)s - %(message)s')
-
 import socket  # For TCP connection to EDS4100 device
 import statistics  # For median calculations on temperatures
 import time  # For delays and timing
@@ -101,6 +98,8 @@ import smtplib  # For sending emails
 import curses  # For terminal-based TUI
 import sys  # For sys.exit on shutdown
 from art import text2art  # For ASCII art total voltage
+
+logging.basicConfig(filename='battery_monitor.log', level=logging.INFO, format='%(asctime)s - %(message)s')  # Setup logging early
 
 # Global variables
 config_parser = configparser.ConfigParser()  # Parser for INI config
@@ -529,8 +528,11 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
         bar_length = 20  # Bar length
         filled = int(bar_length * progress)  # Filled part
         bar = '=' * filled + ' ' * (bar_length - filled)  # Build bar
-        stdscr.addstr(progress_y, 0, f"Balancing Bank {high} ({voltage_high:.2f}V) -> Bank {low} ({voltage_low:.2f}V)... [{animation_frames[frame_index % 4]}]", curses.color_pair(6))  # Show status
-        stdscr.addstr(progress_y + 1, 0, f"Progress: [{bar}] {int(progress * 100)}%", curses.color_pair(6))  # Show progress
+        if progress_y < stdscr.getmaxyx()[0] and progress_y + 1 < stdscr.getmaxyx()[0]:
+            stdscr.addstr(progress_y, 0, f"Balancing Bank {high} ({voltage_high:.2f}V) -> Bank {low} ({voltage_low:.2f}V)... [{animation_frames[frame_index % 4]}]", curses.color_pair(6))  # Show status if in bounds
+            stdscr.addstr(progress_y + 1, 0, f"Progress: [{bar}] {int(progress * 100)}%", curses.color_pair(6))  # Show progress if in bounds
+        else:
+            logging.warning("Skipping balancing progress display - out of bounds.")
         stdscr.refresh()  # Refresh TUI
         logging.debug(f"Balancing progress: {progress * 100:.2f}%, High: {voltage_high:.2f}V, Low: {voltage_low:.2f}V")  # Log progress
         frame_index += 1  # Next frame
@@ -635,8 +637,9 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
         v_str = f"{voltages[bank_id]:.2f}V" if voltages[bank_id] > 0 else "0.00V"  # Voltage string
         v_color = ERR_C if voltages[bank_id] == 0.0 else HIGH_V if voltages[bank_id] > settings['HighVoltageThresholdPerBattery'] else LOW_V if voltages[bank_id] < settings['LowVoltageThresholdPerBattery'] else OK_V  # Fixed color check
         v_center = start_pos + (art_width - len(v_str)) // 2  # Center position
-        if y_offset + 1 < height and v_center + len(v_str) < width:
-            stdscr.addstr(y_offset + 1, v_center, v_str, v_color)  # Overlay if in bounds
+        v_y = y_offset + 1  # Y position
+        if v_y < height and v_center + len(v_str) < width:
+            stdscr.addstr(v_y, v_center, v_str, v_color)  # Overlay if in bounds
         else:
             logging.warning(f"Skipping voltage overlay for Bank {bank_id+1} - out of bounds.")
         
@@ -672,28 +675,30 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
             logging.warning(f"Skipping median overlay for Bank {bank_id+1} - out of bounds.")
     
     y_offset += art_height + 2  # Offset after art
-    
-    # ADC/readings
-    for i in range(1, NUM_BANKS + 1):
-        voltage, readings, adc_values = read_voltage_with_retry(i, settings)  # Read with retry
-        logging.debug(f"Bank {i} - Voltage: {voltage}, ADC: {adc_values}, Readings: {readings}")  # Log
-        if voltage is None:
-            voltage = 0.0  # Default on failure
-        adc_y = y_offset  # Y for ADC
-        if adc_y < height:
-            stdscr.addstr(adc_y, 0, f"Bank {i}: (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_C)  # Show ADC if in bounds
-        else:
-            logging.warning(f"Skipping ADC for Bank {i} - out of bounds.")
-        y_offset += 1  # Next line
-        read_y = y_offset  # Y for readings
-        if read_y < height:
-            if readings:
-                stdscr.addstr(read_y, 0, f"[Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_C)  # Show readings if in bounds
+    if y_offset >= height:
+        logging.warning("Skipping ADC/readings - out of bounds.")
+    else:
+        # ADC/readings
+        for i in range(1, NUM_BANKS + 1):
+            voltage, readings, adc_values = read_voltage_with_retry(i, settings)  # Read with retry
+            logging.debug(f"Bank {i} - Voltage: {voltage}, ADC: {adc_values}, Readings: {readings}")  # Log
+            if voltage is None:
+                voltage = 0.0  # Default on failure
+            adc_y = y_offset  # Y for ADC
+            if adc_y < height:
+                stdscr.addstr(adc_y, 0, f"Bank {i}: (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_C)  # Show ADC if in bounds
             else:
-                stdscr.addstr(read_y, 0, "  [Readings: No data]", ADC_C)  # No data
-        else:
-            logging.warning(f"Skipping readings for Bank {i} - out of bounds.")
-        y_offset += 1  # Next line
+                logging.warning(f"Skipping ADC for Bank {i} - out of bounds.")
+            y_offset += 1  # Next line
+            read_y = y_offset  # Y for readings
+            if read_y < height:
+                if readings:
+                    stdscr.addstr(read_y, 0, f"[Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_C)  # Show readings if in bounds
+                else:
+                    stdscr.addstr(read_y, 0, "  [Readings: No data]", ADC_C)  # No data
+            else:
+                logging.warning(f"Skipping readings for Bank {i} - out of bounds.")
+            y_offset += 1  # Next line
     
     y_offset += 1  # Extra space
     
