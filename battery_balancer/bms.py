@@ -300,18 +300,27 @@ def load_offsets():
     logging.info("Loading startup offsets from 'offsets.txt'.")
     if os.path.exists('offsets.txt'):
         with open('offsets.txt', 'r') as f:
-            offsets = [float(line.strip()) for line in f]  # Read floats line by line
-            logging.debug(f"Loaded {len(offsets)} offsets.")
-            return offsets
+            lines = f.readlines()
+            if len(lines) < 1:
+                logging.warning("Invalid offsets.txt; using none.")
+                return None
+            startup_median = float(lines[0].strip())
+            offsets = [float(line.strip()) for line in lines[1:]]
+            if len(offsets) != 24:  # Assume num_channels=24
+                logging.warning("Invalid offsets count; using none.")
+                return None
+            logging.debug(f"Loaded median {startup_median} and {len(offsets)} offsets.")
+            return startup_median, offsets
     logging.warning("No 'offsets.txt' found; using none.")
-    return None
+    return None, None
 
-def save_offsets(offsets):
-    """Save temp offsets to file."""
+def save_offsets(startup_median, offsets):
+    """Save temp median and offsets to file."""
     logging.info("Saving startup offsets to 'offsets.txt'.")
     with open('offsets.txt', 'w') as f:
+        f.write(f"{startup_median}\n")  # First line: median
         for offset in offsets:
-            f.write(f"{offset}\n")  # Write each offset on new line
+            f.write(f"{offset}\n")  # Then offsets
     logging.debug("Offsets saved.")
 
 def check_invalid_reading(raw, ch, alerts, valid_min):
@@ -910,7 +919,7 @@ def startup_self_test(settings, stdscr):
         if valid_count == settings['num_channels']:
             startup_median = statistics.median(initial_temps)
             startup_offsets = [startup_median - t for t in initial_temps]
-            save_offsets(startup_offsets)
+            save_offsets(startup_median, startup_offsets)  # Updated save
             startup_set = True
             logging.info(f"Temp calibration set during startup. Median: {startup_median:.1f}°C")
     y += 3
@@ -1062,10 +1071,10 @@ def main(stdscr):
     startup_self_test(settings, stdscr)  # Perform startup self-test with TUI
     signal.signal(signal.SIGINT, signal_handler)  # Register handler
     
-    startup_offsets = load_offsets()  # Load offsets
+    startup_median, startup_offsets = load_offsets()  # Updated load
     if startup_offsets and len(startup_offsets) == settings['num_channels']:
         startup_set = True  # Set flag
-        startup_median = statistics.median(startup_offsets)  # Calculate median
+        logging.info(f"Loaded startup median: {startup_median:.1f}°C")
     previous_temps = None  # Init previous temps
     previous_bank_medians = [None] * NUM_BANKS  # Init previous medians
     run_count = 0  # Init run count
@@ -1085,7 +1094,7 @@ def main(stdscr):
             if not startup_set and valid_count == settings['num_channels']:
                 startup_median = statistics.median(temp_result)  # Calculate median
                 startup_offsets = [startup_median - raw for raw in temp_result]  # Calculate offsets
-                save_offsets(startup_offsets)  # Save
+                save_offsets(startup_median, startup_offsets)  # Updated save
                 startup_set = True  # Set flag
                 logging.info(f"Temp calibration set. Median: {startup_median:.1f}°C")  # Log
             # Guard for None offsets
