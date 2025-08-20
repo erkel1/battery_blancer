@@ -896,31 +896,37 @@ def startup_self_test(settings, stdscr):
             high_trend.append(high_v)
             low_trend.append(low_v)
             elapsed = time.time() - start_time
-            stdscr.addstr(progress_y, 0, f"Progress: {elapsed:.1f}s, High {high_v:.2f}V, Low {low_v:.2f}V", curses.color_pair(6))
-            stdscr.refresh()
+            try:
+                stdscr.addstr(progress_y, 0, " " * 80, curses.color_pair(6))  # Clear line
+                stdscr.addstr(progress_y, 0, f"Progress: {elapsed:.1f}s, High {high_v:.2f}V, Low {low_v:.2f}V", curses.color_pair(6))
+                stdscr.refresh()
+            except curses.error:
+                logging.warning("addstr error in startup balance progress.")
             logging.debug(f"Trend read: High {high_v:.2f}V, Low {low_v:.2f}V")
-            progress_y += 1
         
         # Stop balancing
         control_dcdc_converter(False, settings)
         set_relay_connection(0, 0, settings)  # Reset
         
         # Analyze trends
-        if len(high_trend) >= 3:
-            high_delta = high_trend[0] - high_trend[-1]  # Expected drop
-            low_delta = low_trend[-1] - low_trend[0]     # Expected rise
-            if high_delta < min_delta or low_delta < min_delta:
-                alerts.append(f"Balance test {high}->{low} failed: Insufficient change (High Δ={high_delta:.3f}V, Low Δ={low_delta:.3f}V).")
-                stdscr.addstr(progress_y, 0, "Test failed: Insufficient voltage change.", curses.color_pair(2))
+        try:
+            if len(high_trend) >= 3:  # Need at least 3 readings for trend
+                high_delta = high_trend[0] - high_trend[-1]  # Expected drop
+                low_delta = low_trend[-1] - low_trend[0]     # Expected rise
+                if high_delta < min_delta or low_delta < min_delta:
+                    alerts.append(f"Balance test {high}->{low} failed: Insufficient change (High Δ={high_delta:.3f}V, Low Δ={low_delta:.3f}V).")
+                    stdscr.addstr(progress_y + 1, 0, "Test failed: Insufficient voltage change.", curses.color_pair(2))
+                else:
+                    stdscr.addstr(progress_y + 1, 0, "Test passed.", curses.color_pair(4))
             else:
-                stdscr.addstr(progress_y, 0, "Test passed.", curses.color_pair(4))
-        else:
-            alerts.append(f"Balance test {high}->{low} failed: Insufficient readings.")
-            stdscr.addstr(progress_y, 0, "Test failed: Insufficient readings.", curses.color_pair(2))
+                alerts.append(f"Balance test {high}->{low} failed: Insufficient readings.")
+                stdscr.addstr(progress_y + 1, 0, "Test failed: Insufficient readings.", curses.color_pair(2))
+            stdscr.refresh()
+        except curses.error:
+            logging.warning("addstr error for balance test result.")
         y = progress_y + 2
-        stdscr.refresh()
-        time.sleep(5)  # Short rest
-        
+        time.sleep(5)  # Short rest between pair tests
+    
     # Handle test results
     if alerts:
         startup_failed = True
