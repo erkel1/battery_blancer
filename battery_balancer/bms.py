@@ -81,6 +81,10 @@ Logic Diagram (ASCII Flowchart of Execution):
 
 Dependencies: socket, statistics, time, configparser, logging, signal, gc, os, smbus, RPi.GPIO, smtplib, email.mime.text.MIMEText, curses, sys, art (pip install art).
 Note: Ensure EDS4100 configured for Modbus RTU tunneling, INI file present, hardware connected.
+Relay Documentation: The script uses two relay systems:
+- Balancing Relays: Controlled via I2C at RelayAddress (e.g., PCA9536), bits set for bank pairs (hardcoded logic for 3 banks, not configurable beyond address).
+- Alarm Relay: GPIO pin (AlarmRelayPin) activated on any alert (temp/volt issues), for buzzer/light; deactivates when clear.
+Undocumented Features: offsets.txt (generated for temp calibration persistence, not user-editable); hardcoded NUM_BANKS=3 (overrides config if mismatch); TUI art/colors fixed (no config); no SMTP login (assumes open or env vars for auth if needed).
 """
 
 import socket  # For TCP connection to EDS4100 device
@@ -520,6 +524,7 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
     animation_frames = ['|', '/', '-', '\\']  # Spinner frames
     frame_index = 0  # Spinner index
     progress_y = 17 + 6 + 2  # Hardcoded position below art + ADC + margin
+    height, _ = stdscr.getmaxyx()  # Get height for bounds
     while time.time() - balance_start_time < settings['BalanceDurationSeconds']:
         elapsed = time.time() - balance_start_time  # Elapsed time
         progress = min(1.0, elapsed / settings['BalanceDurationSeconds'])  # Progress fraction
@@ -528,9 +533,15 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
         bar_length = 20  # Bar length
         filled = int(bar_length * progress)  # Filled part
         bar = '=' * filled + ' ' * (bar_length - filled)  # Build bar
-        if progress_y < stdscr.getmaxyx()[0] and progress_y + 1 < stdscr.getmaxyx()[0]:
-            stdscr.addstr(progress_y, 0, f"Balancing Bank {high} ({voltage_high:.2f}V) -> Bank {low} ({voltage_low:.2f}V)... [{animation_frames[frame_index % 4]}]", curses.color_pair(6))  # Show status if in bounds
-            stdscr.addstr(progress_y + 1, 0, f"Progress: [{bar}] {int(progress * 100)}%", curses.color_pair(6))  # Show progress if in bounds
+        if progress_y < height and progress_y + 1 < height:
+            try:
+                stdscr.addstr(progress_y, 0, f"Balancing Bank {high} ({voltage_high:.2f}V) -> Bank {low} ({voltage_low:.2f}V)... [{animation_frames[frame_index % 4]}]", curses.color_pair(6))  # Show status if in bounds
+            except _curses.error:
+                logging.warning("addstr error for balancing status.")
+            try:
+                stdscr.addstr(progress_y + 1, 0, f"Progress: [{bar}] {int(progress * 100)}%", curses.color_pair(6))  # Show progress if in bounds
+            except _curses.error:
+                logging.warning("addstr error for balancing progress bar.")
         else:
             logging.warning("Skipping balancing progress display - out of bounds.")
         stdscr.refresh()  # Refresh TUI
@@ -639,7 +650,10 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
         v_center = start_pos + (art_width - len(v_str)) // 2  # Center position
         v_y = y_offset + 1  # Y position
         if v_y < height and v_center + len(v_str) < width:
-            stdscr.addstr(v_y, v_center, v_str, v_color)  # Overlay if in bounds
+            try:
+                stdscr.addstr(v_y, v_center, v_str, v_color)  # Overlay if in bounds
+            except _curses.error:
+                logging.warning(f"addstr error for voltage overlay Bank {bank_id+1}.")
         else:
             logging.warning(f"Skipping voltage overlay for Bank {bank_id+1} - out of bounds.")
         
@@ -661,7 +675,10 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
             t_center = start_pos + (art_width - len(t_str)) // 2  # Center position
             t_y = y_offset + 2 + local_ch  # Y position
             if t_y < height and t_center + len(t_str) < width:
-                stdscr.addstr(t_y, t_center, t_str, t_color)  # Overlay temp if in bounds
+                try:
+                    stdscr.addstr(t_y, t_center, t_str, t_color)  # Overlay temp if in bounds
+                except _curses.error:
+                    logging.warning(f"addstr error for temp overlay Bank {bank_id+1} C{local_ch+1}.")
             else:
                 logging.warning(f"Skipping temp overlay for Bank {bank_id+1} C{local_ch+1} - out of bounds.")
         
@@ -670,7 +687,10 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
         med_center = start_pos + (art_width - len(med_str)) // 2  # Center position
         med_y = y_offset + 15  # Y position
         if med_y < height and med_center + len(med_str) < width:
-            stdscr.addstr(med_y, med_center, med_str, INFO_C)  # Overlay if in bounds
+            try:
+                stdscr.addstr(med_y, med_center, med_str, INFO_C)  # Overlay if in bounds
+            except _curses.error:
+                logging.warning(f"addstr error for median overlay Bank {bank_id+1}.")
         else:
             logging.warning(f"Skipping median overlay for Bank {bank_id+1} - out of bounds.")
     
@@ -686,16 +706,22 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
                 voltage = 0.0  # Default on failure
             adc_y = y_offset  # Y for ADC
             if adc_y < height:
-                stdscr.addstr(adc_y, 0, f"Bank {i}: (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_C)  # Show ADC if in bounds
+                try:
+                    stdscr.addstr(adc_y, 0, f"Bank {i}: (ADC: {adc_values[0] if adc_values else 'N/A'})", ADC_C)  # Show ADC if in bounds
+                except _curses.error:
+                    logging.warning(f"addstr error for ADC Bank {i}.")
             else:
                 logging.warning(f"Skipping ADC for Bank {i} - out of bounds.")
             y_offset += 1  # Next line
             read_y = y_offset  # Y for readings
             if read_y < height:
-                if readings:
-                    stdscr.addstr(read_y, 0, f"[Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_C)  # Show readings if in bounds
-                else:
-                    stdscr.addstr(read_y, 0, "  [Readings: No data]", ADC_C)  # No data
+                try:
+                    if readings:
+                        stdscr.addstr(read_y, 0, f"[Readings: {', '.join(f'{v:.2f}' for v in readings)}]", ADC_C)  # Show readings if in bounds
+                    else:
+                        stdscr.addstr(read_y, 0, "  [Readings: No data]", ADC_C)  # No data
+                except _curses.error:
+                    logging.warning(f"addstr error for readings Bank {i}.")
             else:
                 logging.warning(f"Skipping readings for Bank {i} - out of bounds.")
             y_offset += 1  # Next line
@@ -706,7 +732,10 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
     med_str = f"{startup_median:.1f}°C" if startup_median else "N/A"  # Safe string
     med_y = y_offset  # Y for median
     if med_y < height:
-        stdscr.addstr(med_y, 0, f"Startup Median Temp: {med_str}", INFO_C)  # Show median if in bounds
+        try:
+            stdscr.addstr(med_y, 0, f"Startup Median Temp: {med_str}", INFO_C)  # Show median if in bounds
+        except _curses.error:
+            logging.warning("addstr error for startup median.")
     else:
         logging.warning("Skipping startup median - out of bounds.")
     y_offset += 2  # Next lines
@@ -714,25 +743,37 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
     # Alerts
     alert_header_y = y_offset  # Y for alerts header
     if alert_header_y < height:
-        stdscr.addstr(alert_header_y, 0, "Alerts:", INFO_C)  # Alerts header if in bounds
+        try:
+            stdscr.addstr(alert_header_y, 0, "Alerts:", INFO_C)  # Alerts header if in bounds
+        except _curses.error:
+            logging.warning("addstr error for alerts header.")
     y_offset += 1  # Next line
     if alerts:
         for alert in alerts:
             if y_offset < height:
-                stdscr.addstr(y_offset, 0, alert, ERR_C)  # Show alert if in bounds
+                try:
+                    stdscr.addstr(y_offset, 0, alert, ERR_C)  # Show alert if in bounds
+                except _curses.error:
+                    logging.warning(f"addstr error for alert '{alert}'.")
             else:
                 logging.warning(f"Skipping alert '{alert}' - out of bounds.")
             y_offset += 1  # Next line
     else:
         if y_offset < height:
-            stdscr.addstr(y_offset, 0, "No alerts.", OK_V)  # No alerts if in bounds
+            try:
+                stdscr.addstr(y_offset, 0, "No alerts.", OK_V)  # No alerts if in bounds
+            except _curses.error:
+                logging.warning("addstr error for no alerts message.")
         else:
             logging.warning("Skipping no alerts message - out of bounds.")
     
     if is_startup:
         prompt_y = y_offset + 1  # Y for prompt
         if prompt_y < height:
-            stdscr.addstr(prompt_y, 0, "Press any key to continue...", INFO_C)  # Pause prompt if in bounds
+            try:
+                stdscr.addstr(prompt_y, 0, "Press any key to continue...", INFO_C)  # Pause prompt if in bounds
+            except _curses.error:
+                logging.warning("addstr error for startup prompt.")
         stdscr.getch()  # Wait for key (even if prompt skipped)
     
     stdscr.refresh()  # Refresh screen
