@@ -131,6 +131,7 @@ startup_set = False  # Flag if startup calibration done
 alert_states = {}  # Per-channel alert tracking (unused in current version)
 balancing_active = False  # Flag if balancing in progress
 startup_failed = False  # Persistent flag for startup failures
+startup_alerts = []  # New: Store startup failures for TUI alerts
 
 # Bank definitions
 BANK_RANGES = [(1, 8), (9, 16), (17, 24)]  # Channel ranges for each bank
@@ -487,10 +488,12 @@ def send_alert_email(message, settings):
 
 def check_for_issues(voltages, temps_alerts, settings):
     """Check voltage/temp issues, trigger alerts/relay."""
-    global startup_failed
+    global startup_failed, startup_alerts
     logging.info("Checking for voltage and temp issues.")
     alert_needed = startup_failed  # Persistent from startup
     alerts = []
+    if startup_failed and startup_alerts:
+        alerts.append("Startup failures: " + "; ".join(startup_alerts))
     for i, v in enumerate(voltages, 1):
         if v is None or v == 0.0:
             alerts.append(f"Bank {i}: Zero voltage.")  # Add alert
@@ -785,7 +788,7 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
 
 def startup_self_test(settings, stdscr):
     """Perform startup self-test: config validation, hardware connectivity, initial reads, and balancer verification, with TUI progress."""
-    global startup_failed, startup_set, startup_median, startup_offsets
+    global startup_failed, startup_alerts, startup_set, startup_median, startup_offsets
     logging.info("Starting self-test: Validating config, connectivity, sensors, and balancer.")
     alerts = []  # Collect test alerts
     stdscr.clear()  # Clear for startup TUI
@@ -1017,6 +1020,7 @@ def startup_self_test(settings, stdscr):
         time.sleep(5)  # Short rest between pair tests
     
     # Handle test results
+    startup_alerts = alerts  # Store for persistent TUI
     if alerts:
         startup_failed = True
         logging.error("Startup self-test failures: " + "; ".join(alerts))
@@ -1145,4 +1149,4 @@ def main(stdscr):
         time.sleep(min(settings['poll_interval'], settings['SleepTimeBetweenChecks']))  # Sleep
 
 if __name__ == '__main__':
-    curses.wrapper(main)  # Run main in curses wrapper 
+    curses.wrapper(main)  # Run main in curses wrapper
