@@ -2128,9 +2128,6 @@ def main(stdscr):
         # Sleep until next poll
         time.sleep(min(settings['poll_interval'], settings['SleepTimeBetweenChecks']))
 
-startup_median = statistics.median(initial_temps)
-
-
 # Entry point for the application
 if __name__ == '__main__':
     curses.wrapper(main)
