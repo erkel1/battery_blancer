@@ -217,13 +217,13 @@ def modbus_crc(data):
                 crc >>= 1
     return crc.to_bytes(2, 'little')
 
-def read_ntc_sensors(ip, port, query_delay, num_channels, scaling_factor, max_retries, retry_backoff_base):
+def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor, max_retries, retry_backoff_base):
     """
     Read NTC sensor temperatures via Modbus over TCP with retries.
     
     Args:
         ip (str): IP address of EDS4100 device
-        port (int): Port number for Modbus TCP
+        modbus_port (int): Port number for Modbus TCP
         query_delay (float): Delay between query and response
         num_channels (int): Number of temperature channels
         scaling_factor (float): Scaling factor to convert raw to °C
@@ -242,10 +242,10 @@ def read_ntc_sensors(ip, port, query_delay, num_channels, scaling_factor, max_re
     # Retry loop with exponential backoff
     for attempt in range(max_retries):
         try:
-            logging.debug(f"Temp read attempt {attempt+1}: Connecting to {ip}:{port}")
+            logging.debug(f"Temp read attempt {attempt+1}: Connecting to {ip}:{modbus_port}")
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(3)
-            s.connect((ip, port))
+            s.connect((ip, modbus_port))
             s.send(query)
             time.sleep(query_delay)
             response = s.recv(1024)
@@ -320,7 +320,7 @@ def load_config():
     # Temperature settings section
     temp_settings = {
         'ip': config_parser.get('Temp', 'ip', fallback='192.168.15.240'),
-        'port': config_parser.getint('Temp', 'port', fallback=10001),
+        'modbus_port': config_parser.getint('Temp', 'modbus_port', fallback=10001),
         'poll_interval': config_parser.getfloat('Temp', 'poll_interval', fallback=10.0),
         'rise_threshold': config_parser.getfloat('Temp', 'rise_threshold', fallback=2.0),
         'deviation_threshold': config_parser.getfloat('Temp', 'deviation_threshold', fallback=0.1),
@@ -406,7 +406,7 @@ def load_config():
     # Web interface settings section
     web_settings = {
         'host': config_parser.get('Web', 'host', fallback='0.0.0.0'),
-        'port': config_parser.getint('Web', 'port', fallback=8080),
+        'web_port': config_parser.getint('Web', 'web_port', fallback=8080),
         'auth_required': config_parser.getboolean('Web', 'auth_required', fallback=False),
         'username': config_parser.get('Web', 'username', fallback='admin'),
         'password': config_parser.get('Web', 'password', fallback='admin123'),
@@ -1298,7 +1298,7 @@ def startup_self_test(settings, stdscr):
                   f"MultiplexerAddress=0x{settings['MultiplexerAddress']:02x}, "
                   f"VoltageMeterAddress=0x{settings['VoltageMeterAddress']:02x}, "
                   f"RelayAddress=0x{settings['RelayAddress']:02x}, "
-                  f"Temp_IP={settings['ip']}, Temp_Port={settings['port']}, "
+                  f"Temp_IP={settings['ip']}, Temp_Port={settings['modbus_port']}, "
                   f"NumChannels={settings['num_channels']}, ScalingFactor={settings['scaling_factor']}")
     
     if y < stdscr.getmaxyx()[0]:
@@ -1374,10 +1374,10 @@ def startup_self_test(settings, stdscr):
                 logging.warning("addstr error for I2C failure.")
 
     # Test Modbus connectivity
-    logging.debug(f"Testing Modbus connectivity to {settings['ip']}:{settings['port']} with "
+    logging.debug(f"Testing Modbus connectivity to {settings['ip']}:{settings['modbus_port']} with "
                   f"num_channels=1, query_delay={settings['query_delay']}, scaling_factor={settings['scaling_factor']}")
     try:
-        test_query = read_ntc_sensors(settings['ip'], settings['port'], settings['query_delay'], 1, settings['scaling_factor'], 1, 1)
+        test_query = read_ntc_sensors(settings['ip'], settings['modbus_port'], settings['query_delay'], 1, settings['scaling_factor'], 1, 1)
         if isinstance(test_query, str) and "Error" in test_query:
             raise ValueError(test_query)
         logging.debug(f"Modbus test successful: Received {len(test_query)} values: {test_query}")
@@ -1389,7 +1389,7 @@ def startup_self_test(settings, stdscr):
                 logging.warning("addstr error for Modbus OK.")
     except Exception as e:
         alerts.append(f"Modbus test failure: {str(e)}")
-        logging.error(f"Modbus test failure: {str(e)}. Connection={settings['ip']}:{settings['port']}, "
+        logging.error(f"Modbus test failure: {str(e)}. Connection={settings['ip']}:{settings['pmodbus_ort']}, "
                       f"num_channels=1, query_delay={settings['query_delay']}, scaling_factor={settings['scaling_factor']}")
         if y + 2 < stdscr.getmaxyx()[0]:
             try:
@@ -1412,10 +1412,10 @@ def startup_self_test(settings, stdscr):
     time.sleep(0.5)
     
     # Test temperature sensor reading
-    logging.debug(f"Reading {settings['num_channels']} temperature channels from {settings['ip']}:{settings['port']} "
+    logging.debug(f"Reading {settings['num_channels']} temperature channels from {settings['ip']}:{settings['modbus_port']} "
                   f"with query_delay={settings['query_delay']}, scaling_factor={settings['scaling_factor']}, "
                   f"max_retries={settings['max_retries']}, retry_backoff_base={settings['retry_backoff_base']}")
-    initial_temps = read_ntc_sensors(settings['ip'], settings['port'], settings['query_delay'], 
+    initial_temps = read_ntc_sensors(settings['ip'], settings['modbus_port'], settings['query_delay'], 
                                      settings['num_channels'], settings['scaling_factor'], 
                                      settings['max_retries'], settings['retry_backoff_base'])
 
@@ -1961,8 +1961,8 @@ def start_web_server(settings):
     
     try:
         # Start web server in separate thread
-        web_server = CustomHTTPServer((settings['host'], settings['port']), BMSRequestHandler)
-        logging.info(f"Web server started on {settings['host']}:{settings['port']}")
+        web_server = CustomHTTPServer((settings['host'], settings['web_port']), BMSRequestHandler)
+        logging.info(f"Web server started on {settings['host']}:{settings['web_port']}")
         
         server_thread = threading.Thread(target=web_server.serve_forever)
         server_thread.daemon = True
@@ -2025,7 +2025,7 @@ def main(stdscr):
         web_data['last_update'] = time.time()
         
         # Read temperature sensors
-        temp_result = read_ntc_sensors(settings['ip'], settings['port'], settings['query_delay'], settings['num_channels'], settings['scaling_factor'], settings['max_retries'], settings['retry_backoff_base'])
+        temp_result = read_ntc_sensors(settings['ip'], settings['modbus_port'], settings['query_delay'], settings['num_channels'], settings['scaling_factor'], settings['max_retries'], settings['retry_backoff_base'])
         temps_alerts = []
         
         # Process temperature readings
