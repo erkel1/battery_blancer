@@ -2127,18 +2127,8 @@ def main(stdscr):
         
         # Sleep until next poll
         time.sleep(min(settings['poll_interval'], settings['SleepTimeBetweenChecks']))
-        
+
 startup_median = statistics.median(initial_temps)
-loaded_median, loaded_offsets = load_offsets()
-if loaded_median is None:
-    startup_offsets = [startup_median - t for t in initial_temps]
-    save_offsets(startup_median, startup_offsets)
-    logging.info(f"Calculated and saved new offsets on first run: {startup_offsets}")
-else:
-    startup_median = loaded_median
-    startup_offsets = loaded_offsets
-    logging.info(f"Using existing offsets from offsets.txt: {startup_offsets}")
-startup_set = True
 
 
 # Entry point for the application
