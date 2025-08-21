@@ -1896,7 +1896,7 @@ def main(stdscr):
     curses.init_pair(8, curses.COLOR_MAGENTA, -1)
     
     # Global variables for state management
-    global previous_temps, previous_bank_medians, run_count, startup_offsets, startup_median, startup_set, battery_voltages, web_data
+    global previous_temps, previous_bank_medians, run_count, startup_offsets, startup_median, startup_set, battery_voltages, web_data, balancing_active
     
     # Load configuration and setup hardware
     settings = load_config()
