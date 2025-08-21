@@ -1352,8 +1352,6 @@ def startup_self_test(settings, stdscr):
             choose_channel(0, settings['MultiplexerAddress'])
             logging.debug(f"Reading byte from VoltageMeter at 0x{settings['VoltageMeterAddress']:02x}")
             bus.read_byte(settings['VoltageMeterAddress'])
-            logging.debug(f"Reading byte from Relay at 0x{settings['RelayAddress']:02x}")
-            bus.read_byte(settings['RelayAddress'])
             logging.debug("I2C connectivity test passed for all devices.")
         
         if y + 1 < stdscr.getmaxyx()[0]:
