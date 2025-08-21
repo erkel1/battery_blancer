@@ -1261,36 +1261,36 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
 def startup_self_test(settings, stdscr):
     """
     Perform comprehensive startup self-test of hardware and functionality with verbose logging.
-    
+   
     Args:
         settings (dict): Configuration settings
         stdscr: Curses screen object
-    
+   
     Returns:
         list: List of alert messages from failed tests
     """
     global startup_failed, startup_alerts, startup_set, startup_median, startup_offsets
-    
+   
     # Skip if disabled in config
     if not settings['StartupSelfTestEnabled']:
         logging.info("Startup self-test disabled via configuration.")
         return []
-    
+   
     logging.info("Starting self-test: Validating config, connectivity, sensors, and balancer.")
     alerts = []
     stdscr.clear()
     y = 0
-    
+   
     # Display test title
     if y < stdscr.getmaxyx()[0]:
         try:
             stdscr.addstr(y, 0, "Startup Self-Test in Progress", curses.color_pair(1))
         except curses.error:
             logging.warning("addstr error for title.")
-    
+   
     y += 2
     stdscr.refresh()
-    
+   
     # Step 1: Config validation
     logging.info("Step 1: Validating configuration parameters.")
     logging.debug(f"Configuration details: NumberOfBatteries={settings['NumberOfBatteries']}, "
@@ -1300,16 +1300,16 @@ def startup_self_test(settings, stdscr):
                   f"RelayAddress=0x{settings['RelayAddress']:02x}, "
                   f"Temp_IP={settings['ip']}, Temp_Port={settings['modbus_port']}, "
                   f"NumChannels={settings['num_channels']}, ScalingFactor={settings['scaling_factor']}")
-    
+   
     if y < stdscr.getmaxyx()[0]:
         try:
             stdscr.addstr(y, 0, "Step 1: Validating config...", curses.color_pair(4))
         except curses.error:
             logging.warning("addstr error for step 1.")
-    
+   
     stdscr.refresh()
     time.sleep(0.5)
-    
+   
     # Check config consistency
     if settings['NumberOfBatteries'] != NUM_BANKS:
         alerts.append(f"Config mismatch: NumberOfBatteries={settings['NumberOfBatteries']} != {NUM_BANKS}.")
@@ -1326,10 +1326,10 @@ def startup_self_test(settings, stdscr):
                 stdscr.addstr(y + 1, 0, "Config OK.", curses.color_pair(4))
             except curses.error:
                 logging.warning("addstr error for config OK.")
-    
+   
     y += 2
     stdscr.refresh()
-    
+   
     # Step 2: Hardware connectivity
     logging.info("Step 2: Testing hardware connectivity (I2C and Modbus).")
     if y < stdscr.getmaxyx()[0]:
@@ -1337,10 +1337,10 @@ def startup_self_test(settings, stdscr):
             stdscr.addstr(y, 0, "Step 2: Testing hardware connectivity...", curses.color_pair(4))
         except curses.error:
             logging.warning("addstr error for step 2.")
-    
+   
     stdscr.refresh()
     time.sleep(0.5)
-    
+   
     # Test I2C connectivity
     logging.debug(f"Testing I2C connectivity on bus {settings['I2C_BusNumber']}: "
                   f"Multiplexer=0x{settings['MultiplexerAddress']:02x}, "
@@ -1353,7 +1353,7 @@ def startup_self_test(settings, stdscr):
             logging.debug(f"Reading byte from VoltageMeter at 0x{settings['VoltageMeterAddress']:02x}")
             bus.read_byte(settings['VoltageMeterAddress'])
             logging.debug("I2C connectivity test passed for all devices.")
-        
+       
         if y + 1 < stdscr.getmaxyx()[0]:
             try:
                 stdscr.addstr(y + 1, 0, "I2C OK.", curses.color_pair(4))
@@ -1370,7 +1370,6 @@ def startup_self_test(settings, stdscr):
                 stdscr.addstr(y + 1, 0, f"I2C failure: {str(e)}", curses.color_pair(2))
             except curses.error:
                 logging.warning("addstr error for I2C failure.")
-
     # Test Modbus connectivity
     logging.debug(f"Testing Modbus connectivity to {settings['ip']}:{settings['modbus_port']} with "
                   f"num_channels=1, query_delay={settings['query_delay']}, scaling_factor={settings['scaling_factor']}")
@@ -1379,7 +1378,6 @@ def startup_self_test(settings, stdscr):
         if isinstance(test_query, str) and "Error" in test_query:
             raise ValueError(test_query)
         logging.debug(f"Modbus test successful: Received {len(test_query)} values: {test_query}")
-
         if y + 2 < stdscr.getmaxyx()[0]:
             try:
                 stdscr.addstr(y + 2, 0, "Modbus OK.", curses.color_pair(4))
@@ -1387,17 +1385,15 @@ def startup_self_test(settings, stdscr):
                 logging.warning("addstr error for Modbus OK.")
     except Exception as e:
         alerts.append(f"Modbus test failure: {str(e)}")
-        logging.error(f"Modbus test failure: {str(e)}. Connection={settings['ip']}:{settings['pmodbus_ort']}, "
+        logging.error(f"Modbus test failure: {str(e)}. Connection={settings['ip']}:{settings['modbus_port']}, "
                       f"num_channels=1, query_delay={settings['query_delay']}, scaling_factor={settings['scaling_factor']}")
         if y + 2 < stdscr.getmaxyx()[0]:
             try:
                 stdscr.addstr(y + 2, 0, f"Modbus failure: {str(e)}", curses.color_pair(2))
             except curses.error:
                 logging.warning("addstr error for Modbus failure.")
-
     y += 3
     stdscr.refresh()
-
     # Step 3: Initial sensor reads
     logging.info("Step 3: Performing initial sensor reads (temperature and voltage).")
     if y < stdscr.getmaxyx()[0]:
@@ -1405,18 +1401,17 @@ def startup_self_test(settings, stdscr):
             stdscr.addstr(y, 0, "Step 3: Initial sensor reads...", curses.color_pair(4))
         except curses.error:
             logging.warning("addstr error for step 3.")
-    
+   
     stdscr.refresh()
     time.sleep(0.5)
-    
+   
     # Test temperature sensor reading
     logging.debug(f"Reading {settings['num_channels']} temperature channels from {settings['ip']}:{settings['modbus_port']} "
                   f"with query_delay={settings['query_delay']}, scaling_factor={settings['scaling_factor']}, "
                   f"max_retries={settings['max_retries']}, retry_backoff_base={settings['retry_backoff_base']}")
-    initial_temps = read_ntc_sensors(settings['ip'], settings['modbus_port'], settings['query_delay'], 
-                                     settings['num_channels'], settings['scaling_factor'], 
+    initial_temps = read_ntc_sensors(settings['ip'], settings['modbus_port'], settings['query_delay'],
+                                     settings['num_channels'], settings['scaling_factor'],
                                      settings['max_retries'], settings['retry_backoff_base'])
-
     if isinstance(initial_temps, str):
         alerts.append(f"Initial temp read failure: {initial_temps}")
         logging.error(f"Initial temperature read failure: {initial_temps}")
@@ -1434,7 +1429,6 @@ def startup_self_test(settings, stdscr):
                 stdscr.addstr(y + 1, 0, "Temps OK.", curses.color_pair(4))
             except curses.error:
                 logging.warning("addstr error for temps OK.")
-
     # Test voltage reading
     logging.debug(f"Reading voltages for {NUM_BANKS} banks with VoltageDividerRatio={settings['VoltageDividerRatio']}")
     initial_voltages = []
@@ -1443,7 +1437,6 @@ def startup_self_test(settings, stdscr):
         logging.debug(f"Bank {i} voltage read: Voltage={voltage}, Readings={readings}, ADC={adc_values}, "
                       f"CalibrationFactor={settings[f'Sensor{i}_Calibration']}")
         initial_voltages.append(voltage if voltage is not None else 0.0)
-
     if any(v == 0.0 for v in initial_voltages):
         alerts.append("Initial voltage read failure: Zero voltage on one or more banks.")
         logging.error(f"Initial voltage read failure: Voltages={initial_voltages}")
@@ -1459,7 +1452,6 @@ def startup_self_test(settings, stdscr):
                 stdscr.addstr(y + 2, 0, "Voltages OK.", curses.color_pair(4))
             except curses.error:
                 logging.warning("addstr error for voltages OK.")
-
     # Set up temperature calibration if all readings are valid
     if isinstance(initial_temps, list):
         valid_count = sum(1 for t in initial_temps if t > settings['valid_min'])
@@ -1480,10 +1472,8 @@ def startup_self_test(settings, stdscr):
             startup_median = None
             startup_offsets = None
             startup_set = False
-
     y += 3
     stdscr.refresh()
-
     # Step 4: Balancer verification (only if no previous failures and valid voltages)
     if not alerts and all(v > 0 for v in initial_voltages):
         logging.info("Step 4: Verifying balancer functionality.")
@@ -1492,11 +1482,9 @@ def startup_self_test(settings, stdscr):
                 stdscr.addstr(y, 0, "Step 4: Balancer verification...", curses.color_pair(4))
             except curses.error:
                 logging.warning("addstr error for step 4.")
-
         y += 1
         stdscr.refresh()
         time.sleep(0.5)
-
         # Test all possible bank balancing combinations
         pairs = [(1,2), (1,3), (2,1), (2,3), (3,1), (3,2)]
         test_duration = settings['test_balance_duration']
@@ -1504,18 +1492,15 @@ def startup_self_test(settings, stdscr):
         min_delta = settings['min_voltage_delta']
         logging.debug(f"Balancer test parameters: test_duration={test_duration}s, "
                       f"read_interval={read_interval}s, min_voltage_delta={min_delta}V")
-
         for high, low in pairs:
-            logging.debug(f"Testing balance: Bank {high} -> {low}")
+            logging.debug(f"Testing balance: Bank {high} to Bank {low}")
             if y < stdscr.getmaxyx()[0]:
                 try:
-                    stdscr.addstr(y, 0, f"Testing balance: Bank {high} -> {low} for {test_duration}s.", curses.color_pair(6))
+                    stdscr.addstr(y, 0, f"Testing balance: Bank {high} to Bank {low} for {test_duration}s.", curses.color_pair(6))
                 except curses.error:
                     logging.warning("addstr error for testing balance.")
-
             stdscr.refresh()
-            logging.info(f"Testing balance: Bank {high} -> {low} for {test_duration}s.")
-
+            logging.info(f"Testing balance: Bank {high} to Bank {low} for {test_duration}s.")
             # Skip if temperature anomalies exist
             temp_anomaly = False
             if initial_temps and isinstance(initial_temps, list):
@@ -1523,29 +1508,24 @@ def startup_self_test(settings, stdscr):
                     if t > settings['high_threshold'] or t < settings['low_threshold']:
                         temp_anomaly = True
                         break
-
             if temp_anomaly:
-                alerts.append(f"Skipping balance test {high}->{low}: Temp anomalies.")
-                logging.warning(f"Skipping balance test {high}->{low}: Temperature anomalies detected.")
+                alerts.append(f"Skipping balance test {high} to {low}: Temp anomalies.")
+                logging.warning(f"Skipping balance test {high} to {low}: Temperature anomalies detected.")
                 if y + 1 < stdscr.getmaxyx()[0]:
                     try:
                         stdscr.addstr(y + 1, 0, "Skipped: Temp anomalies.", curses.color_pair(2))
                     except curses.error:
                         logging.warning("addstr error for skipped temp.")
-
                 y += 2
                 stdscr.refresh()
                 continue
-
             # Start balance test
             set_relay_connection(high, low, settings)
             control_dcdc_converter(True, settings)
             start_time = time.time()
-
             high_trend = []
             low_trend = []
             progress_y = y + 1
-
             # Monitor voltage changes during test
             while time.time() - start_time < test_duration:
                 time.sleep(read_interval)
@@ -1553,76 +1533,68 @@ def startup_self_test(settings, stdscr):
                 low_v = read_voltage_with_retry(low, settings)[0] or 0.0
                 high_trend.append(high_v)
                 low_trend.append(low_v)
-                logging.debug(f"Balance test {high}->{low}: High={high_v:.2f}V, Low={low_v:.2f}V")
-
+                logging.debug(f"Balance test {high} to {low}: Bank {high}={high_v:.2f}V, Bank {low}={low_v:.2f}V")
                 elapsed = time.time() - start_time
                 if progress_y < stdscr.getmaxyx()[0]:
                     try:
                         stdscr.addstr(progress_y, 0, " " * 80, curses.color_pair(6))
-                        stdscr.addstr(progress_y, 0, f"Progress: {elapsed:.1f}s, High {high_v:.2f}V, Low {low_v:.2f}V", curses.color_pair(6))
+                        stdscr.addstr(progress_y, 0, f"Progress: {elapsed:.1f}s, Bank {high} {high_v:.2f}V, Bank {low} {low_v:.2f}V", curses.color_pair(6))
                     except curses.error:
                         logging.warning("addstr error in startup balance progress.")
-
                 stdscr.refresh()
-
             # Clean up after test
             control_dcdc_converter(False, settings)
             set_relay_connection(0, 0, settings)
-
             if progress_y + 1 < stdscr.getmaxyx()[0]:
                 try:
                     stdscr.addstr(progress_y + 1, 0, "Analyzing...", curses.color_pair(6))
                 except curses.error:
                     logging.warning("addstr error for analyzing.")
-
             stdscr.refresh()
-
             # Analyze test results
             if len(high_trend) >= 3:
                 high_delta = high_trend[0] - high_trend[-1]
                 low_delta = low_trend[-1] - low_trend[0]
-                logging.debug(f"Balance test {high}->{low} analysis: High Δ={high_delta:.3f}V, Low Δ={low_delta:.3f}V, "
+                logging.debug(f"Balance test {high} to {low} analysis: Bank {high} Δ={high_delta:.3f}V, Bank {low} Δ={low_delta:.3f}V, "
                               f"Min Δ={min_delta}V")
-
                 if high_delta < min_delta or low_delta < min_delta:
-                    alerts.append(f"Balance test {high}->{low} failed: Insufficient change (High Δ={high_delta:.3f}V, Low Δ={low_delta:.3f}V).")
-                    logging.error(f"Balance test {high}->{low} failed: Insufficient voltage change.")
+                    alerts.append(f"Balance test {high} to {low} failed: Insufficient change (Bank {high} Δ={high_delta:.3f}V, Bank {low} Δ={low_delta:.3f}V).")
+                    logging.error(f"Balance test {high} to {low} failed: Insufficient voltage change.")
                     if progress_y + 1 < stdscr.getmaxyx()[0]:
                         try:
                             stdscr.addstr(progress_y + 1, 0, "Test failed: Insufficient voltage change.", curses.color_pair(2))
                         except curses.error:
                             logging.warning("addstr error for test failed insufficient change.")
                 else:
-                    logging.debug(f"Balance test {high}->{low} passed: Sufficient voltage change.")
+                    logging.debug(f"Balance test {high} to {low} passed: Sufficient voltage change.")
                     if progress_y + 1 < stdscr.getmaxyx()[0]:
                         try:
                             stdscr.addstr(progress_y + 1, 0, "Test passed.", curses.color_pair(4))
                         except curses.error:
                             logging.warning("addstr error for test passed.")
             else:
-                alerts.append(f"Balance test {high}->{low} failed: Insufficient readings.")
-                logging.error(f"Balance test {high}->{low} failed: Only {len(high_trend)} readings collected.")
+                alerts.append(f"Balance test {high} to {low} failed: Insufficient readings.")
+                logging.error(f"Balance test {high} to {low} failed: Only {len(high_trend)} readings collected.")
                 if progress_y + 1 < stdscr.getmaxyx()[0]:
                     try:
                         stdscr.addstr(progress_y + 1, 0, "Test failed: Insufficient readings.", curses.color_pair(2))
                     except curses.error:
                         logging.warning("addstr error for test failed insufficient readings.")
-
             stdscr.refresh()
             y = progress_y + 2
             time.sleep(2)
-    
+   
     # Store test results
     startup_alerts = alerts
-    
+   
     if alerts:
         startup_failed = True
         logging.error("Startup self-test failures: " + "; ".join(alerts))
         send_alert_email("Startup self-test failures:\n" + "\n".join(alerts), settings)
-        
+       
         if GPIO:
             GPIO.output(settings['AlarmRelayPin'], GPIO.HIGH)
-        
+       
         if y < stdscr.getmaxyx()[0]:
             try:
                 stdscr.addstr(y, 0, "Self-Test Complete with Failures. Continuing with warnings.", curses.color_pair(2))
@@ -1634,9 +1606,9 @@ def startup_self_test(settings, stdscr):
                 stdscr.addstr(y, 0, "Self-Test Complete. All OK.", curses.color_pair(4))
             except curses.error:
                 logging.warning("addstr error for self-test OK.")
-        
+       
         logging.info("Startup self-test passed.")
-    
+   
     stdscr.refresh()
     time.sleep(5)
     return alerts
