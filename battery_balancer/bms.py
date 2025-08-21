@@ -777,20 +777,20 @@ def set_relay_connection(high, low, settings):
         relay_state = 0
         # Define relay patterns for each bank combination
         if high == 1 and low == 2:
-            relay_state |= (1 << 0) | (1 << 1) | (1 << 3)
-            logging.debug("Relays 1, 2, and 4 activated for high to low.")
+            relay_state |= (1 << 3)
+            logging.debug("Relays 4 activated for high to low.")
         elif high == 1 and low == 3:
-            relay_state |= (1 << 1) | (1 << 2) | (1 << 3)
-            logging.debug("Relays 2, 3, and 4 activated for high to low.")
+            relay_state |= (1 << 2) | (1 << 3)
+            logging.debug("Relays 3, and 4 activated for high to low.")
         elif high == 2 and low == 1:
+            relay_state |= (1 << 0)
+            logging.debug("Relays 1 activated for high to low.")
+        elif high == 2 and low == 3:
             relay_state |= (1 << 0) | (1 << 2) | (1 << 3)
             logging.debug("Relays 1, 3, and 4 activated for high to low.")
-        elif high == 2 and low == 3:
-            relay_state |= (1 << 0) | (1 << 1) | (1 << 2)
-            logging.debug("Relays 1, 2, and 3 activated for high to low.")
         elif high == 3 and low == 1:
-            relay_state |= (1 << 0) | (1 << 1) | (1 << 2)
-            logging.debug("Relays 1, 2, and 3 activated for high to low.")
+            relay_state |= (1 << 0) | (1 << 1)
+            logging.debug("Relays 1, 2 activated for high to low.")
         elif high == 3 and low == 2:
             relay_state |= (1 << 0) | (1 << 1) | (1 << 3)
             logging.debug("Relays 1, 2, and 4 activated for high to low.")
