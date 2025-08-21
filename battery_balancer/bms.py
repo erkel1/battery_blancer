@@ -2,27 +2,27 @@
 Combined Battery Temperature Monitoring and Balancing Script (Updated for 3s8p Configuration)
 
 Extensive Summary:
-This script serves as a comprehensive Battery Management System (BMS) for a 3s8p battery configuration (3 series-connected parallel battery banks, each with 8 cells). It integrates temperature monitoring from NTC sensors via a Lantronix EDS4100 device (using Modbus RTU over TCP) with voltage balancing using I2C-based ADC for readings and relays/GPIO for control. The system runs in an infinite loop, polling data at configurable intervals, detecting anomalies, balancing voltages if imbalances exceed thresholds, logging events, sending email alerts for critical issues, and displaying real-time status in a curses-based Text User Interface (TUI). Now includes an optional web interface for remote monitoring and manual balancing.
+This script serves as a comprehensive Battery Management System (BMS) for a configurable battery configuration (default 3s8p: 3 series-connected parallel battery banks, each with 8 cells). It integrates temperature monitoring from NTC sensors via a Lantronix EDS4100 device (using Modbus RTU over TCP) with voltage balancing using I2C-based ADC for readings and relays/GPIO for control. The system runs in an infinite loop, polling data at configurable intervals, detecting anomalies, balancing voltages if imbalances exceed thresholds, logging events, sending email alerts for critical issues, and displaying real-time status in a curses-based Text User Interface (TUI). Includes an optional web interface for remote monitoring and manual balancing.
 
 Key Features and Architecture:
-- **Temperature Monitoring:** Reads 24 NTC sensors (8 per bank) via Modbus TCP. Calibrates to median at startup, detects invalid/high/low/deviation/rise/lag/disconnection anomalies.
+- **Temperature Monitoring:** Reads configurable NTC sensors (default 24) via Modbus TCP. Calibrates to median at startup (offsets calculated on first run), detects invalid/high/low/deviation/rise/lag/disconnection anomalies.
 - **Voltage Monitoring and Balancing:** Reads bank voltages via ADS1115 ADC over I2C with retries. Balances by connecting high to low bank via relays and activating DC-DC converter if difference > threshold and no alerts.
 - **Alerts and Notifications:** Logs issues, activates GPIO alarm relay, sends throttled SMTP emails.
-- **User Interfaces:** Curses TUI with ASCII art for real-time display; optional HTTP web dashboard with API for status and manual balance.
-- **Startup Self-Test:** Validates config, hardware connectivity, sensor reads, and balancer functionality.
-- **Error Handling:** Retries on reads, guards for None values, exponential backoff, test mode for no hardware libs.
+- **User Interfaces:** Curses TUI with ASCII art for real-time display (live reads); optional HTTP web dashboard with API for status and manual balance.
+- **Startup Self-Test:** Validates config, hardware connectivity, sensor reads, and balancer functionality. Calculates startup_median at startup; offsets on first run only.
+- **Error Handling:** Retries on reads, guards for None, exponential backoff, test mode for no hardware libs, specific exception handling with tracebacks.
 - **Configuration:** Loaded from 'battery_monitor.ini' with fallbacks; changes require restart.
 - **Shutdown Handling:** Graceful cleanup on Ctrl+C (SIGINT).
 
 What it does (Detailed):
-- Reads temperatures from 24 NTC sensors (grouped into 3 banks: channels 1-8, 9-16, 17-24).
-- Calibrates temperatures at startup (aligns to median offset if all valid) and persists offsets in 'offsets.txt'.
+- Reads temperatures from NTC sensors (default 24, grouped into banks).
+- Calculates startup_median at each startup in startup_self_test; loads/calculates startup_offsets from offsets.txt (first run only).
 - Detects temp anomalies: invalid (≤ valid_min), high/low (thresholds), deviation from bank median (abs/rel), abnormal rise (> threshold in poll interval), group lag (dev from median rise), sudden disconnection (prev valid, now None).
-- Reads voltages from 3 banks using ADS1115 ADC over I2C, with retries (2 attempts, consistency check) and calibration multipliers.
+- Reads voltages from banks using ADS1115 ADC over I2C, with retries (2 attempts, consistency check) and calibration multipliers.
 - Checks voltage issues: zero/None (read failure), high/low (per bank thresholds).
 - Balances voltages: If max-min > threshold, no alerts, and rest period elapsed, connects high to low bank via relays, turns on DC-DC converter for duration, shows progress in TUI/web.
 - Alerts: Logs issues at configurable level, activates GPIO alarm relay on any alert, sends throttled emails with details.
-- TUI: ASCII art batteries with voltages/temps inside (full details at startup, compact updates), ADC/readings, alerts; handles screen bounds to avoid errors.
+- TUI: ASCII art batteries with live voltages/temps (re-reads for freshness), ADC/readings, alerts; handles screen bounds to avoid errors.
 - Web: HTTP dashboard for status, alerts, manual balance (with auth/CORS); API endpoints /status and /balance.
 - Handles shutdown: Ctrl+C cleans GPIO, shuts web server.
 - Startup Self-Check: Configurable, validates config/hardware/reads; tests balancer on all pairs if no failures, with voltage trend analysis.
@@ -30,7 +30,7 @@ What it does (Detailed):
 How it does it (Detailed Flow):
 - Config loaded from 'battery_monitor.ini' with fallbacks (e.g., defaults if keys missing).
 - Hardware setup: I2C bus, GPIO pins initialized (low state).
-- Startup check: Validate config (bank count), test I2C/Modbus connectivity, initial sensor reads, balancer (if no fails: test pairs for voltage delta).
+- Startup check: Validates config (bank count), tests I2C/Modbus connectivity, initial sensor reads, balancer (if no fails: test pairs for voltage delta). Calculates startup_median; calculates startup_offsets if offsets.txt missing.
 - Infinite loop: Poll temps/voltages (retry on invalid), process/calibrate temps, check alerts (voltage/temp), balance if needed (high->low), draw TUI, update web data, sleep.
 - Logging: To 'battery_monitor.log' at configurable level (e.g., INFO for key events, DEBUG for verbose).
 - Edges: Retries on reads (Modbus/I2C), guards for None/0 values, exponential backoff on failures, mock-safe for testing (no hardware libs).
@@ -100,8 +100,15 @@ Logic Diagram (ASCII Flowchart of Execution):
           | (loop back)
           |
 
-Dependencies: socket, statistics, time, configparser, logging, signal, gc, os, smbus, RPi.GPIO, smtplib, email.mime.text.MIMEText, curses, sys, art (pip install art), threading, json, http.server, urllib.parse, base64.
-Note: Ensure EDS4100 configured, INI present, hardware connected. Web at http://<pi-ip>:8080. Run on Raspberry Pi for GPIO/I2C. Test mode if libs missing. No internet required beyond email.
+Dependencies: socket, statistics, time, configparser, logging, signal, gc, os, smbus, RPi.GPIO, smtplib, email.mime.text.MIMEText, curses, sys, art (pip install art), threading, json, http.server, urllib.parse, base64, traceback.
+Installation:
+- Python 3.11+: sudo apt install python3
+- Hardware libs: sudo apt install python3-smbus python3-rpi.gpio
+- Art: pip install art
+- Enable I2C: sudo raspi-config > Interfacing Options > I2C > Enable; reboot
+- INI File: Create battery_monitor.ini (template in prior responses)
+- Run: sudo python bms.py (root for GPIO/I2C)
+Note: Ensure EDS4100 configured, INI present, hardware connected. Web at http://<pi-ip>:8080.
 """
 
 # Standard library imports
@@ -118,6 +125,7 @@ import threading  # For web server thread
 import json  # For API responses
 from urllib.parse import urlparse, parse_qs  # For parsing requests
 import base64  # For basic auth decoding
+import traceback  # For logging stack traces in exceptions
 
 # Hardware-specific imports (may need installation)
 try:
@@ -273,13 +281,23 @@ def read_ntc_sensors(ip, port, query_delay, num_channels, scaling_factor, max_re
             logging.info("Temperature read successful.")
             return raw_temperatures
         
-        except Exception as e:
+        except socket.error as e:
             logging.warning(f"Temp read attempt {attempt+1} failed: {str(e)}. Retrying.")
             if attempt < max_retries - 1:
                 time.sleep(retry_backoff_base ** attempt)
             else:
                 logging.error(f"Temp read failed after {max_retries} attempts - {str(e)}.")
                 return f"Error: Failed after {max_retries} attempts - {str(e)}."
+        except ValueError as e:
+            logging.warning(f"Temp read attempt {attempt+1} failed (validation): {str(e)}. Retrying.")
+            if attempt < max_retries - 1:
+                time.sleep(retry_backoff_base ** attempt)
+            else:
+                logging.error(f"Temp read failed after {max_retries} attempts - {str(e)}.")
+                return f"Error: Failed after {max_retries} attempts - {str(e)}."
+        except Exception as e:
+            logging.error(f"Unexpected error in temp read attempt {attempt+1}: {str(e)}\n{traceback.format_exc()}")
+            return f"Error: Unexpected failure - {str(e)}"
 
 def load_config():
     """
@@ -459,9 +477,12 @@ def signal_handler(sig, frame):
     
     sys.exit(0)
 
-def load_offsets():
+def load_offsets(num_channels):
     """
-    Load temperature offsets from file if exists.
+    Load temperature offsets from file if exists, for dynamic num_channels.
+    
+    Args:
+        num_channels (int): Number of expected temperature channels
     
     Returns:
         tuple: (startup_median, offsets) or (None, None) if file doesn't exist or is invalid
@@ -473,18 +494,16 @@ def load_offsets():
             with open('offsets.txt', 'r') as f:
                 lines = f.readlines()
             
-            # Validate file content
             if len(lines) < 1:
                 logging.warning("Invalid offsets.txt; using none.")
                 return None, None
             
-            # Parse median and offsets
             startup_median = float(lines[0].strip())
             offsets = [float(line.strip()) for line in lines[1:]]
             
-            # Validate offsets count matches expected channels
-            if len(offsets) != 24:  # Hardcoded for 24 channels
-                logging.warning("Invalid offsets count; using none.")
+            # Validate offsets count matches num_channels
+            if len(offsets) != num_channels:
+                logging.warning(f"Invalid offsets count; expected {num_channels}, got {len(offsets)}. Using none.")
                 return None, None
             
             logging.debug(f"Loaded median {startup_median} and {len(offsets)} offsets.")
@@ -652,7 +671,10 @@ def choose_channel(channel, multiplexer_address):
     """
     logging.debug(f"Switching to I2C channel {channel}.")
     if bus:
-        bus.write_byte(multiplexer_address, 1 << channel)
+        try:
+            bus.write_byte(multiplexer_address, 1 << channel)
+        except IOError as e:
+            logging.error(f"I2C error selecting channel {channel}: {str(e)}")
 
 def setup_voltage_meter(settings):
     """
@@ -663,10 +685,13 @@ def setup_voltage_meter(settings):
     """
     logging.debug("Configuring voltage meter ADC.")
     if bus:
-        config_value = (settings['ContinuousModeConfig'] |
-                        settings['SampleRateConfig'] |
-                        settings['GainConfig'])
-        bus.write_word_data(settings['VoltageMeterAddress'], settings['ConfigRegister'], config_value)
+        try:
+            config_value = (settings['ContinuousModeConfig'] |
+                            settings['SampleRateConfig'] |
+                            settings['GainConfig'])
+            bus.write_word_data(settings['VoltageMeterAddress'], settings['ConfigRegister'], config_value)
+        except IOError as e:
+            logging.error(f"I2C error configuring voltage meter: {str(e)}")
 
 def read_voltage_with_retry(bank_id, settings):
     """
@@ -697,10 +722,14 @@ def read_voltage_with_retry(bank_id, settings):
             setup_voltage_meter(settings)
             
             if bus:
-                bus.write_byte(settings['VoltageMeterAddress'], 0x01)
-                time.sleep(0.05)
-                raw_adc = bus.read_word_data(settings['VoltageMeterAddress'], settings['ConversionRegister'])
-                raw_adc = (raw_adc & 0xFF) << 8 | (raw_adc >> 8)
+                try:
+                    bus.write_byte(settings['VoltageMeterAddress'], 0x01)
+                    time.sleep(0.05)
+                    raw_adc = bus.read_word_data(settings['VoltageMeterAddress'], settings['ConversionRegister'])
+                    raw_adc = (raw_adc & 0xFF) << 8 | (raw_adc >> 8)
+                except IOError as e:
+                    logging.error(f"I2C error in voltage read for Bank {bank_id}: {str(e)}")
+                    raw_adc = 0
             else:
                 # Mock reading for testing
                 raw_adc = 16000 + bank_id * 100
@@ -855,7 +884,7 @@ def check_for_issues(voltages, temps_alerts, settings):
     for i, v in enumerate(voltages, 1):
         if v is None or v == 0.0:
             alerts.append(f"Bank {i}: Zero voltage.")
-            logging.warning(f"Zero voltage alert on Bank{i}.")
+            logging.warning(f"Zero voltage alert on Bank {i}.")
             alert_needed = True
         elif v > settings['HighVoltageThresholdPerBattery']:
             alerts.append(f"Bank {i}: High voltage ({v:.2f}V).")
@@ -1231,7 +1260,7 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
 
 def startup_self_test(settings, stdscr):
     """
-    Perform comprehensive startup self-test of hardware and functionality.
+    Perform comprehensive startup self-test of hardware and functionality with verbose logging.
     
     Args:
         settings (dict): Configuration settings
@@ -1263,6 +1292,15 @@ def startup_self_test(settings, stdscr):
     stdscr.refresh()
     
     # Step 1: Config validation
+    logging.info("Step 1: Validating configuration parameters.")
+    logging.debug(f"Configuration details: NumberOfBatteries={settings['NumberOfBatteries']}, "
+                  f"I2C_BusNumber={settings['I2C_BusNumber']}, "
+                  f"MultiplexerAddress=0x{settings['MultiplexerAddress']:02x}, "
+                  f"VoltageMeterAddress=0x{settings['VoltageMeterAddress']:02x}, "
+                  f"RelayAddress=0x{settings['RelayAddress']:02x}, "
+                  f"Temp_IP={settings['ip']}, Temp_Port={settings['port']}, "
+                  f"NumChannels={settings['num_channels']}, ScalingFactor={settings['scaling_factor']}")
+    
     if y < stdscr.getmaxyx()[0]:
         try:
             stdscr.addstr(y, 0, "Step 1: Validating config...", curses.color_pair(4))
@@ -1274,13 +1312,15 @@ def startup_self_test(settings, stdscr):
     
     # Check config consistency
     if settings['NumberOfBatteries'] != NUM_BANKS:
-        alerts.append("Config mismatch: NumberOfBatteries != 3.")
+        alerts.append(f"Config mismatch: NumberOfBatteries={settings['NumberOfBatteries']} != {NUM_BANKS}.")
+        logging.warning(f"Config mismatch detected: NumberOfBatteries={settings['NumberOfBatteries']} != {NUM_BANKS}.")
         if y + 1 < stdscr.getmaxyx()[0]:
             try:
                 stdscr.addstr(y + 1, 0, "Config mismatch detected.", curses.color_pair(2))
             except curses.error:
                 logging.warning("addstr error for config mismatch.")
     else:
+        logging.debug("Configuration validation passed: NumberOfBatteries matches NUM_BANKS.")
         if y + 1 < stdscr.getmaxyx()[0]:
             try:
                 stdscr.addstr(y + 1, 0, "Config OK.", curses.color_pair(4))
@@ -1291,6 +1331,7 @@ def startup_self_test(settings, stdscr):
     stdscr.refresh()
     
     # Step 2: Hardware connectivity
+    logging.info("Step 2: Testing hardware connectivity (I2C and Modbus).")
     if y < stdscr.getmaxyx()[0]:
         try:
             stdscr.addstr(y, 0, "Step 2: Testing hardware connectivity...", curses.color_pair(4))
@@ -1301,11 +1342,19 @@ def startup_self_test(settings, stdscr):
     time.sleep(0.5)
     
     # Test I2C connectivity
+    logging.debug(f"Testing I2C connectivity on bus {settings['I2C_BusNumber']}: "
+                  f"Multiplexer=0x{settings['MultiplexerAddress']:02x}, "
+                  f"VoltageMeter=0x{settings['VoltageMeterAddress']:02x}, "
+                  f"Relay=0x{settings['RelayAddress']:02x}")
     try:
         if bus:
+            logging.debug(f"Selecting I2C channel 0 on multiplexer 0x{settings['MultiplexerAddress']:02x}")
             choose_channel(0, settings['MultiplexerAddress'])
+            logging.debug(f"Reading byte from VoltageMeter at 0x{settings['VoltageMeterAddress']:02x}")
             bus.read_byte(settings['VoltageMeterAddress'])
+            logging.debug(f"Reading byte from Relay at 0x{settings['RelayAddress']:02x}")
             bus.read_byte(settings['RelayAddress'])
+            logging.debug("I2C connectivity test passed for all devices.")
         
         if y + 1 < stdscr.getmaxyx()[0]:
             try:
@@ -1314,18 +1363,25 @@ def startup_self_test(settings, stdscr):
                 logging.warning("addstr error for I2C OK.")
     except (IOError, AttributeError) as e:
         alerts.append(f"I2C connectivity failure: {str(e)}")
+        logging.error(f"I2C connectivity failure: {str(e)}. Bus={settings['I2C_BusNumber']}, "
+                      f"Multiplexer=0x{settings['MultiplexerAddress']:02x}, "
+                      f"VoltageMeter=0x{settings['VoltageMeterAddress']:02x}, "
+                      f"Relay=0x{settings['RelayAddress']:02x}")
         if y + 1 < stdscr.getmaxyx()[0]:
             try:
                 stdscr.addstr(y + 1, 0, f"I2C failure: {str(e)}", curses.color_pair(2))
             except curses.error:
                 logging.warning("addstr error for I2C failure.")
-    
+
     # Test Modbus connectivity
+    logging.debug(f"Testing Modbus connectivity to {settings['ip']}:{settings['port']} with "
+                  f"num_channels=1, query_delay={settings['query_delay']}, scaling_factor={settings['scaling_factor']}")
     try:
         test_query = read_ntc_sensors(settings['ip'], settings['port'], settings['query_delay'], 1, settings['scaling_factor'], 1, 1)
         if isinstance(test_query, str) and "Error" in test_query:
             raise ValueError(test_query)
-        
+        logging.debug(f"Modbus test successful: Received {len(test_query)} values: {test_query}")
+
         if y + 2 < stdscr.getmaxyx()[0]:
             try:
                 stdscr.addstr(y + 2, 0, "Modbus OK.", curses.color_pair(4))
@@ -1333,16 +1389,19 @@ def startup_self_test(settings, stdscr):
                 logging.warning("addstr error for Modbus OK.")
     except Exception as e:
         alerts.append(f"Modbus test failure: {str(e)}")
+        logging.error(f"Modbus test failure: {str(e)}. Connection={settings['ip']}:{settings['port']}, "
+                      f"num_channels=1, query_delay={settings['query_delay']}, scaling_factor={settings['scaling_factor']}")
         if y + 2 < stdscr.getmaxyx()[0]:
             try:
                 stdscr.addstr(y + 2, 0, f"Modbus failure: {str(e)}", curses.color_pair(2))
             except curses.error:
                 logging.warning("addstr error for Modbus failure.")
-    
+
     y += 3
     stdscr.refresh()
-    
+
     # Step 3: Initial sensor reads
+    logging.info("Step 3: Performing initial sensor reads (temperature and voltage).")
     if y < stdscr.getmaxyx()[0]:
         try:
             stdscr.addstr(y, 0, "Step 3: Initial sensor reads...", curses.color_pair(4))
@@ -1353,80 +1412,112 @@ def startup_self_test(settings, stdscr):
     time.sleep(0.5)
     
     # Test temperature sensor reading
-    initial_temps = read_ntc_sensors(settings['ip'], settings['port'], settings['query_delay'], settings['num_channels'], settings['scaling_factor'], settings['max_retries'], settings['retry_backoff_base'])
-    
+    logging.debug(f"Reading {settings['num_channels']} temperature channels from {settings['ip']}:{settings['port']} "
+                  f"with query_delay={settings['query_delay']}, scaling_factor={settings['scaling_factor']}, "
+                  f"max_retries={settings['max_retries']}, retry_backoff_base={settings['retry_backoff_base']}")
+    initial_temps = read_ntc_sensors(settings['ip'], settings['port'], settings['query_delay'], 
+                                     settings['num_channels'], settings['scaling_factor'], 
+                                     settings['max_retries'], settings['retry_backoff_base'])
+
     if isinstance(initial_temps, str):
         alerts.append(f"Initial temp read failure: {initial_temps}")
+        logging.error(f"Initial temperature read failure: {initial_temps}")
         if y + 1 < stdscr.getmaxyx()[0]:
             try:
                 stdscr.addstr(y + 1, 0, "Temp read failure.", curses.color_pair(2))
             except curses.error:
                 logging.warning("addstr error for temp failure.")
     else:
+        logging.debug(f"Initial temperature read successful: {len(initial_temps)} values, {initial_temps}")
+        valid_count = sum(1 for t in initial_temps if t > settings['valid_min'])
+        logging.debug(f"Valid temperature readings: {valid_count}/{settings['num_channels']}, valid_min={settings['valid_min']}")
         if y + 1 < stdscr.getmaxyx()[0]:
             try:
                 stdscr.addstr(y + 1, 0, "Temps OK.", curses.color_pair(4))
             except curses.error:
                 logging.warning("addstr error for temps OK.")
-    
+
     # Test voltage reading
-    initial_voltages = [read_voltage_with_retry(i, settings)[0] or 0.0 for i in range(1, NUM_BANKS + 1)]
-    
+    logging.debug(f"Reading voltages for {NUM_BANKS} banks with VoltageDividerRatio={settings['VoltageDividerRatio']}")
+    initial_voltages = []
+    for i in range(1, NUM_BANKS + 1):
+        voltage, readings, adc_values = read_voltage_with_retry(i, settings)
+        logging.debug(f"Bank {i} voltage read: Voltage={voltage}, Readings={readings}, ADC={adc_values}, "
+                      f"CalibrationFactor={settings[f'Sensor{i}_Calibration']}")
+        initial_voltages.append(voltage if voltage is not None else 0.0)
+
     if any(v == 0.0 for v in initial_voltages):
         alerts.append("Initial voltage read failure: Zero voltage on one or more banks.")
+        logging.error(f"Initial voltage read failure: Voltages={initial_voltages}")
         if y + 2 < stdscr.getmaxyx()[0]:
             try:
                 stdscr.addstr(y + 2, 0, "Voltage read failure (zero).", curses.color_pair(2))
             except curses.error:
                 logging.warning("addstr error for voltage failure.")
     else:
+        logging.debug(f"Initial voltage read successful: Voltages={initial_voltages}")
         if y + 2 < stdscr.getmaxyx()[0]:
             try:
                 stdscr.addstr(y + 2, 0, "Voltages OK.", curses.color_pair(4))
             except curses.error:
                 logging.warning("addstr error for voltages OK.")
-    
+
     # Set up temperature calibration if all readings are valid
     if isinstance(initial_temps, list):
         valid_count = sum(1 for t in initial_temps if t > settings['valid_min'])
         if valid_count == settings['num_channels']:
             startup_median = statistics.median(initial_temps)
-            startup_offsets = [startup_median - t for t in initial_temps]
-            save_offsets(startup_median, startup_offsets)
+            logging.debug(f"Calculated startup median: {startup_median:.1f}°C")
+            # Load existing offsets or calculate new ones if offsets.txt missing
+            _, startup_offsets = load_offsets(settings['num_channels'])
+            if startup_offsets is None:
+                startup_offsets = [startup_median - t for t in initial_temps]
+                save_offsets(startup_median, startup_offsets)
+                logging.info(f"Calculated and saved new offsets on first run: {startup_offsets}")
+            else:
+                logging.info(f"Using existing offsets from offsets.txt: {startup_offsets}")
             startup_set = True
-            logging.info(f"Temp calibration set during startup. Median: {startup_median:.1f}°C")
-    
+        else:
+            logging.warning(f"Temperature calibration skipped: Only {valid_count}/{settings['num_channels']} valid readings.")
+            startup_median = None
+            startup_offsets = None
+            startup_set = False
+
     y += 3
     stdscr.refresh()
-    
-    # Step 4: Balancer verification (only if no previous failures)
-    if not alerts:
+
+    # Step 4: Balancer verification (only if no previous failures and valid voltages)
+    if not alerts and all(v > 0 for v in initial_voltages):
+        logging.info("Step 4: Verifying balancer functionality.")
         if y < stdscr.getmaxyx()[0]:
             try:
                 stdscr.addstr(y, 0, "Step 4: Balancer verification...", curses.color_pair(4))
             except curses.error:
                 logging.warning("addstr error for step 4.")
-        
+
         y += 1
         stdscr.refresh()
         time.sleep(0.5)
-        
+
         # Test all possible bank balancing combinations
         pairs = [(1,2), (1,3), (2,1), (2,3), (3,1), (3,2)]
         test_duration = settings['test_balance_duration']
         read_interval = settings['test_read_interval']
         min_delta = settings['min_voltage_delta']
-        
+        logging.debug(f"Balancer test parameters: test_duration={test_duration}s, "
+                      f"read_interval={read_interval}s, min_voltage_delta={min_delta}V")
+
         for high, low in pairs:
+            logging.debug(f"Testing balance: Bank {high} -> {low}")
             if y < stdscr.getmaxyx()[0]:
                 try:
                     stdscr.addstr(y, 0, f"Testing balance: Bank {high} -> {low} for {test_duration}s.", curses.color_pair(6))
                 except curses.error:
                     logging.warning("addstr error for testing balance.")
-            
+
             stdscr.refresh()
             logging.info(f"Testing balance: Bank {high} -> {low} for {test_duration}s.")
-            
+
             # Skip if temperature anomalies exist
             temp_anomaly = False
             if initial_temps and isinstance(initial_temps, list):
@@ -1434,28 +1525,29 @@ def startup_self_test(settings, stdscr):
                     if t > settings['high_threshold'] or t < settings['low_threshold']:
                         temp_anomaly = True
                         break
-            
+
             if temp_anomaly:
                 alerts.append(f"Skipping balance test {high}->{low}: Temp anomalies.")
+                logging.warning(f"Skipping balance test {high}->{low}: Temperature anomalies detected.")
                 if y + 1 < stdscr.getmaxyx()[0]:
                     try:
                         stdscr.addstr(y + 1, 0, "Skipped: Temp anomalies.", curses.color_pair(2))
                     except curses.error:
                         logging.warning("addstr error for skipped temp.")
-                
+
                 y += 2
                 stdscr.refresh()
                 continue
-            
+
             # Start balance test
             set_relay_connection(high, low, settings)
             control_dcdc_converter(True, settings)
             start_time = time.time()
-            
+
             high_trend = []
             low_trend = []
             progress_y = y + 1
-            
+
             # Monitor voltage changes during test
             while time.time() - start_time < test_duration:
                 time.sleep(read_interval)
@@ -1463,7 +1555,8 @@ def startup_self_test(settings, stdscr):
                 low_v = read_voltage_with_retry(low, settings)[0] or 0.0
                 high_trend.append(high_v)
                 low_trend.append(low_v)
-                
+                logging.debug(f"Balance test {high}->{low}: High={high_v:.2f}V, Low={low_v:.2f}V")
+
                 elapsed = time.time() - start_time
                 if progress_y < stdscr.getmaxyx()[0]:
                     try:
@@ -1471,35 +1564,38 @@ def startup_self_test(settings, stdscr):
                         stdscr.addstr(progress_y, 0, f"Progress: {elapsed:.1f}s, High {high_v:.2f}V, Low {low_v:.2f}V", curses.color_pair(6))
                     except curses.error:
                         logging.warning("addstr error in startup balance progress.")
-                
+
                 stdscr.refresh()
-                logging.debug(f"Trend read: High {high_v:.2f}V, Low {low_v:.2f}V")
-            
+
             # Clean up after test
             control_dcdc_converter(False, settings)
             set_relay_connection(0, 0, settings)
-            
+
             if progress_y + 1 < stdscr.getmaxyx()[0]:
                 try:
                     stdscr.addstr(progress_y + 1, 0, "Analyzing...", curses.color_pair(6))
                 except curses.error:
                     logging.warning("addstr error for analyzing.")
-            
+
             stdscr.refresh()
-            
+
             # Analyze test results
             if len(high_trend) >= 3:
                 high_delta = high_trend[0] - high_trend[-1]
                 low_delta = low_trend[-1] - low_trend[0]
-                
+                logging.debug(f"Balance test {high}->{low} analysis: High Δ={high_delta:.3f}V, Low Δ={low_delta:.3f}V, "
+                              f"Min Δ={min_delta}V")
+
                 if high_delta < min_delta or low_delta < min_delta:
                     alerts.append(f"Balance test {high}->{low} failed: Insufficient change (High Δ={high_delta:.3f}V, Low Δ={low_delta:.3f}V).")
+                    logging.error(f"Balance test {high}->{low} failed: Insufficient voltage change.")
                     if progress_y + 1 < stdscr.getmaxyx()[0]:
                         try:
                             stdscr.addstr(progress_y + 1, 0, "Test failed: Insufficient voltage change.", curses.color_pair(2))
                         except curses.error:
                             logging.warning("addstr error for test failed insufficient change.")
                 else:
+                    logging.debug(f"Balance test {high}->{low} passed: Sufficient voltage change.")
                     if progress_y + 1 < stdscr.getmaxyx()[0]:
                         try:
                             stdscr.addstr(progress_y + 1, 0, "Test passed.", curses.color_pair(4))
@@ -1507,12 +1603,13 @@ def startup_self_test(settings, stdscr):
                             logging.warning("addstr error for test passed.")
             else:
                 alerts.append(f"Balance test {high}->{low} failed: Insufficient readings.")
+                logging.error(f"Balance test {high}->{low} failed: Only {len(high_trend)} readings collected.")
                 if progress_y + 1 < stdscr.getmaxyx()[0]:
                     try:
                         stdscr.addstr(progress_y + 1, 0, "Test failed: Insufficient readings.", curses.color_pair(2))
                     except curses.error:
                         logging.warning("addstr error for test failed insufficient readings.")
-            
+
             stdscr.refresh()
             y = progress_y + 2
             time.sleep(2)
@@ -1550,7 +1647,6 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
     """
     HTTP request handler for web interface and API endpoints.
     """
-    
     def __init__(self, request, client_address, server):
         """
         Initialize request handler with settings from server.
@@ -1674,7 +1770,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                     const alertsContainer = document.getElementById('alerts-container');
                     if (data.alerts.length > 0) {
                         alertsContainer.innerHTML = data.alerts.map(alert => `<p class="alert">${alert}</p>`).join('');
-                    } else {
+                    } else:
                         alertsContainer.innerHTML = '<p class="normal">No alerts</p>';
                     }
                     
