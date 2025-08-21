@@ -4,26 +4,36 @@ Combined Battery Temperature Monitoring and Balancing Script (Updated for 3s8p C
 Extensive Summary:
 This script serves as a comprehensive Battery Management System (BMS) for a 3s8p battery configuration (3 series-connected parallel battery banks, each with 8 cells). It integrates temperature monitoring from NTC sensors via a Lantronix EDS4100 device (using Modbus RTU over TCP) with voltage balancing using I2C-based ADC for readings and relays/GPIO for control. The system runs in an infinite loop, polling data at configurable intervals, detecting anomalies, balancing voltages if imbalances exceed thresholds, logging events, sending email alerts for critical issues, and displaying real-time status in a curses-based Text User Interface (TUI). Now includes an optional web interface for remote monitoring and manual balancing.
 
-What it does:
-- Reads temperatures from 24 NTC sensors (grouped into 3 banks: channels 1-8, 9-16, 17-24).
-- Calibrates temperatures at startup (aligns to median offset if all valid) and persists offsets.
-- Detects temp anomalies: invalid, high/low, deviation from bank median, abnormal rise, group lag, sudden disconnection.
-- Reads voltages from 3 banks using ADS1115 ADC over I2C, with retries and calibration.
-- Checks voltage issues: zero, high, low.
-- Balances voltages: If max-min > threshold and no alerts, connects high to low bank via relays, turns on DC-DC converter for duration, shows progress.
-- Alerts: Logs issues, activates GPIO alarm relay, sends throttled emails with auth.
-- TUI: ASCII art batteries with voltages/temps inside (full details at startup, compact updates), ADC/readings, alerts; no pauses.
-- Web: HTTP dashboard for status, alerts, manual balance (with auth/CORS).
-- Handles shutdown: Ctrl+C cleans GPIO/web.
-- Startup Self-Check: Configurable, validates config/hardware/reads; balancer only if no failures.
+Key Features and Architecture:
+- **Temperature Monitoring:** Reads 24 NTC sensors (8 per bank) via Modbus TCP. Calibrates to median at startup, detects invalid/high/low/deviation/rise/lag/disconnection anomalies.
+- **Voltage Monitoring and Balancing:** Reads bank voltages via ADS1115 ADC over I2C with retries. Balances by connecting high to low bank via relays and activating DC-DC converter if difference > threshold and no alerts.
+- **Alerts and Notifications:** Logs issues, activates GPIO alarm relay, sends throttled SMTP emails.
+- **User Interfaces:** Curses TUI with ASCII art for real-time display; optional HTTP web dashboard with API for status and manual balance.
+- **Startup Self-Test:** Validates config, hardware connectivity, sensor reads, and balancer functionality.
+- **Error Handling:** Retries on reads, guards for None values, exponential backoff, test mode for no hardware libs.
+- **Configuration:** Loaded from 'battery_monitor.ini' with fallbacks; changes require restart.
+- **Shutdown Handling:** Graceful cleanup on Ctrl+C (SIGINT).
 
-How it does it:
-- Config loaded from 'battery_monitor.ini' with fallbacks.
-- Hardware setup: I2C bus, GPIO pins.
-- Startup check: Validate config, test connections/reads; alarm on failure.
-- Infinite loop: Poll temps/voltages (retry on invalid), process/calibrate, check alerts, balance if needed, draw TUI, update web, sleep.
-- Logging: To 'battery_monitor.log' at configurable level.
-- Edges: Retries on reads, guards for None, exponential backoff, mock-safe for testing.
+What it does (Detailed):
+- Reads temperatures from 24 NTC sensors (grouped into 3 banks: channels 1-8, 9-16, 17-24).
+- Calibrates temperatures at startup (aligns to median offset if all valid) and persists offsets in 'offsets.txt'.
+- Detects temp anomalies: invalid (≤ valid_min), high/low (thresholds), deviation from bank median (abs/rel), abnormal rise (> threshold in poll interval), group lag (dev from median rise), sudden disconnection (prev valid, now None).
+- Reads voltages from 3 banks using ADS1115 ADC over I2C, with retries (2 attempts, consistency check) and calibration multipliers.
+- Checks voltage issues: zero/None (read failure), high/low (per bank thresholds).
+- Balances voltages: If max-min > threshold, no alerts, and rest period elapsed, connects high to low bank via relays, turns on DC-DC converter for duration, shows progress in TUI/web.
+- Alerts: Logs issues at configurable level, activates GPIO alarm relay on any alert, sends throttled emails with details.
+- TUI: ASCII art batteries with voltages/temps inside (full details at startup, compact updates), ADC/readings, alerts; handles screen bounds to avoid errors.
+- Web: HTTP dashboard for status, alerts, manual balance (with auth/CORS); API endpoints /status and /balance.
+- Handles shutdown: Ctrl+C cleans GPIO, shuts web server.
+- Startup Self-Check: Configurable, validates config/hardware/reads; tests balancer on all pairs if no failures, with voltage trend analysis.
+
+How it does it (Detailed Flow):
+- Config loaded from 'battery_monitor.ini' with fallbacks (e.g., defaults if keys missing).
+- Hardware setup: I2C bus, GPIO pins initialized (low state).
+- Startup check: Validate config (bank count), test I2C/Modbus connectivity, initial sensor reads, balancer (if no fails: test pairs for voltage delta).
+- Infinite loop: Poll temps/voltages (retry on invalid), process/calibrate temps, check alerts (voltage/temp), balance if needed (high->low), draw TUI, update web data, sleep.
+- Logging: To 'battery_monitor.log' at configurable level (e.g., INFO for key events, DEBUG for verbose).
+- Edges: Retries on reads (Modbus/I2C), guards for None/0 values, exponential backoff on failures, mock-safe for testing (no hardware libs).
 
 Logic Diagram (ASCII Flowchart of Execution):
 +----------------+
@@ -91,7 +101,7 @@ Logic Diagram (ASCII Flowchart of Execution):
           |
 
 Dependencies: socket, statistics, time, configparser, logging, signal, gc, os, smbus, RPi.GPIO, smtplib, email.mime.text.MIMEText, curses, sys, art (pip install art), threading, json, http.server, urllib.parse, base64.
-Note: Ensure EDS4100 configured, INI present, hardware connected. Web at http://<pi-ip>:8080.
+Note: Ensure EDS4100 configured, INI present, hardware connected. Web at http://<pi-ip>:8080. Run on Raspberry Pi for GPIO/I2C. Test mode if libs missing. No internet required beyond email.
 """
 
 # Standard library imports
@@ -462,7 +472,7 @@ def load_offsets():
         try:
             with open('offsets.txt', 'r') as f:
                 lines = f.readlines()
-                
+            
             # Validate file content
             if len(lines) < 1:
                 logging.warning("Invalid offsets.txt; using none.")
@@ -653,8 +663,8 @@ def setup_voltage_meter(settings):
     """
     logging.debug("Configuring voltage meter ADC.")
     if bus:
-        config_value = (settings['ContinuousModeConfig'] | 
-                        settings['SampleRateConfig'] | 
+        config_value = (settings['ContinuousModeConfig'] |
+                        settings['SampleRateConfig'] |
                         settings['GainConfig'])
         bus.write_word_data(settings['VoltageMeterAddress'], settings['ConfigRegister'], config_value)
 
@@ -845,7 +855,7 @@ def check_for_issues(voltages, temps_alerts, settings):
     for i, v in enumerate(voltages, 1):
         if v is None or v == 0.0:
             alerts.append(f"Bank {i}: Zero voltage.")
-            logging.warning(f"Zero voltage alert on Bank {i}.")
+            logging.warning(f"Zero voltage alert on Bank{i}.")
             alert_needed = True
         elif v > settings['HighVoltageThresholdPerBattery']:
             alerts.append(f"Bank {i}: High voltage ({v:.2f}V).")
@@ -1002,14 +1012,14 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
     # Initialize color pairs
     curses.start_color()
     curses.use_default_colors()
-    curses.init_pair(1, curses.COLOR_RED, -1)      # TITLE_COLOR
-    curses.init_pair(2, curses.COLOR_RED, -1)      # HIGH_V
-    curses.init_pair(3, curses.COLOR_YELLOW, -1)   # LOW_V
-    curses.init_pair(4, curses.COLOR_GREEN, -1)    # OK_V
-    curses.init_pair(5, curses.COLOR_WHITE, -1)    # ADC_C
-    curses.init_pair(6, curses.COLOR_YELLOW, -1)   # BAL_C
-    curses.init_pair(7, curses.COLOR_CYAN, -1)     # INFO_C
-    curses.init_pair(8, curses.COLOR_MAGENTA, -1)  # ERR_C
+    curses.init_pair(1, curses.COLOR_RED, -1)
+    curses.init_pair(2, curses.COLOR_RED, -1)
+    curses.init_pair(3, curses.COLOR_YELLOW, -1)
+    curses.init_pair(4, curses.COLOR_GREEN, -1)
+    curses.init_pair(5, curses.COLOR_WHITE, -1)
+    curses.init_pair(6, curses.COLOR_YELLOW, -1)
+    curses.init_pair(7, curses.COLOR_CYAN, -1)
+    curses.init_pair(8, curses.COLOR_MAGENTA, -1)
     
     height, width = stdscr.getmaxyx()
     
@@ -1038,23 +1048,23 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
     
     # Battery art template
     battery_art_base = [
-        "   ___________   ",
-        "  |           |  ",
-        "  |           |  ",
-        "  |           |  ",
-        "  |           |  ",
-        "  |    +++    |  ",
-        "  |    +++    |  ",
-        "  |           |  ",
-        "  |           |  ",
-        "  |           |  ",
-        "  |           |  ",
-        "  |    ---    |  ",
-        "  |    ---    |  ",
-        "  |    ---    |  ",
-        "  |           |  ",
-        "  |           |  ",
-        "  |___________|  "
+        " ___________ ",
+        " | | ",
+        " | | ",
+        " | | ",
+        " | | ",
+        " | +++ | ",
+        " | +++ | ",
+        " | | ",
+        " | | ",
+        " | | ",
+        " | | ",
+        " | --- | ",
+        " | --- | ",
+        " | --- | ",
+        " | | ",
+        " | | ",
+        " |___________| "
     ]
     
     art_height = len(battery_art_base)
@@ -1166,7 +1176,7 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
                     if readings:
                         stdscr.addstr(y_offset, 0, f"[Readings: {', '.join(f'{v:.2f}' for v in readings)}]", curses.color_pair(5))
                     else:
-                        stdscr.addstr(y_offset, 0, "  [Readings: No data]", curses.color_pair(5))
+                        stdscr.addstr(y_offset, 0, " [Readings: No data]", curses.color_pair(5))
                 except curses.error:
                     logging.warning(f"addstr error for readings Bank {i}.")
             else:
@@ -1683,7 +1693,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                 .then(data => {
                     if (data.success) {
                         alert('Balancing initiated');
-                    } else {
+                    } else:
                         alert('Error: ' + data.message);
                     }
                 })
