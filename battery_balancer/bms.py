@@ -2008,7 +2008,7 @@ def main(stdscr):
     signal.signal(signal.SIGINT, signal_handler)
     
     # Load temperature offsets if available
-    startup_median, startup_offsets = load_offsets()
+    startup_median, startup_offsets = load_offsets(settings['num_channels'])
     if startup_offsets and len(startup_offsets) == settings['num_channels']:
         startup_set = True
         logging.info(f"Loaded startup median: {startup_median:.1f}°C")
