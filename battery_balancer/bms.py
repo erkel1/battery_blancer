@@ -1526,6 +1526,14 @@ def startup_self_test(settings, stdscr):
             high_trend = []
             low_trend = []
             progress_y = y + 1
+
+            # Initial voltage readings
+            initial_high_v = read_voltage_with_retry(high, settings)[0] or 0.0
+            initial_low_v = read_voltage_with_retry(low, settings)[0] or 0.0
+            high_trend.append(initial_high_v)
+            low_trend.append(initial_low_v)
+            logging.debug(f"Balance test {high} to {low}: Initial - Bank {high}={initial_high_v:.2f}V, Bank {low}={initial_low_v:.2f}V")
+
             # Monitor voltage changes during test
             while time.time() - start_time < test_duration:
                 time.sleep(read_interval)
@@ -1542,6 +1550,7 @@ def startup_self_test(settings, stdscr):
                     except curses.error:
                         logging.warning("addstr error in startup balance progress.")
                 stdscr.refresh()
+
             # Clean up after test
             control_dcdc_converter(False, settings)
             set_relay_connection(0, 0, settings)
@@ -1551,25 +1560,30 @@ def startup_self_test(settings, stdscr):
                 except curses.error:
                     logging.warning("addstr error for analyzing.")
             stdscr.refresh()
+
+            # Final voltage readings
+            final_high_v = high_trend[-1]
+            final_low_v = low_trend[-1]
+            logging.debug(f"Balance test {high} to {low}: Final - Bank {high}={final_high_v:.2f}V, Bank {low}={final_low_v:.2f}V")
+
             # Analyze test results
             if len(high_trend) >= 3:
-                high_delta = high_trend[0] - high_trend[-1]
-                low_delta = low_trend[-1] - low_trend[0]
-                logging.debug(f"Balance test {high} to {low} analysis: Bank {high} Δ={high_delta:.3f}V, Bank {low} Δ={low_delta:.3f}V, "
-                              f"Min Δ={min_delta}V")
+                high_delta = initial_high_v - final_high_v
+                low_delta = final_low_v - initial_low_v
+                logging.debug(f"Balance test {high} to {low} analysis: Bank {high} Δ={high_delta:.3f}V, Bank {low} Δ={low_delta:.3f}V, Min Δ={min_delta}V")
                 if high_delta < min_delta or low_delta < min_delta:
                     alerts.append(f"Balance test {high} to {low} failed: Insufficient change (Bank {high} Δ={high_delta:.3f}V, Bank {low} Δ={low_delta:.3f}V).")
                     logging.error(f"Balance test {high} to {low} failed: Insufficient voltage change.")
                     if progress_y + 1 < stdscr.getmaxyx()[0]:
                         try:
-                            stdscr.addstr(progress_y + 1, 0, "Test failed: Insufficient voltage change.", curses.color_pair(2))
+                            stdscr.addstr(progress_y + 1, 0, f"Test failed: Insufficient change (Bank {high} Δ={high_delta:.3f}V, Bank {low} Δ={low_delta:.3f}V).", curses.color_pair(2))
                         except curses.error:
                             logging.warning("addstr error for test failed insufficient change.")
                 else:
                     logging.debug(f"Balance test {high} to {low} passed: Sufficient voltage change.")
                     if progress_y + 1 < stdscr.getmaxyx()[0]:
                         try:
-                            stdscr.addstr(progress_y + 1, 0, "Test passed.", curses.color_pair(4))
+                            stdscr.addstr(progress_y + 1, 0, f"Test passed (Bank {high} Δ={high_delta:.3f}V, Bank {low} Δ={low_delta:.3f}V).", curses.color_pair(4))
                         except curses.error:
                             logging.warning("addstr error for test passed.")
             else:
