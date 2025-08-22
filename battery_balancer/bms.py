@@ -1485,6 +1485,21 @@ def startup_self_test(settings, stdscr):
         y += 1
         stdscr.refresh()
         time.sleep(0.5)
+        
+        # Read and display initial voltages for all banks before balancing
+        initial_bank_voltages = []
+        for bank in range(1, NUM_BANKS + 1):
+            voltage, _, _ = read_voltage_with_retry(bank, settings)
+            initial_bank_voltages.append(voltage if voltage is not None else 0.0)
+        if y + 1 < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y + 1, 0, f"Initial Bank Voltages: Bank 1={initial_bank_voltages[0]:.2f}V, Bank 2={initial_bank_voltages[1]:.2f}V, Bank 3={initial_bank_voltages[2]:.2f}V", curses.color_pair(4))
+            except curses.error:
+                logging.warning("addstr error for initial bank voltages.")
+        logging.debug(f"Initial Bank Voltages: Bank 1={initial_bank_voltages[0]:.2f}V, Bank 2={initial_bank_voltages[1]:.2f}V, Bank 3={initial_bank_voltages[2]:.2f}V")
+        y += 2
+        stdscr.refresh()
+
         # Test all possible bank balancing combinations
         pairs = [(1,2), (1,3), (2,1), (2,3), (3,1), (3,2)]
         test_duration = settings['test_balance_duration']
@@ -1626,6 +1641,7 @@ def startup_self_test(settings, stdscr):
     stdscr.refresh()
     time.sleep(5)
     return alerts
+
 
 class BMSRequestHandler(BaseHTTPRequestHandler):
     """
