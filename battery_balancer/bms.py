@@ -1,194 +1,74 @@
-"""
-Combined Battery Temperature Monitoring and Balancing Script (Updated for 3s8p Configuration)
-
-Extensive Summary:
-This script serves as a comprehensive Battery Management System (BMS) for a configurable battery configuration (default 3s8p: 3 series-connected parallel battery banks, each with 8 cells). It integrates temperature monitoring from NTC sensors via a Lantronix EDS4100 device (using Modbus RTU over TCP) with voltage balancing using I2C-based ADC for readings and relays/GPIO for control. The system runs in an infinite loop, polling data at configurable intervals, detecting anomalies, balancing voltages if imbalances exceed thresholds, logging events, sending email alerts for critical issues, and displaying real-time status in a curses-based Text User Interface (TUI). Includes an optional web interface for remote monitoring and manual balancing.
-
-Key Features and Architecture:
-- **Temperature Monitoring:** Reads configurable NTC sensors (default 24) via Modbus TCP. Calibrates to median at startup (offsets calculated on first run), detects invalid/high/low/deviation/rise/lag/disconnection anomalies.
-- **Voltage Monitoring and Balancing:** Reads bank voltages via ADS1115 ADC over I2C with retries. Balances by connecting high to low bank via relays and activating DC-DC converter if difference > threshold and no alerts.
-- **Alerts and Notifications:** Logs issues, activates GPIO alarm relay, sends throttled SMTP emails.
-- **User Interfaces:** Curses TUI with ASCII art for real-time display (live reads); optional HTTP web dashboard with API for status and manual balance.
-- **Startup Self-Test:** Validates config, hardware connectivity, sensor reads, and balancer functionality. Calculates startup_median at startup; offsets on first run only.
-- **Error Handling:** Retries on reads, guards for None, exponential backoff, test mode for no hardware libs, specific exception handling with tracebacks.
-- **Configuration:** Loaded from 'battery_monitor.ini' with fallbacks; changes require restart.
-- **Shutdown Handling:** Graceful cleanup on Ctrl+C (SIGINT).
-
-What it does (Detailed):
-- Reads temperatures from NTC sensors (default 24, grouped into banks).
-- Calculates startup_median at each startup in startup_self_test; loads/calculates startup_offsets from offsets.txt (first run only).
-- Detects temp anomalies: invalid (≤ valid_min), high/low (thresholds), deviation from bank median (abs/rel), abnormal rise (> threshold in poll interval), group lag (dev from median rise), sudden disconnection (prev valid, now None).
-- Reads voltages from banks using ADS1115 ADC over I2C, with retries (2 attempts, consistency check) and calibration multipliers.
-- Checks voltage issues: zero/None (read failure), high/low (per bank thresholds).
-- Balances voltages: If max-min > threshold, no alerts, and rest period elapsed, connects high to low bank via relays, turns on DC-DC converter for duration, shows progress in TUI/web.
-- Alerts: Logs issues at configurable level, activates GPIO alarm relay on any alert, sends throttled emails with details.
-- TUI: ASCII art batteries with live voltages/temps (re-reads for freshness), ADC/readings, alerts; handles screen bounds to avoid errors.
-- Web: HTTP dashboard for status, alerts, manual balance (with auth/CORS); API endpoints /status and /balance.
-- Handles shutdown: Ctrl+C cleans GPIO, shuts web server.
-- Startup Self-Check: Configurable, validates config/hardware/reads; tests balancer on all pairs if no failures, with voltage trend analysis.
-
-How it does it (Detailed Flow):
-- Config loaded from 'battery_monitor.ini' with fallbacks (e.g., defaults if keys missing).
-- Hardware setup: I2C bus, GPIO pins initialized (low state).
-- Startup check: Validates config (bank count), tests I2C/Modbus connectivity, initial sensor reads, balancer (if no fails: test pairs for voltage delta). Calculates startup_median; calculates startup_offsets if offsets.txt missing.
-- Infinite loop: Poll temps/voltages (retry on invalid), process/calibrate temps, check alerts (voltage/temp), balance if needed (high->low), draw TUI, update web data, sleep.
-- Logging: To 'battery_monitor.log' at configurable level (e.g., INFO for key events, DEBUG for verbose).
-- Edges: Retries on reads (Modbus/I2C), guards for None/0 values, exponential backoff on failures, mock-safe for testing (no hardware libs).
-
-Logic Diagram (ASCII Flowchart of Execution):
-+----------------+
-|   Start Script |
-+----------------+
-          |
-          v
-+----------------+
-|   Load Config  |
-+----------------+
-          |
-          v
-+----------------+
-| Setup Hardware |
-+----------------+
-          |
-          v
-+----------------+
-| Startup Check  |
-+----------------+
-          | fail
-          v
-  (Alarm + Continue)
-          |
-          v
-+----------------+
-|  Infinite Loop |
-+----------------+
-          |
-          v
-  /---------------\   /---------------\
-  |   Read Temps  |   | Read Voltages |
-  \---------------/   \---------------/
-          |                 |
-          v                 v
-+----------------+  +----------------+
-| Process Temps  |  | Check Issues   |
-| & Alerts       |  | & Alerts       |
-+----------------+  +----------------+
-          |                 |
-          \-----------------/
-          |
-          v
-+----------------+
-| Need Balance?  |
-+----------------+
-          | yes
-          v
-+----------------+
-|   Balance      |
-|   Banks        |
-+----------------+
-          | no
-          v
-+----------------+
-|    Draw TUI    |
-+----------------+
-          |
-          v
-+----------------+
-| Sleep & Repeat |
-+----------------+
-          ^
-          | (loop back)
-          |
-
-Dependencies: socket, statistics, time, configparser, logging, signal, gc, os, smbus, RPi.GPIO, smtplib, email.mime.text.MIMEText, curses, sys, art (pip install art), threading, json, http.server, urllib.parse, base64, traceback.
-Installation:
-- Python 3.11+: sudo apt install python3
-- Hardware libs: sudo apt install python3-smbus python3-rpi.gpio
-- Art: pip install art
-- Enable I2C: sudo raspi-config > Interfacing Options > I2C > Enable; reboot
-- INI File: Create battery_monitor.ini (template in prior responses)
-- Run: sudo python bms.py (root for GPIO/I2C)
-Note: Ensure EDS4100 configured, INI present, hardware connected. Web at http://<pi-ip>:8080.
-"""
-
 # Standard library imports
-import socket  # For TCP connection to EDS4100 device
-import statistics  # For median calculations on temperatures
-import time  # For delays and timing
-import configparser  # For loading settings from INI file
-import logging  # For logging events to file
-import signal  # For handling Ctrl+C graceful shutdown
-import gc  # For manual garbage collection in long-running loop
-import os  # For file operations like offsets.txt
-import sys  # For sys.exit on shutdown
-import threading  # For web server thread
-import json  # For API responses
-from urllib.parse import urlparse, parse_qs  # For parsing requests
-import base64  # For basic auth decoding
-import traceback  # For logging stack traces in exceptions
-
+import socket # For TCP connection to EDS4100 device
+import statistics # For median calculations on temperatures
+import time # For delays and timing
+import configparser # For loading settings from INI file
+import logging # For logging events to file
+import signal # For handling Ctrl+C graceful shutdown
+import gc # For manual garbage collection in long-running loop
+import os # For file operations like offsets.txt
+import sys # For sys.exit on shutdown
+import threading # For web server thread
+import json # For API responses
+from urllib.parse import urlparse, parse_qs # For parsing requests
+import base64 # For basic auth decoding
+import traceback # For logging stack traces in exceptions
 # Hardware-specific imports (may need installation)
 try:
-    import smbus  # For I2C communication with ADC/relays
-    import RPi.GPIO as GPIO  # For GPIO control of relays/converter
+    import smbus # For I2C communication with ADC/relays
+    import RPi.GPIO as GPIO # For GPIO control of relays/converter
 except ImportError:
     # Fallback for testing without hardware
     print("Hardware libraries not available - running in test mode")
     smbus = None
     GPIO = None
-
 # Email and web imports
-from email.mime.text import MIMEText  # For constructing email messages
-import smtplib  # For sending emails
-from http.server import HTTPServer, BaseHTTPRequestHandler  # For web server
-
+from email.mime.text import MIMEText # For constructing email messages
+import smtplib # For sending emails
+from http.server import HTTPServer, BaseHTTPRequestHandler # For web server
 # UI imports
-import curses  # For terminal-based TUI
-from art import text2art  # For ASCII art total voltage
-
+import curses # For terminal-based TUI
+from art import text2art # For ASCII art total voltage
 # Setup logging early to capture all events
 logging.basicConfig(filename='battery_monitor.log', level=logging.INFO, format='%(asctime)s - %(message)s')
-
 # Global variables for state management
-config_parser = configparser.ConfigParser()  # Parser for INI config
-bus = None  # I2C bus object
-last_email_time = 0  # Timestamp for email throttling
-balance_start_time = None  # Timestamp for balancing duration
-last_balance_time = 0  # Timestamp for balancing rest period
-battery_voltages = []  # List of current bank voltages
-previous_temps = None  # Previous calibrated temps for rise/lag checks
-previous_bank_medians = None  # Previous bank medians for rise checks
-run_count = 0  # Poll cycle counter (for startup check)
-startup_offsets = None  # Per-channel temp offsets from startup
-startup_median = None  # Startup median temp for reference
-startup_set = False  # Flag if startup calibration done
-alert_states = {}  # Per-channel alert tracking
-balancing_active = False  # Flag if balancing in progress
-startup_failed = False  # Persistent flag for startup failures
-startup_alerts = []  # Store startup failures for TUI alerts
-web_server = None  # Web server instance
-
+config_parser = configparser.ConfigParser() # Parser for INI config
+bus = None # I2C bus object
+last_email_time = 0 # Timestamp for email throttling
+balance_start_time = None # Timestamp for balancing duration
+last_balance_time = 0 # Timestamp for balancing rest period
+battery_voltages = [] # List of current bank voltages
+previous_temps = None # Previous calibrated temps for rise/lag checks
+previous_bank_medians = None # Previous bank medians for rise checks
+run_count = 0 # Poll cycle counter (for startup check)
+startup_offsets = None # Per-channel temp offsets from startup
+startup_median = None # Startup median temp for reference
+startup_set = False # Flag if startup calibration done
+alert_states = {} # Per-channel alert tracking
+balancing_active = False # Flag if balancing in progress
+startup_failed = False # Persistent flag for startup failures
+startup_alerts = [] # Store startup failures for TUI alerts
+web_server = None # Web server instance
+event_log = [] # List to store the last 20 events
 # Web interface shared data structure
 web_data = {
-    'voltages': [0.0] * 3,  # Current bank voltages
-    'temperatures': [None] * 24,  # Current temperature readings
-    'alerts': [],  # Active alerts
-    'balancing': False,  # Balancing status
-    'last_update': time.time(),  # Last update timestamp
-    'system_status': 'Initializing'  # Overall system status
+    'voltages': [0.0] * 3, # Current bank voltages
+    'temperatures': [None] * 24, # Current temperature readings
+    'alerts': [], # Active alerts
+    'balancing': False, # Balancing status
+    'last_update': time.time(), # Last update timestamp
+    'system_status': 'Initializing' # Overall system status
 }
-
 # Bank definitions for 3s8p configuration
-BANK_RANGES = [(1, 8), (9, 16), (17, 24)]  # Channel ranges for each bank
-NUM_BANKS = 3  # Number of banks (hardcoded for 3s8p)
-
+BANK_RANGES = [(1, 8), (9, 16), (17, 24)] # Channel ranges for each bank
+NUM_BANKS = 3 # Number of banks (hardcoded for 3s8p)
 def get_bank_for_channel(ch):
     """
     Get bank ID for a given temperature channel.
-    
+   
     Args:
         ch (int): Channel number (1-24)
-    
+   
     Returns:
         int: Bank ID (1-3) or None if invalid channel
     """
@@ -196,14 +76,13 @@ def get_bank_for_channel(ch):
         if start <= ch <= end:
             return bank_id
     return None
-
 def modbus_crc(data):
     """
     Calculate Modbus CRC for data integrity.
-    
+   
     Args:
         data (bytes): Data to calculate CRC for
-    
+   
     Returns:
         bytes: 2-byte CRC value in little-endian order
     """
@@ -216,11 +95,10 @@ def modbus_crc(data):
             else:
                 crc >>= 1
     return crc.to_bytes(2, 'little')
-
 def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor, max_retries, retry_backoff_base):
     """
     Read NTC sensor temperatures via Modbus over TCP with retries.
-    
+   
     Args:
         ip (str): IP address of EDS4100 device
         modbus_port (int): Port number for Modbus TCP
@@ -229,7 +107,7 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
         scaling_factor (float): Scaling factor to convert raw to °C
         max_retries (int): Maximum number of retry attempts
         retry_backoff_base (int): Base for exponential backoff
-    
+   
     Returns:
         list: List of temperature readings or error message string
     """
@@ -238,7 +116,7 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
     query_base = bytes([1, 3]) + (0).to_bytes(2, 'big') + (num_channels).to_bytes(2, 'big')
     crc = modbus_crc(query_base)
     query = query_base + crc
-    
+   
     # Retry loop with exponential backoff
     for attempt in range(max_retries):
         try:
@@ -250,37 +128,37 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
             time.sleep(query_delay)
             response = s.recv(1024)
             s.close()
-            
+           
             # Validate response length
             if len(response) < 5:
                 raise ValueError("Short response")
-            
+           
             # Validate response structure
             if len(response) != 3 + response[2] + 2:
                 raise ValueError("Invalid response length")
-            
+           
             # Validate CRC
             calc_crc = modbus_crc(response[:-2])
             if calc_crc != response[-2:]:
                 raise ValueError("CRC mismatch")
-            
+           
             # Parse response header
             slave, func, byte_count = response[0:3]
             if slave != 1 or func != 3 or byte_count != num_channels * 2:
                 if func & 0x80:
                     return f"Error: Modbus exception code {response[2]}"
                 return "Error: Invalid response header."
-            
+           
             # Extract temperature data
             data = response[3:3 + byte_count]
             raw_temperatures = []
             for i in range(0, len(data), 2):
                 val = int.from_bytes(data[i:i+2], 'big', signed=True) / scaling_factor
                 raw_temperatures.append(val)
-            
+           
             logging.info("Temperature read successful.")
             return raw_temperatures
-        
+       
         except socket.error as e:
             logging.warning(f"Temp read attempt {attempt+1} failed: {str(e)}. Retrying.")
             if attempt < max_retries - 1:
@@ -298,25 +176,24 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
         except Exception as e:
             logging.error(f"Unexpected error in temp read attempt {attempt+1}: {str(e)}\n{traceback.format_exc()}")
             return f"Error: Unexpected failure - {str(e)}"
-
 def load_config():
     """
     Load settings from 'battery_monitor.ini' with fallback values.
-    
+   
     Returns:
         dict: Combined dictionary of all configuration settings
-    
+   
     Raises:
         FileNotFoundError: If config file is not found
     """
     logging.info("Loading configuration from 'battery_monitor.ini'.")
     global alert_states
-    
+   
     # Read config file
     if not config_parser.read('battery_monitor.ini'):
         logging.error("Config file 'battery_monitor.ini' not found.")
         raise FileNotFoundError("Config file 'battery_monitor.ini' not found.")
-    
+   
     # Temperature settings section
     temp_settings = {
         'ip': config_parser.get('Temp', 'ip', fallback='192.168.15.240'),
@@ -335,7 +212,7 @@ def load_config():
         'num_channels': config_parser.getint('Temp', 'num_channels', fallback=24),
         'abs_deviation_threshold': config_parser.getfloat('Temp', 'abs_deviation_threshold', fallback=2.0)
     }
-    
+   
     # Voltage and balancing settings section
     voltage_settings = {
         'NumberOfBatteries': config_parser.getint('General', 'NumberOfBatteries', fallback=3),
@@ -350,26 +227,26 @@ def load_config():
         'VoltageDividerRatio': config_parser.getfloat('General', 'VoltageDividerRatio', fallback=0.01592),
         'LoggingLevel': config_parser.get('General', 'LoggingLevel', fallback='INFO')
     }
-    
+   
     # General flags section
     general_flags = {
         'WebInterfaceEnabled': config_parser.getboolean('General', 'WebInterfaceEnabled', fallback=True),
         'StartupSelfTestEnabled': config_parser.getboolean('General', 'StartupSelfTestEnabled', fallback=True)
     }
-    
+   
     # I2C device addresses section
     i2c_settings = {
         'MultiplexerAddress': int(config_parser.get('I2C', 'MultiplexerAddress', fallback='0x70'), 16),
         'VoltageMeterAddress': int(config_parser.get('I2C', 'VoltageMeterAddress', fallback='0x49'), 16),
         'RelayAddress': int(config_parser.get('I2C', 'RelayAddress', fallback='0x26'), 16)
     }
-    
+   
     # GPIO pin settings section
     gpio_settings = {
         'DC_DC_RelayPin': config_parser.getint('GPIO', 'DC_DC_RelayPin', fallback=17),
         'AlarmRelayPin': config_parser.getint('GPIO', 'AlarmRelayPin', fallback=27)
     }
-    
+   
     # Email alert settings section
     email_settings = {
         'SMTP_Server': config_parser.get('Email', 'SMTP_Server', fallback='smtp.gmail.com'),
@@ -379,7 +256,7 @@ def load_config():
         'SMTP_Username': config_parser.get('Email', 'SMTP_Username', fallback='your_email@gmail.com'),
         'SMTP_Password': config_parser.get('Email', 'SMTP_Password', fallback='your_app_password')
     }
-    
+   
     # ADC configuration settings section
     adc_settings = {
         'ConfigRegister': int(config_parser.get('ADC', 'ConfigRegister', fallback='0x01'), 16),
@@ -388,21 +265,21 @@ def load_config():
         'SampleRateConfig': int(config_parser.get('ADC', 'SampleRateConfig', fallback='0x0080'), 16),
         'GainConfig': int(config_parser.get('ADC', 'GainConfig', fallback='0x0400'), 16)
     }
-    
+   
     # Voltage sensor calibration section
     calibration_settings = {
         'Sensor1_Calibration': config_parser.getfloat('Calibration', 'Sensor1_Calibration', fallback=0.99856),
         'Sensor2_Calibration': config_parser.getfloat('Calibration', 'Sensor2_Calibration', fallback=0.99856),
         'Sensor3_Calibration': config_parser.getfloat('Calibration', 'Sensor3_Calibration', fallback=0.99809)
     }
-    
+   
     # Startup self-test settings section
     startup_settings = {
         'test_balance_duration': config_parser.getint('Startup', 'test_balance_duration', fallback=15),
         'min_voltage_delta': config_parser.getfloat('Startup', 'min_voltage_delta', fallback=0.01),
         'test_read_interval': config_parser.getfloat('Startup', 'test_read_interval', fallback=2.0)
     }
-    
+   
     # Web interface settings section
     web_settings = {
         'host': config_parser.get('Web', 'host', fallback='0.0.0.0'),
@@ -414,38 +291,37 @@ def load_config():
         'cors_enabled': config_parser.getboolean('Web', 'cors_enabled', fallback=True),
         'cors_origins': config_parser.get('Web', 'cors_origins', fallback='*')
     }
-    
+   
     # Set logging level dynamically based on config
     log_level = getattr(logging, voltage_settings['LoggingLevel'].upper(), logging.INFO)
     logging.getLogger().setLevel(log_level)
-    
+   
     # Initialize alert states for all channels
     alert_states = {ch: {'last_type': None, 'count': 0} for ch in range(1, temp_settings['num_channels'] + 1)}
-    
+   
     logging.info("Configuration loaded successfully.")
-    
+   
     # Combine all settings into single dictionary
-    return {**temp_settings, **voltage_settings, **general_flags, **i2c_settings, 
-            **gpio_settings, **email_settings, **adc_settings, **calibration_settings, 
+    return {**temp_settings, **voltage_settings, **general_flags, **i2c_settings,
+            **gpio_settings, **email_settings, **adc_settings, **calibration_settings,
             **startup_settings, **web_settings}
-
 def setup_hardware(settings):
     """
     Initialize I2C bus and GPIO pins for hardware communication.
-    
+   
     Args:
         settings (dict): Configuration settings dictionary
     """
     global bus
     logging.info("Setting up hardware.")
-    
+   
     # Initialize I2C bus if available
     if smbus:
         bus = smbus.SMBus(settings['I2C_BusNumber'])
     else:
         logging.warning("smbus not available - running in test mode")
         bus = None
-    
+   
     # Initialize GPIO if available
     if GPIO:
         GPIO.setmode(GPIO.BCM)
@@ -453,79 +329,76 @@ def setup_hardware(settings):
         GPIO.setup(settings['AlarmRelayPin'], GPIO.OUT, initial=GPIO.LOW)
     else:
         logging.warning("RPi.GPIO not available - running in test mode")
-    
+   
     logging.info("Hardware setup complete.")
-
 def signal_handler(sig, frame):
     """
     Handle SIGINT (Ctrl+C) for graceful shutdown.
-    
+   
     Args:
         sig: Signal number
         frame: Current stack frame
     """
     logging.info("Script stopped by user or signal.")
     global web_server
-    
+   
     # Shutdown web server if running
     if web_server:
         web_server.shutdown()
-    
+   
     # Clean up GPIO
     if GPIO:
         GPIO.cleanup()
-    
+   
     sys.exit(0)
-
 def load_offsets(num_channels):
     """
     Load temperature offsets from file if exists, for dynamic num_channels.
-    
+   
     Args:
         num_channels (int): Number of expected temperature channels
-    
+   
     Returns:
         tuple: (startup_median, offsets) or (None, None) if file doesn't exist or is invalid
     """
     logging.info("Loading startup offsets from 'offsets.txt'.")
-    
+   
     if os.path.exists('offsets.txt'):
         try:
             with open('offsets.txt', 'r') as f:
                 lines = f.readlines()
-            
+           
             if len(lines) < 1:
                 logging.warning("Invalid offsets.txt; using none.")
                 return None, None
-            
+           
             startup_median = float(lines[0].strip())
             offsets = [float(line.strip()) for line in lines[1:]]
-            
+           
             # Validate offsets count matches num_channels
             if len(offsets) != num_channels:
                 logging.warning(f"Invalid offsets count; expected {num_channels}, got {len(offsets)}. Using none.")
                 return None, None
-            
+           
             logging.debug(f"Loaded median {startup_median} and {len(offsets)} offsets.")
             return startup_median, offsets
-            
+           
         except (ValueError, IndexError):
             logging.warning("Corrupt offsets.txt; using none.")
             return None, None
-    
+   
     logging.warning("No 'offsets.txt' found; using none.")
     return None, None
-
 def save_offsets(startup_median, startup_offsets):
     """
     Save temperature median and offsets to file.
-    
+   
     Args:
         startup_median (float): Median temperature value
         startup_offsets (list): List of temperature offsets per channel
     """
     logging.info("Saving startup offsets to 'offsets.txt'.")
-    
+   
     try:
         with open('offsets.txt', 'w') as f:
             f.write(f"{startup_median}\n")
@@ -534,31 +407,33 @@ def save_offsets(startup_median, startup_offsets):
         logging.debug("Offsets saved.")
     except IOError as e:
         logging.error(f"Failed to save offsets: {e}")
-
 def check_invalid_reading(raw, ch, alerts, valid_min):
     """
     Check if temperature reading is invalid.
-    
+   
     Args:
         raw (float): Raw temperature reading
         ch (int): Channel number
         alerts (list): List to append alerts to
         valid_min (float): Minimum valid temperature
-    
+   
     Returns:
         bool: True if reading is invalid, False otherwise
     """
     if raw <= valid_min:
         bank = get_bank_for_channel(ch)
-        alerts.append(f"Bank {bank} Ch {ch}: Invalid reading (≤ {valid_min}).")
+        alert = f"Bank {bank} Ch {ch}: Invalid reading (≤ {valid_min})."
+        alerts.append(alert)
+        event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+        if len(event_log) > 20:
+            event_log.pop(0)
         logging.warning(f"Invalid reading on Bank {bank} Ch {ch}: {raw} ≤ {valid_min}.")
         return True
     return False
-
 def check_high_temp(calibrated, ch, alerts, high_threshold):
     """
     Check if temperature is above high threshold.
-    
+   
     Args:
         calibrated (float): Calibrated temperature
         ch (int): Channel number
@@ -567,13 +442,16 @@ def check_high_temp(calibrated, ch, alerts, high_threshold):
     """
     if calibrated > high_threshold:
         bank = get_bank_for_channel(ch)
-        alerts.append(f"Bank {bank} Ch {ch}: High temp ({calibrated:.1f}°C > {high_threshold}°C).")
+        alert = f"Bank {bank} Ch {ch}: High temp ({calibrated:.1f}°C > {high_threshold}°C)."
+        alerts.append(alert)
+        event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+        if len(event_log) > 20:
+            event_log.pop(0)
         logging.warning(f"High temp alert on Bank {bank} Ch {ch}: {calibrated:.1f} > {high_threshold}.")
-
 def check_low_temp(calibrated, ch, alerts, low_threshold):
     """
     Check if temperature is below low threshold.
-    
+   
     Args:
         calibrated (float): Calibrated temperature
         ch (int): Channel number
@@ -582,13 +460,16 @@ def check_low_temp(calibrated, ch, alerts, low_threshold):
     """
     if calibrated < low_threshold:
         bank = get_bank_for_channel(ch)
-        alerts.append(f"Bank {bank} Ch {ch}: Low temp ({calibrated:.1f}°C < {low_threshold}°C).")
+        alert = f"Bank {bank} Ch {ch}: Low temp ({calibrated:.1f}°C < {low_threshold}°C)."
+        alerts.append(alert)
+        event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+        if len(event_log) > 20:
+            event_log.pop(0)
         logging.warning(f"Low temp alert on Bank {bank} Ch {ch}: {calibrated:.1f} < {low_threshold}.")
-
 def check_deviation(calibrated, bank_median, ch, alerts, abs_deviation_threshold, deviation_threshold):
     """
     Check if temperature deviates significantly from bank median.
-    
+   
     Args:
         calibrated (float): Calibrated temperature
         bank_median (float): Bank median temperature
@@ -599,16 +480,19 @@ def check_deviation(calibrated, bank_median, ch, alerts, abs_deviation_threshold
     """
     abs_dev = abs(calibrated - bank_median)
     rel_dev = abs_dev / abs(bank_median) if bank_median != 0 else 0
-    
+   
     if abs_dev > abs_deviation_threshold or rel_dev > deviation_threshold:
         bank = get_bank_for_channel(ch)
-        alerts.append(f"Bank {bank} Ch {ch}: Deviation from bank median (abs {abs_dev:.1f}°C or {rel_dev:.2%}).")
+        alert = f"Bank {bank} Ch {ch}: Deviation from bank median (abs {abs_dev:.1f}°C or {rel_dev:.2%})."
+        alerts.append(alert)
+        event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+        if len(event_log) > 20:
+            event_log.pop(0)
         logging.warning(f"Deviation alert on Bank {bank} Ch {ch}: abs {abs_dev:.1f}, rel {rel_dev:.2%}.")
-
 def check_abnormal_rise(current, previous_temps, ch, alerts, poll_interval, rise_threshold):
     """
     Check for abnormal temperature rise between polls.
-    
+   
     Args:
         current (float): Current temperature
         previous_temps (list): Previous temperature readings
@@ -622,13 +506,16 @@ def check_abnormal_rise(current, previous_temps, ch, alerts, poll_interval, rise
         rise = current - previous
         if rise > rise_threshold:
             bank = get_bank_for_channel(ch)
-            alerts.append(f"Bank {bank} Ch {ch}: Abnormal rise ({rise:.1f}°C in {poll_interval}s).")
+            alert = f"Bank {bank} Ch {ch}: Abnormal rise ({rise:.1f}°C in {poll_interval}s)."
+            alerts.append(alert)
+            event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+            if len(event_log) > 20:
+                event_log.pop(0)
             logging.warning(f"Abnormal rise alert on Bank {bank} Ch {ch}: {rise:.1f}°C.")
-
 def check_group_tracking_lag(current, previous_temps, bank_median_rise, ch, alerts, disconnection_lag_threshold):
     """
     Check if temperature is lagging behind bank group changes.
-    
+   
     Args:
         current (float): Current temperature
         previous_temps (list): Previous temperature readings
@@ -642,13 +529,16 @@ def check_group_tracking_lag(current, previous_temps, bank_median_rise, ch, aler
         rise = current - previous
         if abs(rise - bank_median_rise) > disconnection_lag_threshold:
             bank = get_bank_for_channel(ch)
-            alerts.append(f"Bank {bank} Ch {ch}: Lag from bank group ({rise:.1f}°C vs {bank_median_rise:.1f}°C).")
+            alert = f"Bank {bank} Ch {ch}: Lag from bank group ({rise:.1f}°C vs {bank_median_rise:.1f}°C)."
+            alerts.append(alert)
+            event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+            if len(event_log) > 20:
+                event_log.pop(0)
             logging.warning(f"Lag alert on Bank {bank} Ch {ch}: rise {rise:.1f} vs median {bank_median_rise:.1f}.")
-
 def check_sudden_disconnection(current, previous_temps, ch, alerts):
     """
     Check for sudden sensor disconnection.
-    
+   
     Args:
         current: Current temperature reading
         previous_temps (list): Previous temperature readings
@@ -658,13 +548,16 @@ def check_sudden_disconnection(current, previous_temps, ch, alerts):
     previous = previous_temps[ch-1]
     if previous is not None and current is None:
         bank = get_bank_for_channel(ch)
-        alerts.append(f"Bank {bank} Ch {ch}: Sudden disconnection.")
+        alert = f"Bank {bank} Ch {ch}: Sudden disconnection."
+        alerts.append(alert)
+        event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+        if len(event_log) > 20:
+            event_log.pop(0)
         logging.warning(f"Sudden disconnection alert on Bank {bank} Ch {ch}.")
-
 def choose_channel(channel, multiplexer_address):
     """
     Select I2C channel on multiplexer.
-    
+   
     Args:
         channel (int): Channel number to select
         multiplexer_address (int): I2C address of multiplexer
@@ -675,11 +568,10 @@ def choose_channel(channel, multiplexer_address):
             bus.write_byte(multiplexer_address, 1 << channel)
         except IOError as e:
             logging.error(f"I2C error selecting channel {channel}: {str(e)}")
-
 def setup_voltage_meter(settings):
     """
     Configure voltage meter ADC settings.
-    
+   
     Args:
         settings (dict): Configuration settings
     """
@@ -692,15 +584,14 @@ def setup_voltage_meter(settings):
             bus.write_word_data(settings['VoltageMeterAddress'], settings['ConfigRegister'], config_value)
         except IOError as e:
             logging.error(f"I2C error configuring voltage meter: {str(e)}")
-
 def read_voltage_with_retry(bank_id, settings):
     """
     Read voltage from specified bank with retry logic.
-    
+   
     Args:
         bank_id (int): Bank number (1-3)
         settings (dict): Configuration settings
-    
+   
     Returns:
         tuple: (average_voltage, valid_readings, raw_adc_values) or (None, [], []) on failure
     """
@@ -708,19 +599,19 @@ def read_voltage_with_retry(bank_id, settings):
     voltage_divider_ratio = settings['VoltageDividerRatio']
     sensor_id = bank_id
     calibration_factor = settings[f'Sensor{sensor_id}_Calibration']
-    
+   
     # Two attempts to get good reading
     for attempt in range(2):
         logging.debug(f"Voltage read attempt {attempt+1} for Bank {bank_id}.")
         readings = []
         raw_values = []
-        
+       
         # Take two readings for consistency check
         for _ in range(2):
             meter_channel = (bank_id - 1) % 3
             choose_channel(meter_channel, settings['MultiplexerAddress'])
             setup_voltage_meter(settings)
-            
+           
             if bus:
                 try:
                     bus.write_byte(settings['VoltageMeterAddress'], 0x01)
@@ -733,9 +624,9 @@ def read_voltage_with_retry(bank_id, settings):
             else:
                 # Mock reading for testing
                 raw_adc = 16000 + bank_id * 100
-            
+           
             logging.debug(f"Raw ADC for Bank {bank_id} (Sensor {sensor_id}): {raw_adc}")
-            
+           
             if raw_adc != 0:
                 measured_voltage = raw_adc * (6.144 / 32767)
                 actual_voltage = (measured_voltage / voltage_divider_ratio) * calibration_factor
@@ -744,26 +635,25 @@ def read_voltage_with_retry(bank_id, settings):
             else:
                 readings.append(0.0)
                 raw_values.append(0)
-        
+       
         # Check for consistent readings
         if readings:
             average = sum(readings) / len(readings)
             valid_readings = [r for r in readings if abs(r - average) / (average if average != 0 else 1) <= 0.05]
             valid_adc = [raw_values[i] for i, r in enumerate(readings) if abs(r - average) / (average if average != 0 else 1) <= 0.05]
-            
+           
             if valid_readings:
                 logging.info(f"Voltage read successful for Bank {bank_id}: {average:.2f}V.")
                 return sum(valid_readings) / len(valid_readings), valid_readings, valid_adc
-        
+       
         logging.debug(f"Readings for Bank {bank_id} inconsistent, retrying.")
-    
+   
     logging.error(f"Couldn't get good voltage reading for Bank {bank_id} after 2 tries.")
     return None, [], []
-
 def set_relay_connection(high, low, settings):
     """
     Set relay connections for balancing between banks.
-    
+   
     Args:
         high (int): High voltage bank number
         low (int): Low voltage bank number
@@ -773,7 +663,7 @@ def set_relay_connection(high, low, settings):
         logging.info(f"Attempting to set relay for connection from Bank {high} to {low}")
         logging.debug("Switching to relay control channel.")
         choose_channel(3, settings['MultiplexerAddress'])
-        
+       
         relay_state = 0
         # Define relay patterns for each bank combination
         if high == 1 and low == 2:
@@ -794,24 +684,23 @@ def set_relay_connection(high, low, settings):
         elif high == 3 and low == 2:
             relay_state |= (1 << 0) | (1 << 1) | (1 << 3)
             logging.debug("Relays 1, 2, and 4 activated for high to low.")
-        
+       
         logging.debug(f"Final relay state: {bin(relay_state)}")
-        
+       
         if bus:
             logging.info(f"Sending relay state command to hardware.")
             bus.write_byte_data(settings['RelayAddress'], 0x11, relay_state)
-        
+       
         logging.info(f"Relay setup completed for balancing from Bank {high} to {low}")
-        
+       
     except (IOError, AttributeError) as e:
         logging.error(f"I/O error while setting up relay: {e}")
     except Exception as e:
         logging.error(f"Unexpected error in set_relay_connection: {e}")
-
 def control_dcdc_converter(turn_on, settings):
     """
     Control DC-DC converter relay.
-    
+   
     Args:
         turn_on (bool): True to turn on, False to turn off
         settings (dict): Configuration settings
@@ -822,84 +711,94 @@ def control_dcdc_converter(turn_on, settings):
         logging.info(f"DC-DC Converter is now {'on' if turn_on else 'off'}")
     except Exception as e:
         logging.error(f"Problem controlling DC-DC converter: {e}")
-
 def send_alert_email(message, settings):
     """
     Send alert email with throttling to prevent spam.
-    
+   
     Args:
         message (str): Email message content
         settings (dict): Configuration settings
     """
     global last_email_time
-    
+   
     # Throttle email sending
     if time.time() - last_email_time < settings['EmailAlertIntervalSeconds']:
         logging.debug("Skipping alert email to avoid flooding.")
         return
-    
+   
     try:
         # Create email message
         msg = MIMEText(message)
         msg['Subject'] = "Battery Monitor Alert"
         msg['From'] = settings['SenderEmail']
         msg['To'] = settings['RecipientEmail']
-        
+       
         # Send email
         with smtplib.SMTP(settings['SMTP_Server'], settings['SMTP_Port']) as server:
             server.starttls()
             if settings['SMTP_Username'] and settings['SMTP_Password']:
                 server.login(settings['SMTP_Username'], settings['SMTP_Password'])
             server.send_message(msg)
-        
+       
         last_email_time = time.time()
         logging.info(f"Alert email sent: {message}")
-        
+       
     except Exception as e:
         logging.error(f"Failed to send alert email: {e}")
-
 def check_for_issues(voltages, temps_alerts, settings):
     """
     Check for voltage and temperature issues and trigger alerts.
-    
+   
     Args:
         voltages (list): List of bank voltages
         temps_alerts (list): List of temperature alerts
         settings (dict): Configuration settings
-    
+   
     Returns:
         tuple: (alert_needed, alerts_list)
     """
     global startup_failed, startup_alerts
     logging.info("Checking for voltage and temp issues.")
-    
+   
     alert_needed = startup_failed
     alerts = []
-    
+   
     # Add startup failures to alerts
     if startup_failed and startup_alerts:
         alerts.append("Startup failures: " + "; ".join(startup_alerts))
-    
+   
     # Check voltage issues
     for i, v in enumerate(voltages, 1):
         if v is None or v == 0.0:
-            alerts.append(f"Bank {i}: Zero voltage.")
+            alert = f"Bank {i}: Zero voltage."
+            alerts.append(alert)
+            event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+            if len(event_log) > 20:
+                event_log.pop(0)
             logging.warning(f"Zero voltage alert on Bank {i}.")
             alert_needed = True
         elif v > settings['HighVoltageThresholdPerBattery']:
-            alerts.append(f"Bank {i}: High voltage ({v:.2f}V).")
+            alert = f"Bank {i}: High voltage ({v:.2f}V)."
+            alerts.append(alert)
+            event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+            if len(event_log) > 20:
+                event_log.pop(0)
             logging.warning(f"High voltage alert on Bank {i}: {v:.2f}V.")
             alert_needed = True
         elif v < settings['LowVoltageThresholdPerBattery']:
-            alerts.append(f"Bank {i}: Low voltage ({v:.2f}V).")
+            alert = f"Bank {i}: Low voltage ({v:.2f}V)."
+            alerts.append(alert)
+            event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+            if len(event_log) > 20:
+                event_log.pop(0)
             logging.warning(f"Low voltage alert on Bank {i}: {v:.2f}V.")
             alert_needed = True
-    
+   
     # Add temperature alerts
     if temps_alerts:
         alerts.extend(temps_alerts)
         alert_needed = True
-    
+   
     # Control alarm relay
     if alert_needed:
         if GPIO:
@@ -910,13 +809,12 @@ def check_for_issues(voltages, temps_alerts, settings):
         if GPIO:
             GPIO.output(settings['AlarmRelayPin'], GPIO.LOW)
         logging.info("No issues; alarm relay deactivated.")
-    
+   
     return alert_needed, alerts
-
 def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
     """
     Perform battery balancing operation between specified banks.
-    
+   
     Args:
         stdscr: Curses screen object
         high (int): High voltage bank number
@@ -925,89 +823,95 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
         temps_alerts (list): List of temperature alerts
     """
     global balance_start_time, last_balance_time, balancing_active, web_data
-    
+   
     # Skip balancing if temperature anomalies exist
     if temps_alerts:
         logging.warning("Skipping balancing due to temperature anomalies in banks.")
         return
-    
+   
     logging.info(f"Starting balance from Bank {high} to {low}.")
+    event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: Balancing started from Bank {high} to Bank {low}")
+    if len(event_log) > 20:
+        event_log.pop(0)
     balancing_active = True
     web_data['balancing'] = True
-    
+   
     # Get current voltages
     voltage_high, _, _ = read_voltage_with_retry(high, settings)
     voltage_low, _, _ = read_voltage_with_retry(low, settings)
-    
+   
     # Safety check
     if voltage_low == 0.0:
         logging.warning(f"Cannot balance to Bank {low} (0.00V). Skipping.")
         balancing_active = False
         web_data['balancing'] = False
         return
-    
+   
     # Setup relays and start balancing
     set_relay_connection(high, low, settings)
     control_dcdc_converter(True, settings)
     balance_start_time = time.time()
-    
+   
     # Animation frames for progress display
     animation_frames = ['|', '/', '-', '\\']
     frame_index = 0
-    progress_y = 17 + 6 + 2
-    height, _ = stdscr.getmaxyx()
-    
+    height, width = stdscr.getmaxyx()
+    right_half_x = width // 2
+    progress_y = 1
+   
     # Balancing loop
     while time.time() - balance_start_time < settings['BalanceDurationSeconds']:
         elapsed = time.time() - balance_start_time
         progress = min(1.0, elapsed / settings['BalanceDurationSeconds'])
-        
+       
         # Read current voltages
         voltage_high, _, _ = read_voltage_with_retry(high, settings)
         voltage_low, _, _ = read_voltage_with_retry(low, settings)
-        
+       
         # Display progress bar
         bar_length = 20
         filled = int(bar_length * progress)
         bar = '=' * filled + ' ' * (bar_length - filled)
-        
+       
         # Update display if within screen bounds
-        if progress_y < height and progress_y + 1 < height:
+        if progress_y < height and right_half_x + 50 < width:
             try:
-                stdscr.addstr(progress_y, 0, f"Balancing Bank {high} ({voltage_high:.2f}V) -> Bank {low} ({voltage_low:.2f}V)... [{animation_frames[frame_index % 4]}]", curses.color_pair(6))
+                stdscr.addstr(progress_y, right_half_x, f"Balancing Bank {high} ({voltage_high:.2f}V) -> Bank {low} ({voltage_low:.2f}V)... [{animation_frames[frame_index % 4]}]", curses.color_pair(6))
             except curses.error:
                 logging.warning("addstr error for balancing status.")
             try:
-                stdscr.addstr(progress_y + 1, 0, f"Progress: [{bar}] {int(progress * 100)}%", curses.color_pair(6))
+                stdscr.addstr(progress_y + 1, right_half_x, f"Progress: [{bar}] {int(progress * 100)}%", curses.color_pair(6))
             except curses.error:
                 logging.warning("addstr error for balancing progress bar.")
         else:
             logging.warning("Skipping balancing progress display - out of bounds.")
-        
+       
         stdscr.refresh()
         logging.debug(f"Balancing progress: {progress * 100:.2f}%, High: {voltage_high:.2f}V, Low: {voltage_low:.2f}V")
         frame_index += 1
         time.sleep(0.01)
-    
+   
     # Cleanup after balancing
     logging.info("Balancing process completed.")
+    event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: Balancing completed from Bank {high} to Bank {low}")
+    if len(event_log) > 20:
+        event_log.pop(0)
     control_dcdc_converter(False, settings)
     logging.info("Turning off DC-DC converter.")
     set_relay_connection(0, 0, settings)
     logging.info("Resetting relay connections to default state.")
-    
+   
     balancing_active = False
     web_data['balancing'] = False
     last_balance_time = time.time()
-
 def compute_bank_medians(calibrated_temps, valid_min):
     """
     Compute median temperatures for each bank.
-    
+   
     Args:
         calibrated_temps (list): List of calibrated temperatures
         valid_min (float): Minimum valid temperature
-    
+   
     Returns:
         list: List of bank median temperatures
     """
@@ -1017,11 +921,10 @@ def compute_bank_medians(calibrated_temps, valid_min):
         bank_median = statistics.median(bank_temps) if bank_temps else 0.0
         bank_medians.append(bank_median)
     return bank_medians
-
 def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_medians, startup_median, alerts, settings, startup_set, is_startup):
     """
     Draw the Text User Interface with battery status and alerts.
-    
+   
     Args:
         stdscr: Curses screen object
         voltages (list): List of bank voltages
@@ -1037,7 +940,7 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
     """
     logging.debug("Refreshing TUI.")
     stdscr.clear()
-    
+   
     # Initialize color pairs
     curses.start_color()
     curses.use_default_colors()
@@ -1049,89 +952,90 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
     curses.init_pair(6, curses.COLOR_YELLOW, -1)
     curses.init_pair(7, curses.COLOR_CYAN, -1)
     curses.init_pair(8, curses.COLOR_MAGENTA, -1)
-    
+   
     height, width = stdscr.getmaxyx()
-    
+    right_half_x = width // 2
+   
     # Display total voltage as ASCII art
     total_v = sum(voltages)
     total_high = settings['HighVoltageThresholdPerBattery'] * NUM_BANKS
     total_low = settings['LowVoltageThresholdPerBattery'] * NUM_BANKS
     v_color = curses.color_pair(2) if total_v > total_high else curses.color_pair(3) if total_v < total_low else curses.color_pair(4)
-    
+   
     roman_v = text2art(f"{total_v:.2f}V", font='roman', chr_ignore=True)
     roman_lines = roman_v.splitlines()
-    
+   
     for i, line in enumerate(roman_lines):
-        if i + 1 < height and len(line) < width:
+        if i + 1 < height and len(line) < right_half_x:
             try:
                 stdscr.addstr(i + 1, 0, line, v_color)
             except curses.error:
                 logging.warning(f"addstr error for total voltage art line {i+1}.")
         else:
             logging.warning(f"Skipping total voltage art line {i+1} - out of bounds.")
-    
+   
     y_offset = len(roman_lines) + 2
     if y_offset >= height:
         logging.warning("TUI y_offset exceeds height; skipping art.")
         return
-    
+   
     # Battery art template
     battery_art_base = [
         " ___________ ",
-        " | | ",
-        " | | ",
-        " | | ",
-        " | | ",
-        " | +++ | ",
-        " | +++ | ",
-        " | | ",
-        " | | ",
-        " | | ",
-        " | | ",
-        " | --- | ",
-        " | --- | ",
-        " | --- | ",
-        " | | ",
-        " | | ",
-        " |___________| "
+        " |         | ",
+        " |         | ",
+        " |         | ",
+        " |         | ",
+        " |  +++    | ",
+        " |  +++    | ",
+        " |         | ",
+        " |         | ",
+        " |         | ",
+        " |         | ",
+        " |  ---    | ",
+        " |  ---    | ",
+        " |  ---    | ",
+        " |         | ",
+        " |         | ",
+        " |_________| "
     ]
-    
+   
     art_height = len(battery_art_base)
     art_width = len(battery_art_base[0])
-    
+   
     # Draw battery art for each bank
     for row, line in enumerate(battery_art_base):
         full_line = line * NUM_BANKS
-        if y_offset + row < height and len(full_line) < width:
+        if y_offset + row < height and len(full_line) < right_half_x:
             try:
                 stdscr.addstr(y_offset + row, 0, full_line, curses.color_pair(4))
             except curses.error:
                 logging.warning(f"addstr error for art row {row}.")
         else:
             logging.warning(f"Skipping art row {row} - out of bounds.")
-    
+   
     # Add voltage and temperature data to battery display
     for bank_id in range(NUM_BANKS):
         start_pos = bank_id * art_width
-        
+       
         # Display voltage
         v_str = f"{voltages[bank_id]:.2f}V" if voltages[bank_id] > 0 else "0.00V"
         v_color = curses.color_pair(8) if voltages[bank_id] == 0.0 else \
                  curses.color_pair(2) if voltages[bank_id] > settings['HighVoltageThresholdPerBattery'] else \
                  curses.color_pair(3) if voltages[bank_id] < settings['LowVoltageThresholdPerBattery'] else \
                  curses.color_pair(4)
-        
+       
         v_center = start_pos + (art_width - len(v_str)) // 2
         v_y = y_offset + 1
-        
-        if v_y < height and v_center + len(v_str) < width:
+       
+        if v_y < height and v_center + len(v_str) < right_half_x:
             try:
                 stdscr.addstr(v_y, v_center, v_str, v_color)
             except curses.error:
                 logging.warning(f"addstr error for voltage overlay Bank {bank_id+1}.")
         else:
             logging.warning(f"Skipping voltage overlay for Bank {bank_id+1} - out of bounds.")
-        
+       
         # Display temperatures
         start, end = BANK_RANGES[bank_id]
         for local_ch, ch in enumerate(range(start, end + 1), 0):
@@ -1139,46 +1043,46 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
             raw = raw_temps[idx] if idx < len(raw_temps) else 0
             calib = calibrated_temps[idx]
             calib_str = f"{calib:.1f}" if calib is not None else "Inv"
-            
+           
             if is_startup:
                 raw_str = f"{raw:.1f}" if raw > settings['valid_min'] else "Inv"
                 offset_str = f"{offsets[idx]:.1f}" if startup_set and raw > settings['valid_min'] else "N/A"
                 detail = f" ({raw_str}/{offset_str})"
             else:
                 detail = ""
-            
+           
             t_str = f"C{local_ch+1}: {calib_str}{detail}"
             t_color = curses.color_pair(8) if "Inv" in calib_str else \
                      curses.color_pair(2) if calib > settings['high_threshold'] else \
                      curses.color_pair(3) if calib < settings['low_threshold'] else \
                      curses.color_pair(4)
-            
+           
             t_center = start_pos + (art_width - len(t_str)) // 2
             t_y = y_offset + 2 + local_ch
-            
-            if t_y < height and t_center + len(t_str) < width:
+           
+            if t_y < height and t_center + len(t_str) < right_half_x:
                 try:
                     stdscr.addstr(t_y, t_center, t_str, t_color)
                 except curses.error:
                     logging.warning(f"addstr error for temp overlay Bank {bank_id+1} C{local_ch+1}.")
             else:
                 logging.warning(f"Skipping temp overlay for Bank {bank_id+1} C{local_ch+1} - out of bounds.")
-        
+       
         # Display bank median temperature
         med_str = f"Med: {bank_medians[bank_id]:.1f}°C"
         med_center = start_pos + (art_width - len(med_str)) // 2
         med_y = y_offset + 15
-        
-        if med_y < height and med_center + len(med_str) < width:
+       
+        if med_y < height and med_center + len(med_str) < right_half_x:
             try:
                 stdscr.addstr(med_y, med_center, med_str, curses.color_pair(7))
             except curses.error:
                 logging.warning(f"addstr error for median overlay Bank {bank_id+1}.")
         else:
             logging.warning(f"Skipping median overlay for Bank {bank_id+1} - out of bounds.")
-    
+   
     y_offset += art_height + 2
-    
+   
     # Display ADC readings if space available
     if y_offset >= height:
         logging.warning("Skipping ADC/readings - out of bounds.")
@@ -1186,10 +1090,10 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
         for i in range(1, NUM_BANKS + 1):
             voltage, readings, adc_values = read_voltage_with_retry(i, settings)
             logging.debug(f"Bank {i} - Voltage: {voltage}, ADC: {adc_values}, Readings: {readings}")
-            
+           
             if voltage is None:
                 voltage = 0.0
-            
+           
             if y_offset < height:
                 try:
                     stdscr.addstr(y_offset, 0, f"Bank {i}: (ADC: {adc_values[0] if adc_values else 'N/A'})", curses.color_pair(5))
@@ -1197,9 +1101,9 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
                     logging.warning(f"addstr error for ADC Bank {i}.")
             else:
                 logging.warning(f"Skipping ADC for Bank {i} - out of bounds.")
-            
+           
             y_offset += 1
-            
+           
             if y_offset < height:
                 try:
                     if readings:
@@ -1210,11 +1114,11 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
                     logging.warning(f"addstr error for readings Bank {i}.")
             else:
                 logging.warning(f"Skipping readings for Bank {i} - out of bounds.")
-            
+           
             y_offset += 1
-    
+   
     y_offset += 1
-    
+   
     # Display startup median temperature
     med_str = f"{startup_median:.1f}°C" if startup_median else "N/A"
     if y_offset < height:
@@ -1224,22 +1128,22 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
             logging.warning("addstr error for startup median.")
     else:
         logging.warning("Skipping startup median - out of bounds.")
-    
+   
     y_offset += 2
-    
+   
     # Display alerts section
     if y_offset < height:
         try:
             stdscr.addstr(y_offset, 0, "Alerts:", curses.color_pair(7))
         except curses.error:
             logging.warning("addstr error for alerts header.")
-    
+   
     y_offset += 1
-    
+   
     # Display individual alerts
     if alerts:
         for alert in alerts:
-            if y_offset < height:
+            if y_offset < height and len(alert) < right_half_x:
                 try:
                     stdscr.addstr(y_offset, 0, alert, curses.color_pair(8))
                 except curses.error:
@@ -1255,42 +1159,60 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
                 logging.warning("addstr error for no alerts message.")
         else:
             logging.warning("Skipping no alerts message - out of bounds.")
-    
+   
+    # Display event history on right bottom half
+    y_offset = 1  # Reset y for right side
+    if y_offset < height:
+        try:
+            stdscr.addstr(y_offset, right_half_x, "Event History:", curses.color_pair(7))
+        except curses.error:
+            logging.warning("addstr error for event history header.")
+    y_offset += 1
+   
+    for event in event_log[-20:]:
+        if y_offset < height and len(event) < width - right_half_x:
+            try:
+                stdscr.addstr(y_offset, right_half_x, event, curses.color_pair(5))
+            except curses.error:
+                logging.warning(f"addstr error for event '{event}'.")
+            y_offset += 1
+        else:
+            logging.warning(f"Skipping event '{event}' - out of bounds.")
+   
     stdscr.refresh()
-
 def startup_self_test(settings, stdscr):
     """
     Perform comprehensive startup self-test of hardware and functionality with verbose logging.
-   
+  
     Args:
         settings (dict): Configuration settings
         stdscr: Curses screen object
-   
+  
     Returns:
         list: List of alert messages from failed tests
     """
     global startup_failed, startup_alerts, startup_set, startup_median, startup_offsets
-   
+  
     # Skip if disabled in config
     if not settings['StartupSelfTestEnabled']:
         logging.info("Startup self-test disabled via configuration.")
         return []
-   
+  
     logging.info("Starting self-test: Validating config, connectivity, sensors, and balancer.")
     alerts = []
     stdscr.clear()
     y = 0
-   
+  
     # Display test title
     if y < stdscr.getmaxyx()[0]:
         try:
             stdscr.addstr(y, 0, "Startup Self-Test in Progress", curses.color_pair(1))
         except curses.error:
             logging.warning("addstr error for title.")
-   
+  
     y += 2
     stdscr.refresh()
-   
+  
     # Step 1: Config validation
     logging.info("Step 1: Validating configuration parameters.")
     logging.debug(f"Configuration details: NumberOfBatteries={settings['NumberOfBatteries']}, "
@@ -1300,19 +1222,23 @@ def startup_self_test(settings, stdscr):
                   f"RelayAddress=0x{settings['RelayAddress']:02x}, "
                   f"Temp_IP={settings['ip']}, Temp_Port={settings['modbus_port']}, "
                   f"NumChannels={settings['num_channels']}, ScalingFactor={settings['scaling_factor']}")
-   
+  
     if y < stdscr.getmaxyx()[0]:
         try:
             stdscr.addstr(y, 0, "Step 1: Validating config...", curses.color_pair(4))
         except curses.error:
             logging.warning("addstr error for step 1.")
-   
+  
     stdscr.refresh()
     time.sleep(0.5)
-   
+  
     # Check config consistency
     if settings['NumberOfBatteries'] != NUM_BANKS:
-        alerts.append(f"Config mismatch: NumberOfBatteries={settings['NumberOfBatteries']} != {NUM_BANKS}.")
+        alert = f"Config mismatch: NumberOfBatteries={settings['NumberOfBatteries']} != {NUM_BANKS}."
+        alerts.append(alert)
+        event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+        if len(event_log) > 20:
+            event_log.pop(0)
         logging.warning(f"Config mismatch detected: NumberOfBatteries={settings['NumberOfBatteries']} != {NUM_BANKS}.")
         if y + 1 < stdscr.getmaxyx()[0]:
             try:
@@ -1326,10 +1252,10 @@ def startup_self_test(settings, stdscr):
                 stdscr.addstr(y + 1, 0, "Config OK.", curses.color_pair(4))
             except curses.error:
                 logging.warning("addstr error for config OK.")
-   
+  
     y += 2
     stdscr.refresh()
-   
+  
     # Step 2: Hardware connectivity
     logging.info("Step 2: Testing hardware connectivity (I2C and Modbus).")
     if y < stdscr.getmaxyx()[0]:
@@ -1337,10 +1263,10 @@ def startup_self_test(settings, stdscr):
             stdscr.addstr(y, 0, "Step 2: Testing hardware connectivity...", curses.color_pair(4))
         except curses.error:
             logging.warning("addstr error for step 2.")
-   
+  
     stdscr.refresh()
     time.sleep(0.5)
-   
+  
     # Test I2C connectivity
     logging.debug(f"Testing I2C connectivity on bus {settings['I2C_BusNumber']}: "
                   f"Multiplexer=0x{settings['MultiplexerAddress']:02x}, "
@@ -1353,14 +1279,18 @@ def startup_self_test(settings, stdscr):
             logging.debug(f"Reading byte from VoltageMeter at 0x{settings['VoltageMeterAddress']:02x}")
             bus.read_byte(settings['VoltageMeterAddress'])
             logging.debug("I2C connectivity test passed for all devices.")
-       
+      
         if y + 1 < stdscr.getmaxyx()[0]:
             try:
                 stdscr.addstr(y + 1, 0, "I2C OK.", curses.color_pair(4))
             except curses.error:
                 logging.warning("addstr error for I2C OK.")
     except (IOError, AttributeError) as e:
-        alerts.append(f"I2C connectivity failure: {str(e)}")
+        alert = f"I2C connectivity failure: {str(e)}"
+        alerts.append(alert)
+        event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+        if len(event_log) > 20:
+            event_log.pop(0)
         logging.error(f"I2C connectivity failure: {str(e)}. Bus={settings['I2C_BusNumber']}, "
                       f"Multiplexer=0x{settings['MultiplexerAddress']:02x}, "
                       f"VoltageMeter=0x{settings['VoltageMeterAddress']:02x}, "
@@ -1384,7 +1314,11 @@ def startup_self_test(settings, stdscr):
             except curses.error:
                 logging.warning("addstr error for Modbus OK.")
     except Exception as e:
-        alerts.append(f"Modbus test failure: {str(e)}")
+        alert = f"Modbus test failure: {str(e)}"
+        alerts.append(alert)
+        event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+        if len(event_log) > 20:
+            event_log.pop(0)
         logging.error(f"Modbus test failure: {str(e)}. Connection={settings['ip']}:{settings['modbus_port']}, "
                       f"num_channels=1, query_delay={settings['query_delay']}, scaling_factor={settings['scaling_factor']}")
         if y + 2 < stdscr.getmaxyx()[0]:
@@ -1401,10 +1335,10 @@ def startup_self_test(settings, stdscr):
             stdscr.addstr(y, 0, "Step 3: Initial sensor reads...", curses.color_pair(4))
         except curses.error:
             logging.warning("addstr error for step 3.")
-   
+  
     stdscr.refresh()
     time.sleep(0.5)
-   
+  
     # Test temperature sensor reading
     logging.debug(f"Reading {settings['num_channels']} temperature channels from {settings['ip']}:{settings['modbus_port']} "
                   f"with query_delay={settings['query_delay']}, scaling_factor={settings['scaling_factor']}, "
@@ -1413,7 +1347,11 @@ def startup_self_test(settings, stdscr):
                                      settings['num_channels'], settings['scaling_factor'],
                                      settings['max_retries'], settings['retry_backoff_base'])
     if isinstance(initial_temps, str):
-        alerts.append(f"Initial temp read failure: {initial_temps}")
+        alert = f"Initial temp read failure: {initial_temps}"
+        alerts.append(alert)
+        event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+        if len(event_log) > 20:
+            event_log.pop(0)
         logging.error(f"Initial temperature read failure: {initial_temps}")
         if y + 1 < stdscr.getmaxyx()[0]:
             try:
@@ -1438,7 +1376,11 @@ def startup_self_test(settings, stdscr):
                       f"CalibrationFactor={settings[f'Sensor{i}_Calibration']}")
         initial_voltages.append(voltage if voltage is not None else 0.0)
     if any(v == 0.0 for v in initial_voltages):
-        alerts.append("Initial voltage read failure: Zero voltage on one or more banks.")
+        alert = "Initial voltage read failure: Zero voltage on one or more banks."
+        alerts.append(alert)
+        event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+        if len(event_log) > 20:
+            event_log.pop(0)
         logging.error(f"Initial voltage read failure: Voltages={initial_voltages}")
         if y + 2 < stdscr.getmaxyx()[0]:
             try:
@@ -1485,7 +1427,7 @@ def startup_self_test(settings, stdscr):
         y += 1
         stdscr.refresh()
         time.sleep(0.5)
-        
+       
         # Read and display initial voltages for all banks before balancing
         initial_bank_voltages = []
         for bank in range(1, NUM_BANKS + 1):
@@ -1499,7 +1441,6 @@ def startup_self_test(settings, stdscr):
         logging.debug(f"Initial Bank Voltages: Bank 1={initial_bank_voltages[0]:.2f}V, Bank 2={initial_bank_voltages[1]:.2f}V, Bank 3={initial_bank_voltages[2]:.2f}V")
         y += 2
         stdscr.refresh()
-
         # Test all possible bank balancing combinations
         pairs = [(1,2), (1,3), (2,1), (2,3), (3,1), (3,2)]
         test_duration = settings['test_balance_duration']
@@ -1524,7 +1465,11 @@ def startup_self_test(settings, stdscr):
                         temp_anomaly = True
                         break
             if temp_anomaly:
-                alerts.append(f"Skipping balance test from Bank {source} to Bank {dest}: Temp anomalies.")
+                alert = f"Skipping balance test from Bank {source} to Bank {dest}: Temp anomalies."
+                alerts.append(alert)
+                event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+                if len(event_log) > 20:
+                    event_log.pop(0)
                 logging.warning(f"Skipping balance test from Bank {source} to Bank {dest}: Temperature anomalies detected.")
                 if y + 1 < stdscr.getmaxyx()[0]:
                     try:
@@ -1537,14 +1482,12 @@ def startup_self_test(settings, stdscr):
             # Initial voltage reading before relay activation
             initial_source_v = read_voltage_with_retry(source, settings)[0] or 0.0
             initial_dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0
-            time.sleep(0.5)  # 500ms delay after initial reading
+            time.sleep(0.5) # 500ms delay after initial reading
             logging.debug(f"Balance test from Bank {source} to Bank {dest}: Initial - Bank {source}={initial_source_v:.2f}V, Bank {dest}={initial_dest_v:.2f}V")
-
             # Start balance test
             set_relay_connection(source, dest, settings)
             control_dcdc_converter(True, settings)
             start_time = time.time()
-
             # Monitor voltage changes during test (optional monitoring, not used for delta)
             source_trend = [initial_source_v]
             dest_trend = [initial_dest_v]
@@ -1564,30 +1507,31 @@ def startup_self_test(settings, stdscr):
                     except curses.error:
                         logging.warning("addstr error in startup balance progress.")
                 stdscr.refresh()
-
             # Final voltage reading before relay deactivation
             final_source_v = read_voltage_with_retry(source, settings)[0] or 0.0
             final_dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0
-            time.sleep(0.5)  # 500ms delay after final reading before deactivation
+            time.sleep(0.5) # 500ms delay after final reading before deactivation
             logging.debug(f"Balance test from Bank {source} to Bank {dest}: Final - Bank {source}={final_source_v:.2f}V, Bank {dest}={final_dest_v:.2f}V")
-            control_dcdc_converter(False, settings)  # Deactivate after delay
+            control_dcdc_converter(False, settings) # Deactivate after delay
             set_relay_connection(0, 0, settings)
-
             if progress_y + 1 < stdscr.getmaxyx()[0]:
                 try:
                     stdscr.addstr(progress_y + 1, 0, "Analyzing...", curses.color_pair(6))
                 except curses.error:
                     logging.warning("addstr error for analyzing.")
             stdscr.refresh()
-
             # Analyze test results and display initial/final readings
             if len(source_trend) >= 3:
-                source_change = final_source_v - initial_source_v  # Natural change: negative if decreases
-                dest_change = final_dest_v - initial_dest_v       # Natural change: positive if increases
+                source_change = final_source_v - initial_source_v # Natural change: negative if decreases
+                dest_change = final_dest_v - initial_dest_v # Natural change: positive if increases
                 logging.debug(f"Balance test from Bank {source} to Bank {dest} analysis: Bank {source} Initial={initial_source_v:.2f}V, Final={final_source_v:.2f}V, Change={source_change:+.3f}V, Bank {dest} Initial={initial_dest_v:.2f}V, Final={final_dest_v:.2f}V, Change={dest_change:+.3f}V, Min change={min_delta}V")
                 # Expect source to decrease (negative change) and destination to increase (positive change)
                 if source_change >= 0 or dest_change <= 0 or abs(source_change) < min_delta or dest_change < min_delta:
-                    alerts.append(f"Balance test from Bank {source} to Bank {dest} failed: Unexpected trend or insufficient change (Bank {source} Initial={initial_source_v:.2f}V, Final={final_source_v:.2f}V, Change={source_change:+.3f}V, Bank {dest} Initial={initial_dest_v:.2f}V, Final={final_dest_v:.2f}V, Change={dest_change:+.3f}V).")
+                    alert = f"Balance test from Bank {source} to Bank {dest} failed: Unexpected trend or insufficient change (Bank {source} Initial={initial_source_v:.2f}V, Final={final_source_v:.2f}V, Change={source_change:+.3f}V, Bank {dest} Initial={initial_dest_v:.2f}V, Final={final_dest_v:.2f}V, Change={dest_change:+.3f}V)."
+                    alerts.append(alert)
+                    event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+                    if len(event_log) > 20:
+                        event_log.pop(0)
                     logging.error(f"Balance test from Bank {source} to Bank {dest} failed: Source did not decrease or destination did not increase sufficiently.")
                     if progress_y + 1 < stdscr.getmaxyx()[0]:
                         try:
@@ -1602,7 +1546,11 @@ def startup_self_test(settings, stdscr):
                         except curses.error:
                             logging.warning("addstr error for test passed.")
             else:
-                alerts.append(f"Balance test from Bank {source} to Bank {dest} failed: Insufficient readings.")
+                alert = f"Balance test from Bank {source} to Bank {dest} failed: Insufficient readings."
+                alerts.append(alert)
+                event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+                if len(event_log) > 20:
+                    event_log.pop(0)
                 logging.error(f"Balance test from Bank {source} to Bank {dest} failed: Only {len(source_trend)} readings collected.")
                 if progress_y + 1 < stdscr.getmaxyx()[0]:
                     try:
@@ -1612,18 +1560,18 @@ def startup_self_test(settings, stdscr):
             stdscr.refresh()
             y = progress_y + 2
             time.sleep(2)
-   
+  
     # Store test results
     startup_alerts = alerts
-   
+  
     if alerts:
         startup_failed = True
         logging.error("Startup self-test failures: " + "; ".join(alerts))
         send_alert_email("Startup self-test failures:\n" + "\n".join(alerts), settings)
-       
+      
         if GPIO:
             GPIO.output(settings['AlarmRelayPin'], GPIO.HIGH)
-       
+      
         if y < stdscr.getmaxyx()[0]:
             try:
                 stdscr.addstr(y, 0, "Self-Test Complete with Failures. Continuing with warnings.", curses.color_pair(2))
@@ -1635,14 +1583,12 @@ def startup_self_test(settings, stdscr):
                 stdscr.addstr(y, 0, "Self-Test Complete. All OK.", curses.color_pair(4))
             except curses.error:
                 logging.warning("addstr error for self-test OK.")
-       
+      
         logging.info("Startup self-test passed.")
-   
+  
     stdscr.refresh()
     time.sleep(5)
     return alerts
-
-
 class BMSRequestHandler(BaseHTTPRequestHandler):
     """
     HTTP request handler for web interface and API endpoints.
@@ -1653,33 +1599,33 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
         """
         self.settings = server.settings
         super().__init__(request, client_address, server)
-    
+   
     def do_GET(self):
         """
         Handle GET requests for web interface and API.
         """
         parsed_path = urlparse(self.path)
         path = parsed_path.path
-        
+       
         # Check authentication if required
         if self.settings['auth_required'] and not self.authenticate():
             self.send_response(401)
             self.send_header('WWW-Authenticate', 'Basic realm="BMS"')
             self.end_headers()
             return
-        
+       
         # Set CORS headers if enabled
         if self.settings['cors_enabled']:
             self.send_header('Access-Control-Allow-Origin', self.settings['cors_origins'])
             self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
             self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        
+       
         # Serve main dashboard page
         if path == '/':
             self.send_response(200)
             self.send_header('Content-type', 'text/html')
             self.end_headers()
-            
+           
             # HTML dashboard content
             html = """<!DOCTYPE html>
 <html lang="en">
@@ -1711,30 +1657,30 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
             <p>Status: <span id="system-status">Loading...</span></p>
             <p>Last Update: <span id="last-update">-</span></p>
         </div>
-        
+       
         <div class="status-card">
             <h2>Battery Banks</h2>
             <div id="battery-container" class="grid"></div>
         </div>
-        
+       
         <div class="status-card">
             <h2>Alerts</h2>
             <div id="alerts-container"></div>
         </div>
-        
+       
         <div class="status-card">
             <h2>Actions</h2>
             <button id="refresh-btn" class="button">Refresh</button>
             <button id="balance-btn" class="button" disabled>Balance Now</button>
         </div>
-        
+       
         <div class="status-card">
             <h2>System Information</h2>
             <p>Total Voltage: <span id="total-voltage">-</span></p>
             <p>Balancing: <span id="balancing-status">No</span></p>
         </div>
     </div>
-    
+   
     <script>
         function updateStatus() {
             fetch('/api/status')
@@ -1744,10 +1690,10 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                     document.getElementById('last-update').textContent = new Date(data.last_update * 1000).toLocaleString();
                     document.getElementById('total-voltage').textContent = data.total_voltage.toFixed(2) + 'V';
                     document.getElementById('balancing-status').textContent = data.balancing ? 'Yes' : 'No';
-                    
+                   
                     const batteryContainer = document.getElementById('battery-container');
                     batteryContainer.innerHTML = '';
-                    
+                   
                     data.voltages.forEach((voltage, index) => {
                         const bankDiv = document.createElement('div');
                         bankDiv.className = 'battery';
@@ -1766,14 +1712,14 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                         `;
                         batteryContainer.appendChild(bankDiv);
                     });
-                    
+                   
                     const alertsContainer = document.getElementById('alerts-container');
                     if (data.alerts.length > 0) {
                         alertsContainer.innerHTML = data.alerts.map(alert => `<p class="alert">${alert}</p>`).join('');
                     } else:
                         alertsContainer.innerHTML = '<p class="normal">No alerts</p>';
                     }
-                    
+                   
                     const balanceBtn = document.getElementById('balance-btn');
                     balanceBtn.disabled = data.balancing || data.alerts.length > 0;
                 })
@@ -1782,7 +1728,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                     document.getElementById('system-status').textContent = 'Error';
                 });
         }
-        
+       
         function initiateBalance() {
             fetch('/api/balance', { method: 'POST' })
                 .then(response => response.json())
@@ -1798,24 +1744,24 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                     alert('Error initiating balance');
                 });
         }
-        
+       
         document.getElementById('refresh-btn').addEventListener('click', updateStatus);
         document.getElementById('balance-btn').addEventListener('click', initiateBalance);
-        
+       
         updateStatus();
         setInterval(updateStatus, 5000);
     </script>
 </body>
 </html>"""
-            
+           
             self.wfile.write(html.encode('utf-8'))
-        
+       
         # Serve API status endpoint
         elif path == '/api/status':
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
-            
+           
             # Prepare status response
             response = {
                 'voltages': web_data['voltages'],
@@ -1826,37 +1772,37 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                 'system_status': web_data['system_status'],
                 'total_voltage': sum(web_data['voltages'])
             }
-            
+           
             self.wfile.write(json.dumps(response).encode('utf-8'))
-        
+       
         else:
             self.send_response(404)
             self.end_headers()
-    
+   
     def do_POST(self):
         """
         Handle POST requests for API actions.
         """
         parsed_path = urlparse(self.path)
         path = parsed_path.path
-        
+       
         # Check authentication if required
         if self.settings['auth_required'] and not self.authenticate():
             self.send_response(401)
             self.send_header('WWW-Authenticate', 'Basic realm="BMS"')
             self.end_headers()
             return
-        
+       
         # Set CORS headers if enabled
         if self.settings['cors_enabled']:
             self.send_header('Access-Control-Allow-Origin', self.settings['cors_origins'])
             self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
             self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        
+       
         # Handle balance initiation request
         if path == '/api/balance':
             global balancing_active
-            
+           
             # Check if already balancing
             if balancing_active:
                 self.send_response(400)
@@ -1865,7 +1811,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                 response = {'success': False, 'message': 'Balancing already in progress'}
                 self.wfile.write(json.dumps(response).encode('utf-8'))
                 return
-            
+           
             # Check for active alerts
             if len(web_data['alerts']) > 0:
                 self.send_response(400)
@@ -1874,9 +1820,9 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                 response = {'success': False, 'message': 'Cannot balance with active alerts'}
                 self.wfile.write(json.dumps(response).encode('utf-8'))
                 return
-            
+           
             voltages = web_data['voltages']
-            
+           
             # Check if enough banks available
             if len(voltages) < 2:
                 self.send_response(400)
@@ -1885,13 +1831,13 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                 response = {'success': False, 'message': 'Not enough battery banks'}
                 self.wfile.write(json.dumps(response).encode('utf-8'))
                 return
-            
+           
             # Find banks with max and min voltage
             max_v = max(voltages)
             min_v = min(voltages)
             high_bank = voltages.index(max_v) + 1
             low_bank = voltages.index(min_v) + 1
-            
+           
             # Check if voltage difference is sufficient
             if max_v - min_v < self.settings['VoltageDifferenceToBalance']:
                 self.send_response(400)
@@ -1900,20 +1846,20 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                 response = {'success': False, 'message': 'Voltage difference too small for balancing'}
                 self.wfile.write(json.dumps(response).encode('utf-8'))
                 return
-            
+           
             # Start balancing
             balancing_active = True
-            
+           
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
             response = {'success': True, 'message': f'Balancing initiated from Bank {high_bank} to Bank {low_bank}'}
             self.wfile.write(json.dumps(response).encode('utf-8'))
-        
+       
         else:
             self.send_response(404)
             self.end_headers()
-    
+   
     def do_OPTIONS(self):
         """
         Handle OPTIONS requests for CORS preflight.
@@ -1924,11 +1870,11 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
             self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
             self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
         self.end_headers()
-    
+   
     def authenticate(self):
         """
         Authenticate request using Basic Auth.
-        
+       
         Returns:
             bool: True if authentication successful, False otherwise
         """
@@ -1938,43 +1884,41 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
             username, password = auth_decoded.split(':', 1)
             return username == self.settings['username'] and password == self.settings['password']
         return False
-
 def start_web_server(settings):
     """
     Start web server for remote monitoring and control.
-    
+   
     Args:
         settings (dict): Configuration settings
     """
     global web_server
-    
+   
     # Skip if disabled in config
     if not settings['WebInterfaceEnabled']:
         logging.info("Web interface disabled via configuration.")
         return
-    
+   
     # Custom HTTP server that shares settings with request handler
     class CustomHTTPServer(HTTPServer):
         def __init__(self, *args, **kwargs):
             self.settings = settings
             super().__init__(*args, **kwargs)
-    
+   
     try:
         # Start web server in separate thread
         web_server = CustomHTTPServer((settings['host'], settings['web_port']), BMSRequestHandler)
         logging.info(f"Web server started on {settings['host']}:{settings['web_port']}")
-        
+       
         server_thread = threading.Thread(target=web_server.serve_forever)
         server_thread.daemon = True
         server_thread.start()
-        
+       
     except Exception as e:
         logging.error(f"Failed to start web server: {e}")
-
 def main(stdscr):
     """
     Main application function with curses wrapper.
-    
+   
     Args:
         stdscr: Curses screen object
     """
@@ -1990,44 +1934,44 @@ def main(stdscr):
     curses.init_pair(6, curses.COLOR_YELLOW, -1)
     curses.init_pair(7, curses.COLOR_CYAN, -1)
     curses.init_pair(8, curses.COLOR_MAGENTA, -1)
-    
+   
     # Global variables for state management
     global previous_temps, previous_bank_medians, run_count, startup_offsets, startup_median, startup_set, battery_voltages, web_data, balancing_active
-    
+   
     # Load configuration and setup hardware
     settings = load_config()
     setup_hardware(settings)
-    
+   
     # Start web server if enabled
     start_web_server(settings)
-    
+   
     # Run startup self-test
     startup_self_test(settings, stdscr)
-    
+   
     # Setup signal handler for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
-    
+   
     # Load temperature offsets if available
     startup_median, startup_offsets = load_offsets(settings['num_channels'])
     if startup_offsets and len(startup_offsets) == settings['num_channels']:
         startup_set = True
         logging.info(f"Loaded startup median: {startup_median:.1f}°C")
-    
+   
     # Initialize state variables
     previous_temps = None
     previous_bank_medians = [None] * NUM_BANKS
     run_count = 0
     web_data['system_status'] = 'Running'
-    
+   
     # Main monitoring loop
     while True:
         logging.info("Starting poll cycle.")
         web_data['last_update'] = time.time()
-        
+       
         # Read temperature sensors
         temp_result = read_ntc_sensors(settings['ip'], settings['modbus_port'], settings['query_delay'], settings['num_channels'], settings['scaling_factor'], settings['max_retries'], settings['retry_backoff_base'])
         temps_alerts = []
-        
+       
         # Process temperature readings
         if isinstance(temp_result, str):
             # Handle temperature read error
@@ -2038,7 +1982,7 @@ def main(stdscr):
         else:
             # Process valid temperature readings
             valid_count = sum(1 for t in temp_result if t > settings['valid_min'])
-            
+           
             # Set up calibration if all readings are valid and not already set
             if not startup_set and valid_count == settings['num_channels']:
                 startup_median = statistics.median(temp_result)
@@ -2046,56 +1990,56 @@ def main(stdscr):
                 save_offsets(startup_median, startup_offsets)
                 startup_set = True
                 logging.info(f"Temp calibration set. Median: {startup_median:.1f}°C")
-            
+           
             # Reset calibration if offsets are missing
             if startup_set and startup_offsets is None:
                 startup_set = False
-            
+           
             # Apply calibration to temperatures
             calibrated_temps = [temp_result[i] + startup_offsets[i] if startup_set and temp_result[i] > settings['valid_min'] else temp_result[i] if temp_result[i] > settings['valid_min'] else None for i in range(settings['num_channels'])]
             raw_temps = temp_result
             bank_medians = compute_bank_medians(calibrated_temps, settings['valid_min'])
-            
+           
             # Check for temperature anomalies
             for ch, raw in enumerate(raw_temps, 1):
                 if check_invalid_reading(raw, ch, temps_alerts, settings['valid_min']):
                     continue
-                
+               
                 calib = calibrated_temps[ch-1]
                 bank_id = get_bank_for_channel(ch)
                 bank_median = bank_medians[bank_id - 1]
-                
+               
                 check_high_temp(calib, ch, temps_alerts, settings['high_threshold'])
                 check_low_temp(calib, ch, temps_alerts, settings['low_threshold'])
                 check_deviation(calib, bank_median, ch, temps_alerts, settings['abs_deviation_threshold'], settings['deviation_threshold'])
-            
+           
             # Check for temporal anomalies if this is not the first run
             if run_count > 0 and previous_temps and previous_bank_medians is not None:
                 for bank_id in range(1, NUM_BANKS + 1):
                     bank_median_rise = bank_medians[bank_id - 1] - previous_bank_medians[bank_id - 1]
                     start, end = BANK_RANGES[bank_id - 1]
-                    
+                   
                     for ch in range(start, end + 1):
                         calib = calibrated_temps[ch - 1]
                         if calib is not None:
                             check_abnormal_rise(calib, previous_temps, ch, temps_alerts, settings['poll_interval'], settings['rise_threshold'])
                             check_group_tracking_lag(calib, previous_temps, bank_median_rise, ch, temps_alerts, settings['disconnection_lag_threshold'])
-                        
+                       
                         check_sudden_disconnection(calib, previous_temps, ch, temps_alerts)
-            
+           
             # Store current readings for next comparison
             previous_temps = calibrated_temps[:]
             previous_bank_medians = bank_medians[:]
-        
+       
         # Read battery voltages
         battery_voltages = []
         for i in range(1, NUM_BANKS + 1):
             v, _, _ = read_voltage_with_retry(i, settings)
             battery_voltages.append(v if v is not None else 0.0)
-        
+       
         # Check for issues and trigger alerts
         alert_needed, all_alerts = check_for_issues(battery_voltages, temps_alerts, settings)
-        
+       
         # Check if balancing is needed
         if len(battery_voltages) == NUM_BANKS:
             max_v = max(battery_voltages)
@@ -2103,12 +2047,12 @@ def main(stdscr):
             high_b = battery_voltages.index(max_v) + 1
             low_b = battery_voltages.index(min_v) + 1
             current_time = time.time()
-            
+           
             # Start balancing if conditions are met
             if balancing_active or (alert_needed is False and max_v - min_v > settings['VoltageDifferenceToBalance'] and min_v > 0 and current_time - last_balance_time > settings['BalanceRestPeriodSeconds']):
                 balance_battery_voltages(stdscr, high_b, low_b, settings, temps_alerts)
                 balancing_active = False
-        
+       
         # Update web interface data
         web_data['voltages'] = battery_voltages
         web_data['temperatures'] = calibrated_temps
@@ -2116,18 +2060,17 @@ def main(stdscr):
         web_data['balancing'] = balancing_active
         web_data['last_update'] = time.time()
         web_data['system_status'] = 'Alert' if alert_needed else 'Running'
-        
+       
         # Update TUI display
         draw_tui(stdscr, battery_voltages, calibrated_temps, raw_temps, startup_offsets or [0]*settings['num_channels'], bank_medians, startup_median, all_alerts, settings, startup_set, is_startup=(run_count == 0))
-        
+       
         # Increment run counter and perform cleanup
         run_count += 1
         gc.collect()
         logging.info("Poll cycle complete.")
-        
+       
         # Sleep until next poll
         time.sleep(min(settings['poll_interval'], settings['SleepTimeBetweenChecks']))
-
 # Entry point for the application
 if __name__ == '__main__':
     curses.wrapper(main)
