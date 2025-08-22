@@ -1493,14 +1493,14 @@ def startup_self_test(settings, stdscr):
         logging.debug(f"Balancer test parameters: test_duration={test_duration}s, "
                       f"read_interval={read_interval}s, min_voltage_delta={min_delta}V")
         for high, low in pairs:
-            logging.debug(f"Testing balance: Bank {high} to Bank {low}")
+            logging.debug(f"Testing balance between Bank {high} and Bank {low}")
             if y < stdscr.getmaxyx()[0]:
                 try:
-                    stdscr.addstr(y, 0, f"Testing balance: Bank {high} to Bank {low} for {test_duration}s.", curses.color_pair(6))
+                    stdscr.addstr(y, 0, f"Testing balance between Bank {high} and Bank {low} for {test_duration}s.", curses.color_pair(6))
                 except curses.error:
                     logging.warning("addstr error for testing balance.")
             stdscr.refresh()
-            logging.info(f"Testing balance: Bank {high} to Bank {low} for {test_duration}s.")
+            logging.info(f"Testing balance between Bank {high} and Bank {low} for {test_duration}s.")
             # Skip if temperature anomalies exist
             temp_anomaly = False
             if initial_temps and isinstance(initial_temps, list):
@@ -1509,8 +1509,8 @@ def startup_self_test(settings, stdscr):
                         temp_anomaly = True
                         break
             if temp_anomaly:
-                alerts.append(f"Skipping balance test {high} to {low}: Temp anomalies.")
-                logging.warning(f"Skipping balance test {high} to {low}: Temperature anomalies detected.")
+                alerts.append(f"Skipping balance test between Bank {high} and Bank {low}: Temp anomalies.")
+                logging.warning(f"Skipping balance test between Bank {high} and Bank {low}: Temperature anomalies detected.")
                 if y + 1 < stdscr.getmaxyx()[0]:
                     try:
                         stdscr.addstr(y + 1, 0, "Skipped: Temp anomalies.", curses.color_pair(2))
@@ -1532,7 +1532,7 @@ def startup_self_test(settings, stdscr):
             initial_low_v = read_voltage_with_retry(low, settings)[0] or 0.0
             high_trend.append(initial_high_v)
             low_trend.append(initial_low_v)
-            logging.debug(f"Balance test {high} to {low}: Initial - Bank {high}={initial_high_v:.2f}V, Bank {low}={initial_low_v:.2f}V")
+            logging.debug(f"Balance test between Bank {high} and Bank {low}: Initial - Bank {high}={initial_high_v:.2f}V, Bank {low}={initial_low_v:.2f}V")
 
             # Monitor voltage changes during test
             while time.time() - start_time < test_duration:
@@ -1541,7 +1541,7 @@ def startup_self_test(settings, stdscr):
                 low_v = read_voltage_with_retry(low, settings)[0] or 0.0
                 high_trend.append(high_v)
                 low_trend.append(low_v)
-                logging.debug(f"Balance test {high} to {low}: Bank {high}={high_v:.2f}V, Bank {low}={low_v:.2f}V")
+                logging.debug(f"Balance test between Bank {high} and Bank {low}: Bank {high}={high_v:.2f}V, Bank {low}={low_v:.2f}V")
                 elapsed = time.time() - start_time
                 if progress_y < stdscr.getmaxyx()[0]:
                     try:
@@ -1564,31 +1564,31 @@ def startup_self_test(settings, stdscr):
             # Final voltage readings
             final_high_v = high_trend[-1]
             final_low_v = low_trend[-1]
-            logging.debug(f"Balance test {high} to {low}: Final - Bank {high}={final_high_v:.2f}V, Bank {low}={final_low_v:.2f}V")
+            logging.debug(f"Balance test between Bank {high} and Bank {low}: Final - Bank {high}={final_high_v:.2f}V, Bank {low}={final_low_v:.2f}V")
 
             # Analyze test results
             if len(high_trend) >= 3:
                 high_delta = initial_high_v - final_high_v
                 low_delta = final_low_v - initial_low_v
-                logging.debug(f"Balance test {high} to {low} analysis: Bank {high} Δ={high_delta:.3f}V, Bank {low} Δ={low_delta:.3f}V, Min Δ={min_delta}V")
+                logging.debug(f"Balance test between Bank {high} and Bank {low} analysis: Bank {high} change={high_delta:+.3f}V, Bank {low} change={low_delta:+.3f}V, Min change={min_delta}V")
                 if high_delta < min_delta or low_delta < min_delta:
-                    alerts.append(f"Balance test {high} to {low} failed: Insufficient change (Bank {high} Δ={high_delta:.3f}V, Bank {low} Δ={low_delta:.3f}V).")
-                    logging.error(f"Balance test {high} to {low} failed: Insufficient voltage change.")
+                    alerts.append(f"Balance test between Bank {high} and Bank {low} failed: Insufficient change (Bank {high} change={high_delta:+.3f}V, Bank {low} change={low_delta:+.3f}V).")
+                    logging.error(f"Balance test between Bank {high} and Bank {low} failed: Insufficient voltage change.")
                     if progress_y + 1 < stdscr.getmaxyx()[0]:
                         try:
-                            stdscr.addstr(progress_y + 1, 0, f"Test failed: Insufficient change (Bank {high} Δ={high_delta:.3f}V, Bank {low} Δ={low_delta:.3f}V).", curses.color_pair(2))
+                            stdscr.addstr(progress_y + 1, 0, f"Test failed: Insufficient change (Bank {high} change={high_delta:+.3f}V, Bank {low} change={low_delta:+.3f}V).", curses.color_pair(2))
                         except curses.error:
                             logging.warning("addstr error for test failed insufficient change.")
                 else:
-                    logging.debug(f"Balance test {high} to {low} passed: Sufficient voltage change.")
+                    logging.debug(f"Balance test between Bank {high} and Bank {low} passed: Sufficient voltage change.")
                     if progress_y + 1 < stdscr.getmaxyx()[0]:
                         try:
-                            stdscr.addstr(progress_y + 1, 0, f"Test passed (Bank {high} Δ={high_delta:.3f}V, Bank {low} Δ={low_delta:.3f}V).", curses.color_pair(4))
+                            stdscr.addstr(progress_y + 1, 0, f"Test passed (Bank {high} change={high_delta:+.3f}V, Bank {low} change={low_delta:+.3f}V).", curses.color_pair(4))
                         except curses.error:
                             logging.warning("addstr error for test passed.")
             else:
-                alerts.append(f"Balance test {high} to {low} failed: Insufficient readings.")
-                logging.error(f"Balance test {high} to {low} failed: Only {len(high_trend)} readings collected.")
+                alerts.append(f"Balance test between Bank {high} and Bank {low} failed: Insufficient readings.")
+                logging.error(f"Balance test between Bank {high} and Bank {low} failed: Only {len(high_trend)} readings collected.")
                 if progress_y + 1 < stdscr.getmaxyx()[0]:
                     try:
                         stdscr.addstr(progress_y + 1, 0, "Test failed: Insufficient readings.", curses.color_pair(2))
