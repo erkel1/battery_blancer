@@ -1565,25 +1565,25 @@ def startup_self_test(settings, stdscr):
                     logging.warning("addstr error for analyzing.")
             stdscr.refresh()
 
-            # Analyze test results
+            # Analyze test results and display initial/final readings
             if len(source_trend) >= 3:
                 source_change = final_source_v - initial_source_v  # Natural change: negative if decreases
                 dest_change = final_dest_v - initial_dest_v       # Natural change: positive if increases
-                logging.debug(f"Balance test from Bank {source} to Bank {dest} analysis: Bank {source} change={source_change:+.3f}V, Bank {dest} change={dest_change:+.3f}V, Min change={min_delta}V")
+                logging.debug(f"Balance test from Bank {source} to Bank {dest} analysis: Bank {source} Initial={initial_source_v:.2f}V, Final={final_source_v:.2f}V, Change={source_change:+.3f}V, Bank {dest} Initial={initial_dest_v:.2f}V, Final={final_dest_v:.2f}V, Change={dest_change:+.3f}V, Min change={min_delta}V")
                 # Expect source to decrease (negative change) and destination to increase (positive change)
                 if source_change >= 0 or dest_change <= 0 or abs(source_change) < min_delta or dest_change < min_delta:
-                    alerts.append(f"Balance test from Bank {source} to Bank {dest} failed: Unexpected trend or insufficient change (Bank {source} change={source_change:+.3f}V, Bank {dest} change={dest_change:+.3f}V).")
+                    alerts.append(f"Balance test from Bank {source} to Bank {dest} failed: Unexpected trend or insufficient change (Bank {source} Initial={initial_source_v:.2f}V, Final={final_source_v:.2f}V, Change={source_change:+.3f}V, Bank {dest} Initial={initial_dest_v:.2f}V, Final={final_dest_v:.2f}V, Change={dest_change:+.3f}V).")
                     logging.error(f"Balance test from Bank {source} to Bank {dest} failed: Source did not decrease or destination did not increase sufficiently.")
                     if progress_y + 1 < stdscr.getmaxyx()[0]:
                         try:
-                            stdscr.addstr(progress_y + 1, 0, f"Test failed: Unexpected trend or insufficient change (Bank {source} change={source_change:+.3f}V, Bank {dest} change={dest_change:+.3f}V).", curses.color_pair(2))
+                            stdscr.addstr(progress_y + 1, 0, f"Test failed: Unexpected trend or insufficient change (Bank {source} Initial={initial_source_v:.2f}V, Final={final_source_v:.2f}V, Change={source_change:+.3f}V, Bank {dest} Initial={initial_dest_v:.2f}V, Final={final_dest_v:.2f}V, Change={dest_change:+.3f}V).", curses.color_pair(2))
                         except curses.error:
                             logging.warning("addstr error for test failed insufficient change.")
                 else:
                     logging.debug(f"Balance test from Bank {source} to Bank {dest} passed: Correct trend and sufficient voltage change.")
                     if progress_y + 1 < stdscr.getmaxyx()[0]:
                         try:
-                            stdscr.addstr(progress_y + 1, 0, f"Test passed (Bank {source} change={source_change:+.3f}V, Bank {dest} change={dest_change:+.3f}V).", curses.color_pair(4))
+                            stdscr.addstr(progress_y + 1, 0, f"Test passed (Bank {source} Initial={initial_source_v:.2f}V, Final={final_source_v:.2f}V, Change={source_change:+.3f}V, Bank {dest} Initial={initial_dest_v:.2f}V, Final={final_dest_v:.2f}V, Change={dest_change:+.3f}V).", curses.color_pair(4))
                         except curses.error:
                             logging.warning("addstr error for test passed.")
             else:
