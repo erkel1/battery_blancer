@@ -1519,22 +1519,21 @@ def startup_self_test(settings, stdscr):
                 y += 2
                 stdscr.refresh()
                 continue
+            # Initial voltage reading before relay activation
+            initial_source_v = read_voltage_with_retry(source, settings)[0] or 0.0
+            initial_dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0
+            time.sleep(0.5)  # 500ms delay after initial reading
+            logging.debug(f"Balance test from Bank {source} to Bank {dest}: Initial - Bank {source}={initial_source_v:.2f}V, Bank {dest}={initial_dest_v:.2f}V")
+
             # Start balance test
             set_relay_connection(source, dest, settings)
             control_dcdc_converter(True, settings)
             start_time = time.time()
-            source_trend = []
-            dest_trend = []
+
+            # Monitor voltage changes during test (optional monitoring, not used for delta)
+            source_trend = [initial_source_v]
+            dest_trend = [initial_dest_v]
             progress_y = y + 1
-
-            # Initial voltage readings
-            initial_source_v = read_voltage_with_retry(source, settings)[0] or 0.0
-            initial_dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0
-            source_trend.append(initial_source_v)
-            dest_trend.append(initial_dest_v)
-            logging.debug(f"Balance test from Bank {source} to Bank {dest}: Initial - Bank {source}={initial_source_v:.2f}V, Bank {dest}={initial_dest_v:.2f}V")
-
-            # Monitor voltage changes during test
             while time.time() - start_time < test_duration:
                 time.sleep(read_interval)
                 source_v = read_voltage_with_retry(source, settings)[0] or 0.0
@@ -1551,9 +1550,14 @@ def startup_self_test(settings, stdscr):
                         logging.warning("addstr error in startup balance progress.")
                 stdscr.refresh()
 
-            # Clean up after test
-            control_dcdc_converter(False, settings)
+            # Final voltage reading before relay deactivation
+            final_source_v = read_voltage_with_retry(source, settings)[0] or 0.0
+            final_dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0
+            time.sleep(0.5)  # 500ms delay after final reading before deactivation
+            logging.debug(f"Balance test from Bank {source} to Bank {dest}: Final - Bank {source}={final_source_v:.2f}V, Bank {dest}={final_dest_v:.2f}V")
+            control_dcdc_converter(False, settings)  # Deactivate after delay
             set_relay_connection(0, 0, settings)
+
             if progress_y + 1 < stdscr.getmaxyx()[0]:
                 try:
                     stdscr.addstr(progress_y + 1, 0, "Analyzing...", curses.color_pair(6))
@@ -1561,14 +1565,9 @@ def startup_self_test(settings, stdscr):
                     logging.warning("addstr error for analyzing.")
             stdscr.refresh()
 
-            # Final voltage readings
-            final_source_v = source_trend[-1]
-            final_dest_v = dest_trend[-1]
-            logging.debug(f"Balance test from Bank {source} to Bank {dest}: Final - Bank {source}={final_source_v:.2f}V, Bank {dest}={final_dest_v:.2f}V")
-
             # Analyze test results
             if len(source_trend) >= 3:
-                source_change = final_source_v - initial_source_v  # Natural change: positive if increases, negative if decreases
+                source_change = final_source_v - initial_source_v  # Natural change: negative if decreases
                 dest_change = final_dest_v - initial_dest_v       # Natural change: positive if increases
                 logging.debug(f"Balance test from Bank {source} to Bank {dest} analysis: Bank {source} change={source_change:+.3f}V, Bank {dest} change={dest_change:+.3f}V, Min change={min_delta}V")
                 # Expect source to decrease (negative change) and destination to increase (positive change)
