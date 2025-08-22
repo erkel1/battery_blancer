@@ -9,7 +9,6 @@
 # - **Alerts and Notifications**: Logs issues to a file, activates an alarm relay, and sends throttled email alerts (e.g., every hour).
 # - **User Interfaces**: 
 #   - **TUI**: Shows real-time battery status with ASCII art, voltages, temperatures, alerts, balancing progress (top-right), and the last 20 events (bottom-right).
-#   - **Web Dashboard**: Accessible at http://<pi-ip>:8080, displays status and allows manual balancing.
 # - **Startup Self-Test**: Checks configuration, hardware connections, sensor readings, and balancer functionality at startup.
 # - **Error Handling**: Retries failed reads, handles missing hardware, and logs detailed errors.
 # - **Configuration**: Uses 'battery_monitor.ini' for settings, with defaults if keys are missing.
@@ -1341,9 +1340,9 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
         else:
             logging.warning("Skipping no alerts message - out of bounds.")  # Log if out of bounds
 
-    # Display event history on right bottom half
-    y_offset = 1  # Reset y for right side
-    if y_offset < height:
+    # Display event history on bottom-right half
+    y_offset = height // 2  # Start at middle for bottom half
+    if y_offset < height:  # Check if header fits
         try:
             stdscr.addstr(y_offset, right_half_x, "Event History:", curses.color_pair(7))  # Display header in cyan
         except curses.error:
@@ -1812,7 +1811,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
         # Check authentication if required
         if self.settings['auth_required'] and not self.authenticate():
             self.send_response(401)  # Send unauthorized response
-            self.send_header('WWW-Authenticate', 'Basic realm="BMS"')  # Request authentication
+            self.send_header('WWW-Authenticate', 'Basic realm="BMS"')  # Send auth request
             self.end_headers()  # End headers
             return
 
@@ -1890,7 +1889,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                 .then(data => {
                     document.getElementById('system-status').textContent = data.system_status;
                     document.getElementById('last-update').textContent = new Date(data.last_update * 1000).toLocaleString();
-                    document.getElementById('total-voltage').textContent = data.total_voltage.toFixed(2)+ 'V';
+                    document.getElementById('total-voltage').textContent = data.total_voltage.toFixed(2) + 'V';
                     document.getElementById('balancing-status').textContent = data.balancing ? 'Yes' : 'No';
                    
                     const batteryContainer = document.getElementById('battery-container');
