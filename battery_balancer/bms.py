@@ -1802,30 +1802,33 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
         super().__init__(request, client_address, server)  # Call parent initializer
 
     def do_GET(self):
-    """
-    Handle GET requests for web interface and API.
-    """
-    parsed_path = urlparse(self.path)
-    path = parsed_path.path
-   
-    # Check authentication if required
-    if self.settings['auth_required'] and not self.authenticate():
-        self.send_response(401)
-        self.send_header('WWW-Authenticate', 'Basic realm="BMS"')
-        self.end_headers()
-        return
-   
-    if path == '/':
-        self.send_response(200)
+        """
+        Handle GET requests (e.g., load dashboard or API data).
+        """
+        parsed_path = urlparse(self.path)  # Parse the request path
+        path = parsed_path.path  # Get the path
+
+        # Check authentication if required
+        if self.settings['auth_required'] and not self.authenticate():
+            self.send_response(401)  # Send unauthorized response
+            self.send_header('WWW-Authenticate', 'Basic realm="BMS"')  # Send auth request
+            self.end_headers()  # End headers
+            return
+
+        # Set CORS headers if enabled
         if self.settings['cors_enabled']:
-            self.send_header('Access-Control-Allow-Origin', self.settings['cors_origins'])
-            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-            self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        self.send_header('Content-type', 'text/html')
-        self.end_headers()
-       
-        # HTML dashboard content
-        html = """<!DOCTYPE html>
+            self.send_header('Access-Control-Allow-Origin', self.settings['cors_origins'])  # Allow origins
+            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')  # Allow methods
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')  # Allow headers
+
+        # Serve the dashboard page
+        if path == '/':
+            self.send_response(200)  # OK response
+            self.send_header('Content-type', 'text/html')  # HTML content
+            self.end_headers()  # End headers
+
+            # HTML content for the web dashboard
+            html = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -1950,31 +1953,32 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
         setInterval(updateStatus, 5000);
     </script>
 </body>
-</html>
-    elif path == '/api/status':
-        self.send_response(200)
-        if self.settings['cors_enabled']:
-            self.send_header('Access-Control-Allow-Origin', self.settings['cors_origins'])
-            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-            self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        self.send_header('Content-type', 'application/json')
-        self.end_headers()
-       
-        response = {
-            'voltages': web_data['voltages'],
-            'temperatures': web_data['temperatures'],
-            'alerts': web_data['alerts'],
-            'balancing': web_data['balancing'],
-            'last_update': web_data['last_update'],
-            'system_status': web_data['system_status'],
-            'total_voltage': sum(web_data['voltages'])
-        }
-       
-        self.wfile.write(json.dumps(response).encode('utf-8'))
-   
-    else:
-        self.send_response(404)
-        self.end_headers()
+</html>"""
+           
+            self.wfile.write(html.encode('utf-8'))  # Send HTML
+
+        # Serve API status data
+        elif path == '/api/status':
+            self.send_response(200)  # OK response
+            self.send_header('Content-type', 'application/json')  # JSON content
+            self.end_headers()  # End headers
+
+            # Prepare JSON response
+            response = {
+                'voltages': web_data['voltages'],
+                'temperatures': web_data['temperatures'],
+                'alerts': web_data['alerts'],
+                'balancing': web_data['balancing'],
+                'last_update': web_data['last_update'],
+                'system_status': web_data['system_status'],
+                'total_voltage': sum(web_data['voltages'])
+            }
+
+            self.wfile.write(json.dumps(response).encode('utf-8'))  # Send JSON
+
+        else:
+            self.send_response(404)  # Not found response
+            self.end_headers()  # End headers
 
     def do_POST(self):
         """
