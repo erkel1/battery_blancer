@@ -183,6 +183,13 @@ NUM_BANKS = 3 # Fixed number of banks for 3s8p configuration
 # Global for watchdog
 WATCHDOG_DEV = '/dev/watchdog'
 watchdog_fd = None
+temp_failure_count = 0
+voltage_failure_count = 0
+startup_retry_count = 0
+MAX_FAILURES = 5
+MAX_STARTUP_RETRIES = 3
+
+
 def get_bank_for_channel(ch):
     """
     Find which battery bank a temperature sensor belongs to.
@@ -230,6 +237,7 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
     Returns:
         list: Temperature readings or an error message if the read fails
     """
+    global temp_failure_count
     logging.info("Starting temperature sensor read.") # Log the start of the read
     # Create the Modbus query to request data
     query_base = bytes([1, 3]) + (0).to_bytes(2, 'big') + (num_channels).to_bytes(2, 'big')
@@ -269,6 +277,7 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
                 val = int.from_bytes(data[i:i+2], 'big', signed=True) / scaling_factor
                 raw_temperatures.append(val) # Convert raw data to temperature
             logging.info("Temperature read successful.") # Log successful read
+            temp_failure_count = 0
             return raw_temperatures # Return the list of temperatures
         except socket.error as e:
             # Handle network errors
@@ -277,6 +286,11 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
                 time.sleep(retry_backoff_base ** attempt) # Wait before retrying
             else:
                 logging.error(f"Temp read failed after {max_retries} attempts - {str(e)}.")
+                temp_failure_count += 1
+                if temp_failure_count > MAX_FAILURES:
+                    logging.warning("Excessive temp read failures; attempting recovery.")
+                    recover_hardware(settings)
+                    temp_failure_count = 0
                 return f"Error: Failed after {max_retries} attempts - {str(e)}."
         except ValueError as e:
             # Handle data validation errors
@@ -285,10 +299,20 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
                 time.sleep(retry_backoff_base ** attempt)
             else:
                 logging.error(f"Temp read failed after {max_retries} attempts - {str(e)}.")
+                temp_failure_count += 1
+                if temp_failure_count > MAX_FAILURES:
+                    logging.warning("Excessive temp read failures; attempting recovery.")
+                    recover_hardware(settings)
+                    temp_failure_count = 0
                 return f"Error: Failed after {max_retries} attempts - {str(e)}."
         except Exception as e:
             # Handle unexpected errors
             logging.error(f"Unexpected error in temp read attempt {attempt+1}: {str(e)}\n{traceback.format_exc()}")
+            temp_failure_count += 1
+            if temp_failure_count > MAX_FAILURES:
+                logging.warning("Excessive temp read failures; attempting recovery.")
+                recover_hardware(settings)
+                temp_failure_count = 0
             return f"Error: Unexpected failure - {str(e)}"
 def load_config():
     """
@@ -666,6 +690,7 @@ def read_voltage_with_retry(bank_id, settings):
     Returns:
         tuple: (average voltage, list of readings, list of raw ADC values) or (None, [], []) if failed
     """
+    global voltage_failure_count
     logging.info(f"Starting voltage read for Bank {bank_id}.") # Log voltage read attempt
     voltage_divider_ratio = settings['VoltageDividerRatio'] # Get voltage divider ratio
     sensor_id = bank_id # Sensor ID matches bank ID
@@ -707,10 +732,33 @@ def read_voltage_with_retry(bank_id, settings):
             valid_adc = [raw_values[i] for i, r in enumerate(readings) if abs(r - average) / (average if average != 0 else 1) <= 0.05] # Filter corresponding ADC values
             if valid_readings: # If we have valid readings
                 logging.info(f"Voltage read successful for Bank {bank_id}: {average:.2f}V.") # Log success
+                voltage_failure_count = 0
                 return sum(valid_readings) / len(valid_readings), valid_readings, valid_adc # Return average and details
         logging.debug(f"Readings for Bank {bank_id} inconsistent, retrying.") # Log retry
     logging.error(f"Couldn't get good voltage reading for Bank {bank_id} after 2 tries.") # Log failure
+    voltage_failure_count += 1
+    if voltage_failure_count > MAX_FAILURES:
+        logging.warning("Excessive voltage read failures; attempting recovery.")
+        recover_hardware(settings)
+        voltage_failure_count = 0
     return None, [], [] # Return failure result
+def recover_hardware(settings):
+    """
+    Reinitialize I2C and GPIO for recovery from hardware failures.
+    """
+    global bus
+    logging.info("Recovering hardware: Reinitializing I2C and GPIO.")
+    if bus:
+        try:
+            bus.close()
+        except:
+            pass
+        bus = smbus.SMBus(settings['I2C_BusNumber']) if smbus else None
+    if GPIO:
+        GPIO.cleanup()
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(settings['DC_DC_RelayPin'], GPIO.OUT, initial=GPIO.LOW)
+        GPIO.setup(settings['AlarmRelayPin'], GPIO.OUT, initial=GPIO.LOW)
 def set_relay_connection(high, low, settings):
     """
     Set up relays to connect a high-voltage bank to a low-voltage bank for balancing.
@@ -1260,7 +1308,7 @@ def startup_self_test(settings, stdscr):
     Returns:
         list: List of failure alerts
     """
-    global startup_failed, startup_alerts, startup_set, startup_median, startup_offsets # Access global startup variables
+    global startup_failed, startup_alerts, startup_set, startup_median, startup_offsets, startup_retry_count # Access global startup variables
     # Skip if startup test is disabled
     if not settings['StartupSelfTestEnabled']:
         logging.info("Startup self-test disabled via configuration.") # Log skip
@@ -1427,7 +1475,7 @@ def startup_self_test(settings, stdscr):
         logging.debug(f"Reading voltages for {NUM_BANKS} banks with VoltageDividerRatio={settings['VoltageDividerRatio']}") # Log voltage read details
         initial_voltages = [] # List to store initial voltages
         for i in range(1, NUM_BANKS + 1):
-            voltage, readings, adc_values = read_voltage_with_retry(i, settings) # Read voltage
+            voltage, readings, adc_values = read_voltage_with_retry(i, settings) # Read voltage and ADC data
             logging.debug(f"Bank {i} voltage read: Voltage={voltage}, Readings={readings}, ADC={adc_values}, "
                           f"CalibrationFactor={settings[f'Sensor{i}_Calibration']}") # Log details
             initial_voltages.append(voltage if voltage is not None else 0.0) # Add voltage or 0.0
@@ -1507,7 +1555,7 @@ def startup_self_test(settings, stdscr):
             read_interval = settings['test_read_interval'] # Get read interval
             min_delta = settings['min_voltage_delta'] # Get min voltage change
             logging.debug(f"Balancer test parameters: test_duration={test_duration}s, "
-                          f"read_interval={read_interval}s, min_voltage_delta={min_voltage_delta}V") # Log test parameters
+                          f"read_interval={read_interval}s, min_voltage_delta={min_delta}V") # Log test parameters
             for source, dest in pairs: # Loop through pairs
                 logging.debug(f"Testing balance from Bank {source} to Bank {dest}") # Log pair test
                 if y < stdscr.getmaxyx()[0]: # Check if message fits
@@ -1629,7 +1677,7 @@ def startup_self_test(settings, stdscr):
             logging.error("Startup self-test failures: " + "; ".join(alerts)) # Log failures
             send_alert_email("Startup self-test failures:\n" + "\n".join(alerts), settings) # Send email
             if GPIO:
-                GPIO.output(settings['AlarmRelayPin'], GPIO.HIGH)  # Turn on alarm relay
+                GPIO.output(settings['AlarmRelayPin'], GPIO.HIGH) # Turn on alarm relay
             stdscr.clear()
             if stdscr.getmaxyx()[0] > 0:
                 try:
@@ -1645,16 +1693,20 @@ def startup_self_test(settings, stdscr):
             # Pet the watchdog before and after long sleep
             if settings.get('WatchdogEnabled', False):
                 pet_watchdog()
-            time.sleep(120)  # Pause 2 minutes
+            time.sleep(120) # Pause 2 minutes
             if settings.get('WatchdogEnabled', False):
                 pet_watchdog()
             retries += 1
-            continue  # Retry
+            startup_retry_count += 1
+            if startup_retry_count > MAX_STARTUP_RETRIES:
+                logging.error("Max startup retries exceeded; rebooting system.")
+                os.system('sudo reboot')
+            continue # Retry
         else:
             startup_failed = False
             startup_alerts = []
             if GPIO:
-                GPIO.output(settings['AlarmRelayPin'], GPIO.LOW)  # Alarm off
+                GPIO.output(settings['AlarmRelayPin'], GPIO.LOW) # Alarm off
             stdscr.clear()
             if stdscr.getmaxyx()[0] > 0:
                 try:
@@ -1664,7 +1716,7 @@ def startup_self_test(settings, stdscr):
             stdscr.refresh() # Update display
             time.sleep(2)
             logging.info("Startup self-test passed.") # Log success
-            return []  # Proceed
+            return [] # Proceed
 class BMSRequestHandler(BaseHTTPRequestHandler):
     """
     Handles HTTP requests for the web interface and API.
