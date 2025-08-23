@@ -3,9 +3,9 @@
 # --------------------------------------------------------------------------------
 #
 # **Script Name:** bms.py
-# **Version:** 1.0 (As of August 24, 2025)
+# **Version:** 1.1 (As of August 24, 2025) - Updated with time-series data logging using RRD, ASCII charts in TUI, and web charts via Chart.js.
 # **Author:** [Your Name or Original Developer] - Built for Raspberry Pi-based battery monitoring and balancing.
-# **Purpose:** This script acts as a complete Battery Management System (BMS) for a 3s8p battery configuration (3 series banks, each with 8 parallel cells). It monitors temperatures and voltages, balances charge between banks, detects issues, logs events, sends alerts, and provides user interfaces via terminal (TUI) and web dashboard.
+# **Purpose:** This script acts as a complete Battery Management System (BMS) for a 3s8p battery configuration (3 series banks, each with 8 parallel cells). It monitors temperatures and voltages, balances charge between banks, detects issues, logs events, sends alerts, and provides user interfaces via terminal (TUI) and web dashboard. Now includes time-series logging of voltages and median temperatures using RRDTool for persistent storage, ASCII line charts in the TUI for visual history, and interactive charts in the web dashboard using Chart.js.
 #
 # **Detailed Overview:**
 # - **Temperature Monitoring:** Connects to 24 NTC thermistors (8 per bank) via a Lantronix EDS4100 device using Modbus TCP. Reads raw values, applies calibration offsets (calculated at startup or loaded from file), and checks for anomalies like high/low temperatures, deviations from bank medians, rapid rises, lags in group tracking, or disconnections.
@@ -25,8 +25,9 @@
 # - **Alerts & Notifications:** Logs to 'battery_monitor.log'. Activates alarm relay on issues. Sends throttled emails (e.g., every 3600s) via SMTP.
 # - **Watchdog:** If enabled, pets hardware watchdog during long operations to prevent resets. Uses /dev/watchdog with 30s timeout.
 # - **User Interfaces:**
-# - **TUI (Terminal UI):** Uses curses for real-time display: ASCII art batteries with voltages/temps, alerts, balancing progress bar/animation, spinner (indicates running), last 20 events.
-# - **Web Dashboard:** HTTP server on port 8080 (configurable). Shows voltages, temps, alerts, balancing status. Supports API for status/balance. Optional auth/CORS.
+# - **TUI (Terminal UI):** Uses curses for real-time display: ASCII art batteries with voltages/temps, alerts, balancing progress bar/animation, spinner (indicates running), last 20 events. Now includes ASCII line charts for voltage history per bank and median temperature, placed in the top-right section for visualization of trends over time.
+# - **Web Dashboard:** HTTP server on port 8080 (configurable). Shows voltages, temps, alerts, balancing status. Supports API for status/balance/history. Optional auth/CORS. Now includes interactive time-series charts using Chart.js for voltages per bank and median temperature, placed at the top of the page after the header for easy viewing.
+# - **Time-Series Logging:** Uses RRDTool for persistent storage of bank voltages and overall median temperature. Data is updated every poll interval (e.g., 10s), but RRD is configured with 5min steps for aggregation. History is limited to ~100 entries (e.g., 8 hours). Fetch functions retrieve data for TUI and web rendering.
 # - **Startup Self-Test:** Validates config, hardware connections (I2C/Modbus), initial reads, balancer (tests all pairs for voltage changes).
 # - Retries on failure after 2min. Alerts and activates alarm if fails.
 # - **Error Handling:** Retries reads (exponential backoff), handles missing hardware (test mode), logs tracebacks, graceful shutdown on Ctrl+C.
@@ -40,12 +41,13 @@
 # - Voltages: Measures "energy level" in each of 3 groups. If one has more energy than another, it transfers some to balance them, like pouring water between buckets.
 # - Heating: In cold weather (<10°C), it deliberately transfers energy to create warmth inside the battery cabinet.
 # - Alerts: If something's wrong, it logs it, turns on a buzzer/light (alarm relay), and emails you (but not too often to avoid spam).
-# - Interfaces: Terminal shows a fancy text-based dashboard; web page lets you view from browser.
+# - Interfaces: Terminal shows a fancy text-based dashboard with ASCII charts for trends; web page lets you view from browser with interactive charts.
 # - Startup Check: Like a self-diagnostic when your car starts – ensures everything's connected and working before running.
+# - Time-Series: Tracks history of voltages and temps, shows trends in charts to spot patterns over time.
 #
 # **How It Works (Step-by-Step for Non-Programmers):**
 # 1. **Start:** Loads settings from INI file (like a recipe book).
-# 2. **Setup:** Connects to hardware (sensors, relays) – if missing, runs in "pretend" mode.
+# 2. **Setup:** Connects to hardware (sensors, relays) – if missing, runs in "pretend" mode. Creates/loads RRD database for history.
 # 3. **Self-Test:** Checks if config makes sense, hardware responds, sensors give good readings, balancing actually changes voltages. If fail, alerts and retries.
 # 4. **Main Loop (Repeats Forever):**
 # - Read temperatures from all 24 sensors.
@@ -53,9 +55,11 @@
 # - Check for temperature problems (too hot, too cold, etc.).
 # - Read voltages from 3 banks.
 # - Check for voltage problems (too high, too low, zero).
+# - Update RRD database with voltages and median temp.
 # - If cold (<10°C anywhere), balance to heat up.
 # - Else, if voltages differ too much, balance to equalize.
-# - Update terminal/web displays.
+# - Fetch history from RRD for charts.
+# - Update terminal (with ASCII charts)/web displays (with Chart.js).
 # - Log events, send emails if issues.
 # - Pet watchdog (tell hardware "I'm alive" to avoid auto-reset).
 # - Wait a bit (e.g., 10s), repeat.
@@ -73,6 +77,7 @@
 # +-------------------------+
 # | Setup Hardware |
 # | (I2C bus, GPIO pins) |
+# | Create/Load RRD DB   |
 # +-------------------------+
 # |
 # v
@@ -123,6 +128,12 @@
 # | |
 # v |
 # +-------------------------+ |
+# | Update RRD with Data | |
+# | (Voltages, Median Temp)| |
+# +-------------------------+ |
+# | |
+# v |
+# +-------------------------+ |
 # | If Any Temp < 10°C: | |
 # | Balance for Heating | |
 # | Else If Volt Diff > Th: | |
@@ -133,9 +144,16 @@
 # | |
 # v |
 # +-------------------------+ |
+# | Fetch RRD History | |
+# | (For Charts) | |
+# +-------------------------+ |
+# | |
+# v |
+# +-------------------------+ |
 # | Update TUI (Terminal) | |
 # | & Web Dashboard | |
-# | (Show status, alerts) | |
+# | (Show status, alerts, | |
+# | ASCII/Chart.js Charts)| |
 # +-------------------------+ |
 # | |
 # v |
@@ -156,30 +174,34 @@
 # - **Python Version:** 3.11 or higher (core language for running the code).
 # - **Hardware Libraries:** smbus (for I2C communication with sensors/relays), RPi.GPIO (for controlling Raspberry Pi pins). Install: sudo apt install python3-smbus python3-rpi.gpio.
 # - **External Library:** art (for ASCII art in TUI). Install: pip install art.
-# - **Standard Python Libraries:** socket (networking), statistics (math like medians), time (timing/delays), configparser (read INI), logging (save logs), signal (handle shutdown), gc (memory cleanup), os (files), sys (exit), smtplib/email (emails), curses (TUI), threading (web server), json/http.server/urllib/base64 (web), traceback (errors), fcntl/struct (watchdog).
-# - **Hardware Requirements:** Raspberry Pi (any model, detects for watchdog), ADS1115 ADC (voltage), TCA9548A multiplexer (I2C channels), Relays (balancing), Lantronix EDS4100 (Modbus for temps), GPIO pins (e.g., 5 for DC-DC, 6 for alarm).
-# - **No Internet for Installs:** All libraries must be pre-installed; script can't download.
+# - **Time-Series Storage:** rrdtool (for RRD database). Install: sudo apt install rrdtool.
+# - **Standard Python Libraries:** socket (networking), statistics (math like medians), time (timing/delays), configparser (read INI), logging (save logs), signal (handle shutdown), gc (memory cleanup), os (files), sys (exit), smtplib/email (emails), curses (TUI), threading (web server), json/http.server/urllib/base64 (web), traceback (errors), fcntl/struct (watchdog), subprocess (for rrdtool commands), xml.etree.ElementTree (for parsing RRD XML output).
+# - **Hardware Requirements:** Raspberry Pi (any model, detects for watchdog), ADS1115 ADC (voltage), TCA9548A multiplexer (I2C channels), Relays (balancing), Lantronix EDS4100 (Modbus for temps), GPIO pins (e.g., 5 for DC-DC, 6 for alarm, 4 for fan).
+# - **No Internet for Installs:** All libraries must be pre-installed; script can't download. For web charts, Chart.js is loaded via CDN (requires internet for dashboard users).
 #
 # **Installation Guide (Step-by-Step for Non-Programmers):**
 # 1. **Install Python:** On Raspberry Pi, run in terminal: sudo apt update; sudo apt install python3.
 # 2. **Install Hardware Libraries:** sudo apt install python3-smbus python3-rpi.gpio.
 # 3. **Install Art Library:** pip install art (or sudo pip install art if needed).
-# 4. **Enable I2C:** Run sudo raspi-config, go to Interface Options > I2C > Enable, then reboot.
-# 5. **Create/Edit INI File:** Make 'battery_monitor.ini' in same folder as script. Copy template below and fill in values (e.g., emails, IPs).
-# 6. **Run Script:** sudo python bms.py (needs root for hardware access).
-# 7. **View Web Dashboard:** Open browser to http://<your-pi-ip>:8080.
-# 8. **Logs:** Check 'battery_monitor.log' for details. Set LoggingLevel=DEBUG in INI for more info.
+# 4. **Install RRDTool for Time-Series:** sudo apt install rrdtool.
+# 5. **Enable I2C:** Run sudo raspi-config, go to Interface Options > I2C > Enable, then reboot.
+# 6. **Create/Edit INI File:** Make 'battery_monitor.ini' in same folder as script. Copy template below and fill in values (e.g., emails, IPs).
+# 7. **Run Script:** sudo python bms.py (needs root for hardware access).
+# 8. **View Web Dashboard:** Open browser to http://<your-pi-ip>:8080. Charts will load via Chart.js CDN.
+# 9. **Logs:** Check 'battery_monitor.log' for details. Set LoggingLevel=DEBUG in INI for more info.
+# 10. **RRD Database:** Created automatically as 'bms.rrd' on first run. No manual setup needed.
 #
 # **Notes & Troubleshooting:**
 # - **Hardware Matching:** Ensure INI addresses/pins match your setup. Wrong IP/port = no temps.
 # - **Email Setup:** Use Gmail app password (not regular password) for SMTP_Password.
-# - **TUI Size:** Terminal should be wide (>80 columns) for full display.
+# - **TUI Size:** Terminal should be wide (>80 columns) for full display, including charts.
 # - **Test Mode:** If no hardware, script runs without crashing but warns.
 # - **Security:** For web, enable auth_required=True and set strong username/password.
 # - **Offsets File:** 'offsets.txt' stores calibration – delete to recalibrate.
-# - **Common Errors:** I2C errors = check wiring/connections. Modbus errors = check Lantronix IP/port.
-# - **Performance:** Poll interval ~10s; balancing ~5s. Adjust in INI.
-# - **Customization:** Edit thresholds in INI for your battery specs (e.g., Li-ion safe ranges).
+# - **RRD Issues:** If rrdtool commands fail, check installation and permissions. Database 'bms.rrd' stores aggregated data; use rrdtool info bms.rrd for details.
+# - **Common Errors:** I2C errors = check wiring/connections. Modbus errors = check Lantronix IP/port. RRD errors = ensure rrdtool installed and path correct.
+# - **Performance:** Poll interval ~10s; balancing ~5s. Adjust in INI. Charts fetch from RRD (~100 entries) won't impact performance.
+# - **Customization:** Edit thresholds in INI for your battery specs (e.g., Li-ion safe ranges). For longer history, adjust RRA in RRD creation.
 #
 # **battery_monitor.ini Documentation (With Comments - Copy This to Your File):**
 # ; battery_monitor.ini - Configuration File for BMS Script
@@ -203,6 +225,7 @@
 # query_delay = 0.25 ; Wait seconds after sending sensor query.
 # num_channels = 24 ; Number of sensors (fixed for 3 banks x 8).
 # abs_deviation_threshold = 2.0 ; Max absolute difference from bank average (°C).
+# cabinet_over_temp_threshold = 35.0 ; Cabinet too hot if median > this (°C) - fan on!
 #
 # [General] ; Overall system settings.
 # NumberOfBatteries = 3 ; Number of banks (fixed at 3 for 3s8p).
@@ -228,6 +251,7 @@
 # [GPIO] ; Pi pin numbers for relays.
 # DC_DC_RelayPin = 5 ; Pin to control DC-DC converter.
 # AlarmRelayPin = 6 ; Pin for alarm (buzzer/light).
+# FanRelayPin = 4 ; Pin for cabinet fan.
 #
 # [Email] ; Settings for alert emails.
 # SMTP_Server = smtp.gmail.com ; Email server (Gmail).
@@ -282,6 +306,8 @@ import json # Formats data for the web interface - data packer.
 from urllib.parse import urlparse, parse_qs # Parses web requests - breaks down URLs.
 import base64 # Decodes authentication credentials for the web interface - secret decoder.
 import traceback # Logs detailed error information for debugging - error detective.
+import subprocess # Runs external commands like rrdtool for time-series database operations - external tool caller.
+import xml.etree.ElementTree as ET # Parses XML output from rrdtool for fetching history data - XML parser.
 # Import libraries for hardware interaction, with fallback for testing - try to load hardware tools, if not, pretend mode.
 try:
     import smbus # Communicates with I2C devices like the ADC and relays - hardware talker.
@@ -339,6 +365,9 @@ NUM_BANKS = 3 # Fixed number of banks for 3s8p configuration - constant 3.
 # Global for watchdog - watchdog file path.
 WATCHDOG_DEV = '/dev/watchdog' # Device file for watchdog - hardware reset preventer.
 watchdog_fd = None # File handle for watchdog - open connection.
+# RRD globals for time-series - database file and history limit.
+RRD_FILE = 'bms.rrd' # RRD database file for storing time-series data - persistent storage.
+HISTORY_LIMIT = 100  # Number of historical entries to retain (e.g., ~8 hours at 5min steps) - limit for memory/efficiency.
 def get_bank_for_channel(ch):
     """
     Find which battery bank a temperature sensor belongs to.
@@ -484,7 +513,7 @@ def load_config():
         'query_delay': config_parser.getfloat('Temp', 'query_delay', fallback=0.25), # Delay after Modbus query.
         'num_channels': config_parser.getint('Temp', 'num_channels', fallback=24), # Number of sensors.
         'abs_deviation_threshold': config_parser.getfloat('Temp', 'abs_deviation_threshold', fallback=2.0), # Max absolute deviation.
-        'cabinet_over_temp_threshold': config_parser.getfloat('Temp', 'cabinet_over_temp_threshold', fallback=35.0)
+        'cabinet_over_temp_threshold': config_parser.getfloat('Temp', 'cabinet_over_temp_threshold', fallback=35.0) # Cabinet over-temp for fan.
     }
     # Voltage and balancing settings - general voltage.
     voltage_settings = {
@@ -516,7 +545,7 @@ def load_config():
     gpio_settings = {
         'DC_DC_RelayPin': config_parser.getint('GPIO', 'DC_DC_RelayPin', fallback=17), # Pin for DC-DC converter relay.
         'AlarmRelayPin': config_parser.getint('GPIO', 'AlarmRelayPin', fallback=27), # Pin for alarm relay.
-        'FanRelayPin': config_parser.getint('GPIO', 'FanRelayPin', fallback=4)
+        'FanRelayPin': config_parser.getint('GPIO', 'FanRelayPin', fallback=4) # Pin for fan relay.
     }
     # Email alert settings - email info.
     email_settings = {
@@ -571,7 +600,7 @@ def load_config():
 def setup_hardware(settings):
     """
     Set up the I2C bus and GPIO pins for hardware communication.
-    This function prepares the connections to sensors and pins.
+    This function prepares the connections to sensors and pins, and initializes the RRD database for time-series logging.
     Args:
         settings (dict): Configuration settings from the INI file - settings dict.
     """
@@ -591,7 +620,19 @@ def setup_hardware(settings):
         GPIO.setup(settings['FanRelayPin'], GPIO.OUT, initial=GPIO.LOW) # Set up fan relay pin - off at start.
     else:
         logging.warning("RPi.GPIO not available - running in test mode") # Warn if GPIO library is missing.
-    logging.info("Hardware setup complete.") # Log successful setup - done.
+    # Create RRD database if it doesn't exist - time-series storage setup.
+    try:
+        subprocess.check_call(['rrdtool', 'create', RRD_FILE,
+                               '--step', '300',  # 5min step for aggregation.
+                               'DS:volt1:GAUGE:600:0:25',  # Bank 1 voltage (heartbeat 10min, range 0-25V).
+                               'DS:volt2:GAUGE:600:0:25',  # Bank 2.
+                               'DS:volt3:GAUGE:600:0:25',  # Bank 3.
+                               'DS:medtemp:GAUGE:600:-20:100',  # Median temp (-20 to 100°C).
+                               'RRA:AVERAGE:0.5:1:100'])  # Average, retain 100 steps (~8 hours).
+        logging.info("Created RRD database for time-series logging.") # Log creation.
+    except subprocess.CalledProcessError:
+        logging.info("RRD database already exists - using existing for time-series.") # Log existing.
+    logging.info("Hardware setup complete, including RRD initialization.") # Log successful setup - done.
 def signal_handler(sig, frame):
     """
     Handle Ctrl+C (SIGINT) to shut down the script cleanly.
@@ -697,7 +738,7 @@ def check_high_temp(calibrated, ch, alerts, high_threshold):
         alerts.append(alert) # Add to alerts - store.
         event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}") # Add to event log - history.
         if len(event_log) > 20:
-            event_log.pop(0) # Keep last 20 events - trim.
+            event_log.pop(0) # Trim.
         logging.warning(f"High temp alert on Bank {bank} Ch {ch}: {calibrated:.1f} > {high_threshold}.") # Log the issue - note.
 def check_low_temp(calibrated, ch, alerts, low_threshold):
     """
@@ -715,7 +756,7 @@ def check_low_temp(calibrated, ch, alerts, low_threshold):
         alerts.append(alert) # Add to alerts - store.
         event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}") # Add to event log - history.
         if len(event_log) > 20:
-            event_log.pop(0) # Keep last 20 events - trim.
+            event_log.pop(0) # Trim.
         logging.warning(f"Low temp alert on Bank {bank} Ch {ch}: {calibrated:.1f} < {low_threshold}.") # Log the issue - note.
 def check_deviation(calibrated, bank_median, ch, alerts, abs_deviation_threshold, deviation_threshold):
     """
@@ -805,6 +846,31 @@ def check_sudden_disconnection(current, previous_temps, ch, alerts):
         if len(event_log) > 20:
             event_log.pop(0) # Trim.
         logging.warning(f"Sudden disconnection alert on Bank {bank} Ch {ch}.") # Log.
+def ascii_line_chart(data, width=40, height=5, symbols=' ▁▂▃▄▅▆▇█'):
+    """
+    Generate an ASCII line chart from data series.
+    This function creates a simple text-based line graph using Unicode block characters for visualization in the TUI.
+    Args:
+        data (list): List of numerical values to plot - data points.
+        width (int): Width of the chart in characters - horizontal size.
+        height (int): Height of the chart in lines - vertical size.
+        symbols (str): String of characters representing increasing heights - block symbols.
+    Returns:
+        str: Multi-line string representing the ASCII chart - chart text.
+    """
+    if not data: # No data?
+        return '\n'.join([' ' * width] * height) # Empty chart.
+    min_val, max_val = min(data), max(data) # Min and max values.
+    range_val = max_val - min_val or 1 # Range, avoid divide by zero.
+    # Scale data to symbol indices - normalize.
+    scaled = [(val - min_val) / range_val * (len(symbols) - 1) for val in data]
+    chart = [] # List for lines.
+    # Build each row from top to bottom - high to low.
+    for y in range(height - 1, -1, -1):
+        # For each x, choose symbol if data exists - build line.
+        line = ''.join(symbols[int(scaled[x])] if len(data) > x else ' ' for x in range(width))
+        chart.append(line) # Add line.
+    return '\n'.join(chart) # Return as string.
 def choose_channel(channel, multiplexer_address):
     """
     Select an I2C channel on the multiplexer.
@@ -1135,10 +1201,43 @@ def compute_bank_medians(calibrated_temps, valid_min):
         bank_median = statistics.median(bank_temps) if bank_temps else 0.0 # Median or 0.
         bank_medians.append(bank_median) # Add.
     return bank_medians # Return list.
+def fetch_rrd_history():
+    """
+    Fetch historical data from RRD database.
+    This function uses rrdtool xport to export data as XML, parses it, and returns a list of dicts with time, voltages, and median temp.
+    Returns:
+        list: List of dicts with historical data - [{'time': ts, 'volt1': v1, 'volt2': v2, 'volt3': v3, 'medtemp': mt}, ...] recent first.
+    """
+    start = int(time.time()) - (HISTORY_LIMIT * 300)  # Last 100 steps (5min each) - calculate start time.
+    try:
+        # Run rrdtool xport to get XML data - export command.
+        output = subprocess.check_output(['rrdtool', 'xport',
+                                          '--start', str(start),
+                                          '--end', 'now',
+                                          '--step', '300',
+                                          'DEF:v1=bms.rrd:volt1:AVERAGE',
+                                          'DEF:v2=bms.rrd:volt2:AVERAGE',
+                                          'DEF:v3=bms.rrd:volt3:AVERAGE',
+                                          'DEF:mt=bms.rrd:medtemp:AVERAGE',
+                                          'XPORT:v1:Bank1',
+                                          'XPORT:v2:Bank2',
+                                          'XPORT:v3:Bank3',
+                                          'XPORT:mt:MedianTemp'])
+        root = ET.fromstring(output.decode()) # Parse XML.
+        data = [] # List for rows.
+        for row in root.findall('.//row'): # Loop rows.
+            t = int(row.find('t').text) # Timestamp.
+            vs = [float(v.text) if v.text != 'NaN' else None for v in row.findall('v')] # Values, None for NaN.
+            data.append({'time': t, 'volt1': vs[0], 'volt2': vs[1], 'volt3': vs[2], 'medtemp': vs[3]}) # Dict.
+        logging.debug(f"Fetched {len(data)} history entries from RRD.") # Log count.
+        return data[::-1]  # Reverse to recent first - order.
+    except Exception as e:
+        logging.error(f"RRD fetch error: {e}") # Log fail.
+        return [] # Empty on error.
 def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_medians, startup_median, alerts, settings, startup_set, is_startup, spinner_char=None):
     """
     Draw the Text User Interface (TUI) to show battery status, alerts, balancing, and event history.
-    Updates the terminal display.
+    Updates the terminal display, now including ASCII line charts for voltage and median temp history in top-right.
     Args:
         stdscr: Curses screen object for terminal display - screen.
         voltages (list): List of bank voltages - voltages.
@@ -1343,6 +1442,36 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
                 logging.warning("addstr error for no alerts message.") # Error.
         else:
             logging.warning("Skipping no alerts message - out of bounds.") # No.
+    # Fetch history and draw ASCII charts in top-right - trends.
+    history = fetch_rrd_history() # Get data.
+    if history: # Have data?
+        volt_hist = [[d[f'volt{b+1}'] for d in history if d[f'volt{b+1}'] is not None] for b in range(3)] # Per bank voltages.
+        temp_hist = [d['medtemp'] for d in history if d['medtemp'] is not None] # Median temps.
+        y_chart = 1 # Top-right y start.
+        # Draw per-bank voltage charts - voltages.
+        for b in range(3):
+            chart = ascii_line_chart(volt_hist[b], width=30, height=5) # Generate.
+            for i, line in enumerate(chart.splitlines()): # Lines.
+                if y_chart + i < height and right_half_x + len(f"Bank {b+1} V: {line}") < width: # Fits?
+                    try:
+                        stdscr.addstr(y_chart + i, right_half_x, f"Bank {b+1} V: {line}", curses.color_pair(4)) # Green.
+                    except curses.error:
+                        logging.warning(f"addstr error for Bank {b+1} voltage chart line {i}.") # Error.
+                else:
+                    logging.warning(f"Skipping Bank {b+1} voltage chart line {i} - out of bounds.") # No fit.
+            y_chart += 6 # Space down.
+        # Draw median temp chart - temp.
+        temp_chart = ascii_line_chart(temp_hist, width=30, height=5) # Generate.
+        for i, line in enumerate(temp_chart.splitlines()): # Lines.
+            if y_chart + i < height and right_half_x + len(f"Med Temp: {line}") < width: # Fits?
+                try:
+                    stdscr.addstr(y_chart + i, right_half_x, f"Med Temp: {line}", curses.color_pair(7)) # Cyan.
+                except curses.error:
+                    logging.warning(f"addstr error for median temp chart line {i}.") # Error.
+            else:
+                logging.warning(f"Skipping median temp chart line {i} - out of bounds.") # No fit.
+    else:
+        logging.warning("No history data for ASCII charts.") # No data.
     # Display event history on bottom-right half - history.
     y_offset = height // 2 # Middle for bottom.
     if y_offset < height: # Fits?
@@ -1365,7 +1494,7 @@ def setup_watchdog(timeout=60):
     """
     Set up the hardware watchdog timer for the Raspberry Pi.
     Detects Pi model and loads appropriate watchdog module (bcm2835_wdt for Pi 1-4, rp1-wdt for Pi 5 and newer).
-    Falls back to opening /dev/watchdog for unknown drivers.
+    Falls back to opening /dev/watchdog for unknown unknown models.
     Args:
         timeout (int): Watchdog timeout in seconds (default: 60) - reset time.
     """
@@ -1733,7 +1862,7 @@ def startup_self_test(settings, stdscr):
                 pet_watchdog()
                 time.sleep(0.5) # Pause.
                 logging.debug(f"Balance test from Bank {source} to Bank {dest}: Initial - Bank {source}={initial_source_v:.2f}V, Bank {dest}={initial_dest_v:.2f}V") # Log.
-                # Start test balancing - test.
+                # Start test balancing - go.
                 set_relay_connection(source, dest, settings) # Connect.
                 control_dcdc_converter(True, settings) # On.
                 start_time = time.time() # Start.
@@ -1861,7 +1990,7 @@ def startup_self_test(settings, stdscr):
 class BMSRequestHandler(BaseHTTPRequestHandler):
     """
     Handles HTTP requests for the web interface and API.
-    Web request handler.
+    Web request handler, now with /api/history for time-series data.
     """
     def __init__(self, request, client_address, server):
         """
@@ -1896,13 +2025,14 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
             self.send_response(200) # OK.
             self.send_header('Content-type', 'text/html') # HTML.
             self.end_headers() # End.
-            # HTML content for the web dashboard - page code.
+            # HTML content for the web dashboard - page code, updated with Chart.js canvas and JS.
             html = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Battery Management System</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
         .container { max-width: 1200px; margin: 0 auto; }
@@ -1926,6 +2056,10 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
             <h1>Battery Management System</h1>
             <p>Status: <span id="system-status">Loading...</span></p>
             <p>Last Update: <span id="last-update">-</span></p>
+        </div>
+        <div class="status-card">
+            <h2>Time-Series Charts</h2>
+            <canvas id="bmsChart" width="800" height="400"></canvas>
         </div>
         <div class="status-card">
             <h2>Battery Banks</h2>
@@ -1978,7 +2112,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                     const alertsContainer = document.getElementById('alerts-container');
                     if (data.alerts.length > 0) {
                         alertsContainer.innerHTML = data.alerts.map(alert => `<p class="alert">${alert}</p>`).join('');
-                    } else:
+                    } else {
                         alertsContainer.innerHTML = '<p class="normal">No alerts</p>';
                     }
                     const balanceBtn = document.getElementById('balance-btn');
@@ -1989,13 +2123,38 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                     document.getElementById('system-status').textContent = 'Error';
                 });
         }
+        function updateChart() {
+            fetch('/api/history')
+                .then(response => response.json())
+                .then(data => {
+                    const hist = data.history;
+                    const labels = hist.map(h => new Date(h.time * 1000).toLocaleTimeString());
+                    const datasets = [
+                        { label: 'Bank 1 V', data: hist.map(h => h.volt1), borderColor: 'green' },
+                        { label: 'Bank 2 V', data: hist.map(h => h.volt2), borderColor: 'blue' },
+                        { label: 'Bank 3 V', data: hist.map(h => h.volt3), borderColor: 'red' },
+                        { label: 'Median Temp °C', data: hist.map(h => h.medtemp), borderColor: 'cyan', yAxisID: 'temp' }
+                    ];
+                    const ctx = document.getElementById('bmsChart').getContext('2d');
+                    new Chart(ctx, {
+                        type: 'line',
+                        data: { labels, datasets },
+                        options: {
+                            scales: {
+                                y: { type: 'linear', position: 'left', title: { display: true, text: 'Voltage (V)' } },
+                                temp: { type: 'linear', position: 'right', title: { display: true, text: 'Temp (°C)' }, grid: { drawOnChartArea: false } }
+                            }
+                        }
+                    });
+                });
+        }
         function initiateBalance() {
             fetch('/api/balance', { method: 'POST' })
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
                         alert('Balancing initiated');
-                    } else:
+                    } else {
                         alert('Error: ' + data.message);
                     }
                 })
@@ -2007,7 +2166,9 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
         document.getElementById('refresh-btn').addEventListener('click', updateStatus);
         document.getElementById('balance-btn').addEventListener('click', initiateBalance);
         updateStatus();
+        updateChart();  // Initial chart load
         setInterval(updateStatus, 5000);
+        setInterval(updateChart, 300000);  // 5min chart refresh
     </script>
 </body>
 </html>"""
@@ -2027,6 +2188,14 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                 'system_status': web_data['system_status'],
                 'total_voltage': sum(web_data['voltages'])
             }
+            self.wfile.write(json.dumps(response).encode('utf-8')) # Send.
+        # Serve API history data - time-series for charts.
+        elif path == '/api/history':
+            self.send_response(200) # OK.
+            self.send_header('Content-type', 'application/json') # JSON.
+            self.end_headers() # End.
+            history = fetch_rrd_history() # Fetch.
+            response = {'history': history} # Pack.
             self.wfile.write(json.dumps(response).encode('utf-8')) # Send.
         else:
             self.send_response(404) # Not found.
@@ -2153,7 +2322,7 @@ def start_web_server(settings):
 def main(stdscr):
     """
     Main function to run the BMS loop.
-    The big loop.
+    The big loop, now with RRD updates and history fetching for charts.
     Args:
         stdscr: Curses screen object - terminal.
     """
@@ -2242,7 +2411,7 @@ def main(stdscr):
             # Update previous values - remember.
             previous_temps = calibrated_temps[:] # Copy.
             previous_bank_medians = bank_medians[:] # Copy.
-        # Calculate overall median temperature for cabinet over-temp check - cabinet temp.
+        # Calculate overall median temperature for cabinet over-temp check and logging - cabinet temp.
         valid_calib_temps = [t for t in calibrated_temps if t is not None] # Valid only.
         overall_median = statistics.median(valid_calib_temps) if valid_calib_temps else 0.0 # Median or 0.
         # Check for cabinet over-temp and control fan - fan on/off.
@@ -2266,6 +2435,11 @@ def main(stdscr):
             battery_voltages.append(v if v is not None else 0.0) # Add or 0.
         # Check for issues - problems?
         alert_needed, all_alerts = check_for_issues(battery_voltages, temps_alerts, settings) # Check.
+        # Update RRD with current data - log to database.
+        timestamp = int(time.time()) # Current time.
+        values = f"{timestamp}:{battery_voltages[0]}:{battery_voltages[1]}:{battery_voltages[2]}:{overall_median}" # Format N:volt1:volt2:volt3:medtemp.
+        subprocess.call(['rrdtool', 'update', RRD_FILE, values]) # Update command.
+        logging.debug(f"RRD updated with: {values}") # Log update.
         # Check if balancing is needed - balance?
         if len(battery_voltages) == NUM_BANKS:
             max_v = max(battery_voltages) # Max.
