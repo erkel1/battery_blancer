@@ -1218,14 +1218,14 @@ def setup_watchdog(timeout=60):
             logging.error(f"Watchdog device {WATCHDOG_DEV} not found. Attempting to open anyway.")
             watchdog_fd = None
             try:
-                watchdog_fd = open(WATCHDOG_DEV, 'w')
+                watchdog_fd = open(WATCHDOG_DEV, 'wb')
                 logging.info(f"Opened {WATCHDOG_DEV} despite initial check failure")
             except IOError as e:
                 logging.error(f"Failed to open watchdog: {e}. Ensure appropriate module loaded (bcm2835_wdt for Pi 1-4, rp1-wdt for Pi 5 or newer).")
                 return
 
         # Open watchdog device
-        watchdog_fd = open(WATCHDOG_DEV, 'w')
+        watchdog_fd = open(WATCHDOG_DEV, 'wb')
         logging.debug(f"Opened watchdog device: {WATCHDOG_DEV}")
 
         # Set timeout
@@ -1247,15 +1247,15 @@ def pet_watchdog():
     global watchdog_fd
     if watchdog_fd:
         try:
-            watchdog_fd.write('w')  # Write 'w' to reset the watchdog timer
+            watchdog_fd.write(b'w')  # Write 'w' to reset the watchdog timer
             logging.debug("Watchdog petted successfully")
         except IOError as e:
             logging.error(f"Failed to pet watchdog: {e}")
-            
+
 def close_watchdog():
     if watchdog_fd:
         try:
-            watchdog_fd.write('V')  # Disable on clean exit
+            watchdog_fd.write(b'V')  # Disable on clean exit
             watchdog_fd.close()
         except IOError:
             pass
