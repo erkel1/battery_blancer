@@ -2033,7 +2033,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
             self.send_response(200) # OK.
             self.send_header('Content-type', 'text/html') # HTML.
             self.end_headers() # End.
-            # HTML content for the web dashboard - page code, updated with Chart.js canvas and JS.
+            # HTML content for the web dashboard - page code, updated with Chart.js canvas and JS, blocks reversed.
             html = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2066,16 +2066,9 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
             <p>Last Update: <span id="last-update">-</span></p>
         </div>
         <div class="status-card">
-            <h2>Time-Series Charts</h2>
-            <canvas id="bmsChart" width="800" height="400"></canvas>
-        </div>
-        <div class="status-card">
-            <h2>Battery Banks</h2>
-            <div id="battery-container" class="grid"></div>
-        </div>
-        <div class="status-card">
-            <h2>Alerts</h2>
-            <div id="alerts-container"></div>
+            <h2>System Information</h2>
+            <p>Total Voltage: <span id="total-voltage">-</span></p>
+            <p>Balancing: <span id="balancing-status">No</span></p>
         </div>
         <div class="status-card">
             <h2>Actions</h2>
@@ -2083,9 +2076,16 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
             <button id="balance-btn" class="button" disabled>Balance Now</button>
         </div>
         <div class="status-card">
-            <h2>System Information</h2>
-            <p>Total Voltage: <span id="total-voltage">-</span></p>
-            <p>Balancing: <span id="balancing-status">No</span></p>
+            <h2>Alerts</h2>
+            <div id="alerts-container"></div>
+        </div>
+        <div class="status-card">
+            <h2>Battery Banks</h2>
+            <div id="battery-container" class="grid"></div>
+        </div>
+        <div class="status-card">
+            <h2>Time-Series Charts</h2>
+            <canvas id="bmsChart" width="800" height="400"></canvas>
         </div>
     </div>
     <script>
