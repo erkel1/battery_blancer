@@ -1454,15 +1454,20 @@ def startup_self_test(settings, stdscr):
             logging.debug(f"Initial Bank Voltages: Bank 1={initial_bank_voltages[0]:.2f}V, Bank 2={initial_bank_voltages[1]:.2f}V, Bank 3={initial_bank_voltages[2]:.2f}V") # Log voltages
             y += 2 # Move down
             stdscr.refresh() # Update display
-            # Test all possible balancing pairs
-            pairs = [(1,2), (1,3), (2,1), (2,3), (3,1), (3,2)] # All bank combinations
+            # Test all possible balancing pairs, ordered by highest to lowest initial voltage
+            bank_voltages_dict = {b: initial_bank_voltages[b-1] for b in range(1, NUM_BANKS + 1)}
+            sorted_banks = sorted(bank_voltages_dict, key=bank_voltages_dict.get, reverse=True)
+            pairs = []
+            for source in sorted_banks:
+                for dest in [b for b in range(1, NUM_BANKS + 1) if b != source]:
+                    pairs.append((source, dest))
             test_duration = settings['test_balance_duration'] # Get test duration
             read_interval = settings['test_read_interval'] # Get read interval
             min_delta = settings['min_voltage_delta'] # Get min voltage change
             logging.debug(f"Balancer test parameters: test_duration={test_duration}s, "
                           f"read_interval={read_interval}s, min_voltage_delta={min_delta}V") # Log test parameters
             for source, dest in pairs: # Loop through pairs
-                logging.debug(f"Testing balance from Bank{source} to Bank {dest}") # Log pair test
+                logging.debug(f"Testing balance from Bank {source} to Bank {dest}") # Log pair test
                 if y < stdscr.getmaxyx()[0]: # Check if message fits
                     try:
                         stdscr.addstr(y, 0, f"Testing balance from Bank {source} to Bank {dest} for {test_duration}s.", curses.color_pair(6)) # Display in yellow
@@ -1758,7 +1763,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                 .then(data => {
                     if (data.success) {
                         alert('Balancing initiated');
-                    } else {
+                    } else:
                         alert('Error: ' + data.message);
                     }
                 })
