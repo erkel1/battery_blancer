@@ -1239,6 +1239,19 @@ def setup_watchdog(timeout=60):
     except Exception as e:
         logging.error(f"Failed to setup watchdog: {e}. Ensure appropriate module loaded (bcm2835_wdt for Pi 1-4, rp1-wdt for Pi 5 or newer).")
         watchdog_fd = None
+
+def pet_watchdog():
+    """
+    Pet the watchdog to prevent system reset.
+    """
+    global watchdog_fd
+    if watchdog_fd:
+        try:
+            watchdog_fd.write('w')  # Write 'w' to reset the watchdog timer
+            logging.debug("Watchdog petted successfully")
+        except IOError as e:
+            logging.error(f"Failed to pet watchdog: {e}")
+            
 def close_watchdog():
     if watchdog_fd:
         try:
