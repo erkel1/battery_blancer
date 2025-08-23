@@ -77,7 +77,7 @@
 # +-------------------------+
 # | Setup Hardware |
 # | (I2C bus, GPIO pins) |
-# | Create/Load RRD DB   |
+# | Create/Load RRD DB |
 # +-------------------------+
 # |
 # v
@@ -367,7 +367,7 @@ WATCHDOG_DEV = '/dev/watchdog' # Device file for watchdog - hardware reset preve
 watchdog_fd = None # File handle for watchdog - open connection.
 # RRD globals for time-series - database file and history limit.
 RRD_FILE = 'bms.rrd' # RRD database file for storing time-series data - persistent storage.
-HISTORY_LIMIT = 100  # Number of historical entries to retain (e.g., ~8 hours at 5min steps) - limit for memory/efficiency.
+HISTORY_LIMIT = 100 # Number of historical entries to retain (e.g., ~8 hours at 5min steps) - limit for memory/efficiency.
 def get_bank_for_channel(ch):
     """
     Find which battery bank a temperature sensor belongs to.
@@ -622,13 +622,17 @@ def setup_hardware(settings):
         logging.warning("RPi.GPIO not available - running in test mode") # Warn if GPIO library is missing.
     # Create RRD database if it doesn't exist - time-series storage setup.
     try:
+        if os.path.exists(RRD_FILE):
+            logging.info("Recreating RRD database for updated configuration.")
+            os.remove(RRD_FILE)
         subprocess.check_call(['rrdtool', 'create', RRD_FILE,
-                               '--step', '300',  # 5min step for aggregation.
-                               'DS:volt1:GAUGE:600:0:25',  # Bank 1 voltage (heartbeat 10min, range 0-25V).
-                               'DS:volt2:GAUGE:600:0:25',  # Bank 2.
-                               'DS:volt3:GAUGE:600:0:25',  # Bank 3.
-                               'DS:medtemp:GAUGE:600:-20:100',  # Median temp (-20 to 100°C).
-                               'RRA:AVERAGE:0.5:1:100'])  # Average, retain 100 steps (~8 hours).
+                               '--step', '60',
+                               'DS:volt1:GAUGE:120:0:25',
+                               'DS:volt2:GAUGE:120:0:25',
+                               'DS:volt3:GAUGE:120:0:25',
+                               'DS:medtemp:GAUGE:120:-20:100',
+                               'RRA:LAST:0.0:1:480',
+                               'RRA:LAST:0.0:5:100'])
         logging.info("Created RRD database for time-series logging.") # Log creation.
     except subprocess.CalledProcessError:
         logging.info("RRD database already exists - using existing for time-series.") # Log existing.
@@ -860,6 +864,9 @@ def ascii_line_chart(data, width=40, height=5, symbols=' ▁▂▃▄▅▆▇�
     """
     if not data: # No data?
         return '\n'.join([' ' * width] * height) # Empty chart.
+    data = [d for d in data if d is not None]  # Filter None
+    if not data:
+        return '\n'.join([' ' * width] * height)
     min_val, max_val = min(data), max(data) # Min and max values.
     range_val = max_val - min_val or 1 # Range, avoid divide by zero.
     # Scale data to symbol indices - normalize.
@@ -1208,17 +1215,17 @@ def fetch_rrd_history():
     Returns:
         list: List of dicts with historical data - [{'time': ts, 'volt1': v1, 'volt2': v2, 'volt3': v3, 'medtemp': mt}, ...] recent first.
     """
-    start = int(time.time()) - (HISTORY_LIMIT * 300)  # Last 100 steps (5min each) - calculate start time.
+    start = int(time.time()) - (HISTORY_LIMIT * 300) # Last 100 steps (5min each) - calculate start time.
     try:
         # Run rrdtool xport to get XML data - export command.
         output = subprocess.check_output(['rrdtool', 'xport',
                                           '--start', str(start),
                                           '--end', 'now',
                                           '--step', '300',
-                                          'DEF:v1=bms.rrd:volt1:AVERAGE',
-                                          'DEF:v2=bms.rrd:volt2:AVERAGE',
-                                          'DEF:v3=bms.rrd:volt3:AVERAGE',
-                                          'DEF:mt=bms.rrd:medtemp:AVERAGE',
+                                          'DEF:v1=bms.rrd:volt1:LAST',
+                                          'DEF:v2=bms.rrd:volt2:LAST',
+                                          'DEF:v3=bms.rrd:volt3:LAST',
+                                          'DEF:mt=bms.rrd:medtemp:LAST',
                                           'XPORT:v1:Bank1',
                                           'XPORT:v2:Bank2',
                                           'XPORT:v3:Bank3',
@@ -1230,7 +1237,7 @@ def fetch_rrd_history():
             vs = [float(v.text) if v.text != 'NaN' else None for v in row.findall('v')] # Values, None for NaN.
             data.append({'time': t, 'volt1': vs[0], 'volt2': vs[1], 'volt3': vs[2], 'medtemp': vs[3]}) # Dict.
         logging.debug(f"Fetched {len(data)} history entries from RRD.") # Log count.
-        return data[::-1]  # Reverse to recent first - order.
+        return data[::-1] # Reverse to recent first - order.
     except Exception as e:
         logging.error(f"RRD fetch error: {e}") # Log fail.
         return [] # Empty on error.
@@ -1489,9 +1496,9 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
             y_offset += 1 # Down.
         else:
             logging.warning(f"Skipping event '{event}' - out of bounds.") # No.
-    if spinner_char and 0 < height and width - 1 < width:  # Check bounds
+    if spinner_char and 0 < height and width - 1 < width: # Check bounds
         try:
-            stdscr.addstr(0, width - 1, spinner_char, curses.color_pair(5))  # Top-right corner, white
+            stdscr.addstr(0, width - 1, spinner_char, curses.color_pair(5)) # Top-right corner, white
         except curses.error:
             logging.warning("addstr error for spinner.")
     pet_watchdog()
@@ -1500,7 +1507,7 @@ def setup_watchdog(timeout=60):
     """
     Set up the hardware watchdog timer for the Raspberry Pi.
     Detects Pi model and loads appropriate watchdog module (bcm2835_wdt for Pi 1-4, rp1-wdt for Pi 5 and newer).
-    Falls back to opening /dev/watchdog for unknown unknown models.
+    Falls back to opening /dev/watchdog for unknown models.
     Args:
         timeout (int): Watchdog timeout in seconds (default: 60) - reset time.
     """
@@ -1972,7 +1979,7 @@ def startup_self_test(settings, stdscr):
             # Pet the watchdog before and after long sleep - keep alive.
             if settings.get('WatchdogEnabled', False):
                 pet_watchdog() # Pet.
-            for _ in range(12):  # 120s / 10s
+            for _ in range(12): # 120s / 10s
                 pet_watchdog()
                 time.sleep(10)
             if settings.get('WatchdogEnabled', False):
@@ -2011,7 +2018,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
         self.settings = server.settings # Store settings.
         super().__init__(request, client_address, server) # Parent init.
     def log_message(self, format, *args):
-    pass  # Suppress console output; optionally use logging.info instead.
+            pass  # Suppress console output.
     def do_GET(self):
         """
         Handle GET requests (e.g., load dashboard or API data).
@@ -2176,9 +2183,9 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
         document.getElementById('refresh-btn').addEventListener('click', updateStatus);
         document.getElementById('balance-btn').addEventListener('click', initiateBalance);
         updateStatus();
-        updateChart();  // Initial chart load
+        updateChart(); // Initial chart load
         setInterval(updateStatus, 5000);
-        setInterval(updateChart, 300000);  // 5min chart refresh
+        setInterval(updateChart, 300000); // 5min chart refresh
     </script>
 </body>
 </html>"""
