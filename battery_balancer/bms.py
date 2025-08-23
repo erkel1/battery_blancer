@@ -1966,7 +1966,9 @@ def startup_self_test(settings, stdscr):
             # Pet the watchdog before and after long sleep - keep alive.
             if settings.get('WatchdogEnabled', False):
                 pet_watchdog() # Pet.
-            time.sleep(120) # 2 min.
+            for _ in range(12):  # 120s / 10s
+                pet_watchdog()
+                time.sleep(10)
             if settings.get('WatchdogEnabled', False):
                 pet_watchdog() # Pet.
             retries += 1 # Next try.
