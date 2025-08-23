@@ -1489,6 +1489,12 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
             y_offset += 1 # Down.
         else:
             logging.warning(f"Skipping event '{event}' - out of bounds.") # No.
+    if spinner_char and 0 < height and width - 1 < width:  # Check bounds
+        try:
+            stdscr.addstr(0, width - 1, spinner_char, curses.color_pair(5))  # Top-right corner, white
+        except curses.error:
+            logging.warning("addstr error for spinner.")
+    pet_watchdog()
     stdscr.refresh() # Update screen.
 def setup_watchdog(timeout=60):
     """
