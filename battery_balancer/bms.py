@@ -2018,7 +2018,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
         self.settings = server.settings # Store settings.
         super().__init__(request, client_address, server) # Parent init.
     def log_message(self, format, *args):
-            pass  # Suppress console output.
+        pass  # Suppress console output.
     def do_GET(self):
         """
         Handle GET requests (e.g., load dashboard or API data).
