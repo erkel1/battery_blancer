@@ -2,107 +2,89 @@
 # --------------------------------------------------------------------------------
 # Overview:
 # This script is a complete Battery Management System (BMS) designed for a battery setup with 3 series-connected banks, each containing 8 parallel cells (3s8p). It monitors temperatures using NTC sensors connected to a Lantronix EDS4100 device via Modbus over TCP, measures voltages using an ADS1115 ADC over I2C, and balances voltages between banks using relays and a DC-DC converter. The system runs continuously, checking for issues, logging events, sending email alerts, and displaying information through a Text User Interface (TUI) in the terminal and an optional web dashboard.
+#
 # Key Features:
 # - **Temperature Monitoring**: Reads 24 NTC sensors (8 per bank), calibrates them at startup, and checks for issues like high/low temperatures, deviations, rapid rises, or sensor disconnections.
 # - **Voltage Monitoring and Balancing**: Measures voltages of 3 banks, balances them if the difference exceeds a threshold (e.g., 0.1V), by transferring charge from the highest to the lowest bank.
+# - **Temperature-Based Balancing for Heating**: If any calibrated temperature drops below 10°C, the system will balance from the highest to the lowest voltage bank regardless of voltage difference, to generate heat inside the cabinet.
+# - **Watchdog Integration**: The hardware watchdog is petted during balancing and after any operation that takes over 1s, ensuring the system does not reset during long operations.
 # - **Alerts and Notifications**: Logs issues to a file, activates an alarm relay, and sends throttled email alerts (e.g., every hour).
 # - **User Interfaces**:
-# - **TUI**: Shows real-time battery status with ASCII art, voltages, temperatures, alerts, balancing progress (top-right), and the last 20 events (bottom-right).
-# - **Startup Self-Test**: Checks configuration, hardware connections, sensor readings, and balancer functionality at startup.
+#   - **TUI**: Shows real-time battery status with ASCII art, voltages, temperatures, alerts, balancing progress (top-right), a spinner animation (top-right) to indicate the script is running, and the last 20 events (bottom-right).
+#   - **Startup Self-Test**: Checks configuration, hardware connections, sensor readings, and balancer functionality at startup.
 # - **Error Handling**: Retries failed reads, handles missing hardware, and logs detailed errors.
 # - **Configuration**: Uses 'battery_monitor.ini' for settings, with defaults if keys are missing.
 # - **Shutdown Handling**: Cleans up gracefully on Ctrl+C.
+#
 # How It Works (High-Level Flow):
 # 1. **Load Configuration**: Reads settings from 'battery_monitor.ini' (e.g., IP address, thresholds).
 # 2. **Setup Hardware**: Initializes I2C bus for ADC/relays and GPIO pins for relays.
 # 3. **Startup Self-Test**: Validates config, tests hardware connectivity, reads initial sensor data, and tests balancing.
 # 4. **Main Loop**:
-# - Reads temperatures and voltages.
-# - Calibrates temperatures using startup offsets.
-# - Checks for issues (e.g., high/low voltages, temperature anomalies).
-# - Balances banks if needed (no issues, voltage difference > threshold).
-# - Updates TUI and web dashboard.
-# - Logs events and sends email alerts if issues are detected.
-# - Sleeps briefly before the next cycle.
+#    - Reads temperatures and voltages.
+#    - Calibrates temperatures using startup offsets.
+#    - Checks for issues (e.g., high/low voltages, temperature anomalies).
+#    - **If any temperature < 10°C, balances from highest to lowest bank regardless of voltage difference (for heating).**
+#    - Otherwise, balances banks if voltage difference > threshold.
+#    - Updates TUI and web dashboard (TUI now includes a spinner animation).
+#    - Logs events and sends email alerts if issues are detected.
+#    - Sleeps briefly before the next cycle.
+#    - **Watchdog is petted during balancing and after any operation that takes over 1s.**
 # 5. **Shutdown**: Cleans up GPIO and web server on exit.
+#
 # Logic Flow Diagram (ASCII):
-# ```
-# +-----------------+
-# | Start Script |
-# +-----------------+
-# |
-# v
-# +-----------------+
-# | Load Config |
-# | (INI File) |
-# +-----------------+
-# |
-# v
-# +-----------------+
-# | Setup Hardware |
-# | (I2C, GPIO) |
-# +-----------------+
-# |
-# v
-# +-----------------+
-# | Startup Check |
-# | (Config, HW, |
-# | Sensors, Balancer)|
-# +-----------------+
-# | Fail
-# v
-# (Alarm + Continue)
-# |
-# v
-# +-----------------+
-# | Infinite Loop |
-# +-----------------+
-# |
-# v
-# /------------------\ /------------------\
-# | Read Temps | | Read Voltages |
-# \------------------/ \------------------/
-# | |
-# v v
-# +-----------------+ +-----------------+
-# | Process Temps | | Check Issues |
-# | & Alerts | | & Alerts |
-# +-----------------+ +-----------------+
-# | |
-# \------------------/
-# |
-# v
-# +-----------------+
-# | Need Balance? |
-# +-----------------+
-# | Yes
-# v
-# +-----------------+
-# | Balance Banks |
-# | (Relays, DC-DC) |
-# +-----------------+
-# | No
-# v
-# +-----------------+
-# | Update TUI |
-# | (Left: Status, |
-# | Right: Balance, |
-# | Events) |
-# +-----------------+
-# |
-# v
-# +-----------------+
-# | Update Web Data |
-# +-----------------+
-# |
-# v
-# +-----------------+
-# | Sleep & Repeat |
-# +-----------------+
-# ^
-# | (Loop Back)
-# |
-# ```
+#
+#   +-------------------+
+#   |  Load Config/INI  |
+#   +-------------------+
+#             |
+#             v
+#   +-------------------+
+#   |  Setup Hardware   |
+#   +-------------------+
+#             |
+#             v
+#   +-------------------+
+#   | Startup Self-Test |
+#   +-------------------+
+#             |
+#             v
+#   +-------------------+
+#   |    Main Loop      |
+#   +-------------------+
+#             |
+#   +-------------------+-------------------+
+#   |   Read Temps & Voltages               |
+#   +-------------------+-------------------+
+#             |
+#   +-------------------+-------------------+
+#   | Calibrate Temps (if needed)           |
+#   +-------------------+-------------------+
+#             |
+#   +-------------------+-------------------+
+#   | Check for Issues (alerts, etc.)       |
+#   +-------------------+-------------------+
+#             |
+#   +-------------------+-------------------+
+#   | If temp < 10C:    | If voltage diff > threshold:
+#   |   Balance for     |   Balance normally
+#   |   heating         |
+#   +-------------------+-------------------+
+#             |
+#   +-------------------+-------------------+
+#   | Update TUI & Web Dashboard            |
+#   +-------------------+-------------------+
+#             |
+#   +-------------------+-------------------+
+#   | Log Events, Email Alerts              |
+#   +-------------------+-------------------+
+#             |
+#   +-------------------+-------------------+
+#   | Sleep, Pet Watchdog                   |
+#   +-------------------+-------------------+
+#             |
+#           (repeat)
+#
 # Dependencies:
 # - Python 3.11+: For running the script.
 # - Hardware Libraries: `smbus` (I2C), `RPi.GPIO` (GPIO control).
@@ -110,6 +92,7 @@
 # - Standard Libraries: socket, statistics, time, configparser, logging, signal, gc, os, sys, smtplib, email.mime.text, curses, threading, json, http.server, urllib.parse, base64, traceback.
 # - Hardware: Raspberry Pi, ADS1115 ADC, TCA9548A multiplexer, relays, Lantronix EDS4100, GPIO pins 17/27.
 # - Configuration: 'battery_monitor.ini' file (template provided separately).
+#
 # Installation:
 # 1. Install Python: `sudo apt install python3`
 # 2. Install hardware libraries: `sudo apt install python3-smbus python3-rpi.gpio`
@@ -118,6 +101,7 @@
 # 5. Create 'battery_monitor.ini' with correct settings (e.g., email, IP).
 # 6. Run: `sudo python bms.py` (root required for GPIO/I2C).
 # 7. Access web dashboard at http://<pi-ip>:8080.
+#
 # Notes:
 # - Ensure hardware matches INI settings (I2C addresses, GPIO pins, Modbus IP/port).
 # - Update email settings with valid credentials (use app-specific password for Gmail).
@@ -355,7 +339,8 @@ def load_config():
     # General flags for enabling features
     general_flags = {
         'WebInterfaceEnabled': config_parser.getboolean('General', 'WebInterfaceEnabled', fallback=True), # Enable web interface
-        'StartupSelfTestEnabled': config_parser.getboolean('General', 'StartupSelfTestEnabled', fallback=True) # Enable startup tests
+        'StartupSelfTestEnabled': config_parser.getboolean('General', 'StartupSelfTestEnabled', fallback=True), # Enable startup tests
+        'WatchdogEnabled': config_parser.getboolean('General', 'WatchdogEnabled', fallback=True)
     }
     # I2C device addresses
     i2c_settings = {
@@ -762,7 +747,7 @@ def set_relay_connection(high, low, settings):
         if bus: # If I2C bus is available
             logging.info(f"Sending relay state command to hardware.") # Log command send
             bus.write_byte_data(settings['RelayAddress'], 0x11, relay_state) # Send relay state
-        logging.info(f"Relay setup completed for balancing from Bank {high} to {low}") # Log success
+        logging.info(f"Relay setup completed for balancing from Bank {high} to Bank {low}") # Log success
     except (IOError, AttributeError) as e:
         logging.error(f"I/O error while setting up relay: {e}") # Log I/O error
     except Exception as e:
@@ -932,6 +917,11 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
         stdscr.refresh() # Update the terminal display
         logging.debug(f"Balancing progress: {progress * 100:.2f}%, High: {voltage_high:.2f}V, Low: {voltage_low:.2f}V") # Log progress
         frame_index += 1 # Move to next animation frame
+
+        # Pet the watchdog every loop
+        if settings.get('WatchdogEnabled', False):
+            pet_watchdog()
+
         time.sleep(0.01) # Short delay for smooth animation
     # Finish balancing
     logging.info("Balancing process completed.") # Log completion
@@ -960,7 +950,7 @@ def compute_bank_medians(calibrated_temps, valid_min):
         bank_median = statistics.median(bank_temps) if bank_temps else 0.0 # Calculate median or use 0.0
         bank_medians.append(bank_median) # Add to list
     return bank_medians # Return medians
-def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_medians, startup_median, alerts, settings, startup_set, is_startup):
+def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_medians, startup_median, alerts, settings, startup_set, is_startup, spinner_char=None):
     """
     Draw the Text User Interface (TUI) to show battery status, alerts, balancing, and event history.
     Args:
@@ -975,6 +965,7 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
         settings (dict): Configuration settings
         startup_set (bool): Whether temperature calibration is set
         is_startup (bool): Whether this is the startup display
+        spinner_char (str): Character for spinner animation
     """
     logging.debug("Refreshing TUI.") # Log TUI update
     stdscr.clear() # Clear the terminal screen
@@ -1181,6 +1172,7 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
             except curses.error:
                 logging.warning(f"addstr error for event '{event}'.") # Log display error
             y_offset += 1 # Move down
+       
         else:
             logging.warning(f"Skipping event '{event}' - out of bounds.") # Log if out of bounds
     stdscr.refresh() # Update the terminal display
@@ -1515,7 +1507,7 @@ def startup_self_test(settings, stdscr):
             read_interval = settings['test_read_interval'] # Get read interval
             min_delta = settings['min_voltage_delta'] # Get min voltage change
             logging.debug(f"Balancer test parameters: test_duration={test_duration}s, "
-                          f"read_interval={read_interval}s, min_voltage_delta={min_delta}V") # Log test parameters
+                          f"read_interval={read_interval}s, min_voltage_delta={min_voltage_delta}V") # Log test parameters
             for source, dest in pairs: # Loop through pairs
                 logging.debug(f"Testing balance from Bank {source} to Bank {dest}") # Log pair test
                 if y < stdscr.getmaxyx()[0]: # Check if message fits
@@ -1548,8 +1540,8 @@ def startup_self_test(settings, stdscr):
                     stdscr.refresh() # Update display
                     continue # Skip this pair
                 # Read initial voltages
-                initial_source_v = read_voltage_with_retry(source, settings)[0] or 0.0 # Read source voltage
-                initial_dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0 # Read destination voltage
+                initial_source_v = read_voltage_with_retry(source, settings)[0] or 0.0 # Read initial source
+                initial_dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0 # Read initial destination
                 time.sleep(0.5) # Short delay
                 logging.debug(f"Balance test from Bank {source} to Bank {dest}: Initial - Bank {source}={initial_source_v:.2f}V, Bank {dest}={initial_dest_v:.2f}V") # Log initial voltages
                 # Start test balancing
@@ -1650,7 +1642,12 @@ def startup_self_test(settings, stdscr):
                 except curses.error:
                     logging.warning("addstr error for retry message.")
             stdscr.refresh()
+            # Pet the watchdog before and after long sleep
+            if settings.get('WatchdogEnabled', False):
+                pet_watchdog()
             time.sleep(120)  # Pause 2 minutes
+            if settings.get('WatchdogEnabled', False):
+                pet_watchdog()
             retries += 1
             continue  # Retry
         else:
@@ -1794,7 +1791,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                     const alertsContainer = document.getElementById('alerts-container');
                     if (data.alerts.length > 0) {
                         alertsContainer.innerHTML = data.alerts.map(alert => `<p class="alert">${alert}</p>`).join('');
-                    } else:
+                    } else {
                         alertsContainer.innerHTML = '<p class="normal">No alerts</p>';
                     }
                   
@@ -1998,30 +1995,22 @@ def main(stdscr):
     # Set up shutdown handler
     signal.signal(signal.SIGINT, signal_handler) # Handle Ctrl+C
     # Set up watchdog
-    setup_watchdog(30)  # 30s timeout
-    # Load temperature offsets
-    startup_median, startup_offsets = load_offsets(settings['num_channels']) # Load offsets
-    if startup_offsets and len(startup_offsets) == settings['num_channels']:
-        startup_set = True # Set calibration flag
-        logging.info(f"Loaded startup median: {startup_median:.1f}°C") # Log load
-    # Initialize state
-    previous_temps = None # Reset previous temps
-    previous_bank_medians = [None] * NUM_BANKS # Reset previous medians
-    run_count = 0 # Reset run count
-    web_data['system_status'] = 'Running' # Set status
-    # Main loop
+    if settings['WatchdogEnabled']:
+        setup_watchdog(30)  # 30s timeout
+    spinner_frames = ['|', '/', '-', '\\']
+    spinner_index = 0
     while True:
-        # Discard pending inputs
-        while stdscr.getch() != -1:
-            pass
-        logging.info("Starting poll cycle.") # Log cycle start
-        web_data['last_update'] = time.time() # Update timestamp
         # Read temperatures
-        temp_result = read_ntc_sensors(settings['ip'], settings['modbus_port'], settings['query_delay'], settings['num_channels'], settings['scaling_factor'], settings['max_retries'], settings['retry_backoff_base']) # Read temps
-        temps_alerts = [] # List for temp alerts
-        # Process temperature readings
-        if isinstance(temp_result, str): # If read failed
-            temps_alerts.append(temp_result) # Add error as alert
+        temp_result = read_ntc_sensors(
+            settings['ip'], settings['modbus_port'], settings['query_delay'],
+            settings['num_channels'], settings['scaling_factor'],
+            settings['max_retries'], settings['retry_backoff_base']
+        ) # Read temperatures
+        # Check if the result is a string (error message)
+        if isinstance(temp_result, str):
+            # Handle error (e.g., log it, set all temps to None, etc.)
+            logging.error(f"Error reading temperatures: {temp_result}") # Log error
+            temps_alerts = [] # Reset alerts
             calibrated_temps = [None] * settings['num_channels'] # Set to None
             raw_temps = [settings['valid_min']] * settings['num_channels'] # Set to min
             bank_medians = [0.0] * NUM_BANKS # Set medians to 0.0
@@ -2031,13 +2020,13 @@ def main(stdscr):
             # Set calibration if not set
             if not startup_set and valid_count == settings['num_channels']:
                 startup_median = statistics.median(temp_result) # Calculate median
-                startup_offsets = [startup_median - raw for raw in temp_result] # Calculate offsets
+                startup_offsets = [startup_median - t for t in temp_result] # Calculate offsets
                 save_offsets(startup_median, startup_offsets) # Save offsets
                 startup_set = True # Set flag
                 logging.info(f"Temp calibration set. Median: {startup_median:.1f}°C") # Log set
             # Reset if offsets missing
             if startup_set and startup_offsets is None:
-                startup_set = False # Reset flag
+                startup_set = False
             # Apply calibration
             calibrated_temps = [temp_result[i] + startup_offsets[i] if startup_set and temp_result[i] > settings['valid_min'] else temp_result[i] if temp_result[i] > settings['valid_min'] else None for i in range(settings['num_channels'])] # Calibrate temps
             raw_temps = temp_result # Store raw temps
@@ -2092,15 +2081,22 @@ def main(stdscr):
         web_data['last_update'] = time.time() # Update timestamp
         web_data['system_status'] = 'Alert' if alert_needed else 'Running' # Update status
         # Update TUI
-        draw_tui(stdscr, battery_voltages, calibrated_temps, raw_temps, startup_offsets or [0]*settings['num_channels'], bank_medians, startup_median, all_alerts, settings, startup_set, is_startup=(run_count == 0)) # Draw TUI
+        draw_tui(
+            stdscr, battery_voltages, calibrated_temps, raw_temps,
+            startup_offsets or [0]*settings['num_channels'], bank_medians,
+            startup_median, all_alerts, settings, startup_set, is_startup=(run_count == 0),
+            spinner_char=spinner_char
+        ) # Draw TUI
         # Increment run count and clean up
         run_count += 1 # Increment count
         gc.collect() # Clean memory
         logging.info("Poll cycle complete.") # Log cycle end
-        pet_watchdog()  # Pet every cycle (~10s)
+        if settings['WatchdogEnabled']:
+            pet_watchdog()  # Pet every cycle (~10s)
         # Sleep before next cycle
         time.sleep(min(settings['poll_interval'], settings['SleepTimeBetweenChecks'])) # Sleep
-    close_watchdog()
+    if settings['WatchdogEnabled']:
+        close_watchdog()
 # Run the main function with curses wrapper
 if __name__ == '__main__':
     curses.wrapper(main) # Start the TUI and main loop

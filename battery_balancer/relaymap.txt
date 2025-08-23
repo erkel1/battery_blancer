@@ -6,4 +6,70 @@ Relay 3 on, cell 1 links to cell 2
 Relay 3 on, cell 1 links to cell 2
 relay 3 and 4 on, cell 1 links to cell 3
 Relay 1 on and relay 3 and 4 on, cell 2 links to cell 3
+
 Can you finish this pattern?
+
+
+
+Startup Self-Test in Progress
+
+Step 1: Validating config...
+Config OK.
+Step 2: Testing hardware connectivity...
+I2C OK.
+Modbus OK.
+Step 3: Initial sensor reads...
+Temps OK.
+Voltages OK.
+Step 4: Balancer verification...
+Testing balance: Bank 1 to Bank 2 for 15s.
+Progress: 15.5s, Bank 1 20.19V, Bank 2 20.56V
+Test failed: Insufficient voltage change.
+Testing balance: Bank 1 to Bank 3 for 15s.
+Progress: 15.5s, Bank 1 20.35V, Bank 3 20.56V
+Test failed: Insufficient voltage change.
+Testing balance: Bank 2 to Bank 1 for 15s.
+Progress: 15.5s, Bank 2 19.91V, Bank 1 20.35V
+Test failed: Insufficient voltage change.
+Testing balance: Bank 2 to Bank 3 for 15s.
+Progress: 15.5s, Bank 2 20.59V, Bank 3 19.93V
+Test failed: Insufficient voltage change.
+Testing balance: Bank 3 to Bank 1 for 15s.
+Progress: 15.5s, Bank 3 19.91V, Bank 1 20.18V
+Test failed: Insufficient voltage change.
+Testing balance: Bank 3 to Bank 2 for 15s.
+Progress: 15.5s, Bank 3 19.94V, Bank 2 20.57V
+Test passed.
+
+Step 1: Validating config...
+Config OK.
+Step 2: Testing hardware connectivity...
+I2C OK.
+Modbus OK.
+Step 3: Initial sensor reads...
+Temps OK.
+Voltages OK.
+Step 4: Balancer verification...
+Testing balance from Bank 1 to Bank 2 for 15s.
+Progress: 15.7s, Bank 1 19.92V, Bank 2 20.58V
+Test passed (Bank 1 change=-0.035V, Bank 2 change=+0.076V).
+Testing balance from Bank 1 to Bank 3 for 15s.
+Progress: 15.7s, Bank 1 19.90V, Bank 3 20.53V
+Test passed (Bank 1 change=-0.047V, Bank 3 change=+0.076V).
+Testing balance from Bank 2 to Bank 1 for 15s.
+Progress: 15.7s, Bank 2 19.84V, Bank 1 20.55V
+Test passed (Bank 2 change=-0.447V, Bank 1 change=+0.118V).
+Testing balance from Bank 2 to Bank 3 for 15s.
+Progress: 15.7s, Bank 2 19.89V, Bank 3 20.58V
+Test passed (Bank 2 change=-0.529V, Bank 3 change=+0.159V).
+Testing balance from Bank 3 to Bank 1 for 15s.
+Progress: 15.7s, Bank 3 19.83V, Bank 1 20.48V
+Test passed (Bank 3 change=-0.288V, Bank 1 change=+0.106V).
+Testing balance from Bank 3 to Bank 2 for 15s.
+Progress: 15.7s, Bank 3 19.91V, Bank 2 20.59V
+Test passed (Bank 3 change=-0.317V, Bank 2 change=+0.047V).
+Self-Test Complete. All OK.
+
+
+
+
