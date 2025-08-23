@@ -1184,24 +1184,61 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
         else:
             logging.warning(f"Skipping event '{event}' - out of bounds.") # Log if out of bounds
     stdscr.refresh() # Update the terminal display
-def setup_watchdog(timeout=30):
+def setup_watchdog(timeout=60):
+    """
+    Set up the hardware watchdog timer for the Raspberry Pi.
+    Detects Pi model and loads appropriate watchdog module (bcm2835_wdt for Pi 1-4, rp1-wdt for Pi 5 and newer).
+    Falls back to opening /dev/watchdog for unknown drivers.
+    Args:
+        timeout (int): Watchdog timeout in seconds (default: 60)
+    """
     global watchdog_fd
     try:
+        # Detect Pi model
+        model = "Unknown"
+        if os.path.exists('/proc/device-tree/model'):
+            with open('/proc/device-tree/model', 'r') as f:
+                model = f.read().strip().lower()
+        logging.info(f"Detected Raspberry Pi model: {model}")
+
+        # Select watchdog module based on model
+        if 'raspberry pi' in model and not 'raspberry pi 5' in model:  # Pi 1-4, including 2B
+            module = 'bcm2835_wdt'
+        else:  # Pi 5 and newer models
+            module = 'rp1-wdt'
+            logging.info("Assuming rp1-wdt for Pi 5 or newer model")
+
+        # Load watchdog module
+        os.system(f'sudo modprobe {module}')
+        logging.info(f"Loaded watchdog module: {module}")
+        time.sleep(1)  # Allow module to initialize
+
+        # Verify /dev/watchdog exists
+        if not os.path.exists(WATCHDOG_DEV):
+            logging.error(f"Watchdog device {WATCHDOG_DEV} not found. Attempting to open anyway.")
+            watchdog_fd = None
+            try:
+                watchdog_fd = open(WATCHDOG_DEV, 'w')
+                logging.info(f"Opened {WATCHDOG_DEV} despite initial check failure")
+            except IOError as e:
+                logging.error(f"Failed to open watchdog: {e}. Ensure appropriate module loaded (bcm2835_wdt for Pi 1-4, rp1-wdt for Pi 5 or newer).")
+                return
+
+        # Open watchdog device
         watchdog_fd = open(WATCHDOG_DEV, 'w')
+        logging.debug(f"Opened watchdog device: {WATCHDOG_DEV}")
+
         # Set timeout
-        magic = ord('W') << 8 | 0x06  # WDIOC_SETTIMEOUT
-        fcntl.ioctl(watchdog_fd, magic, struct.pack("I", timeout))
-        logging.info(f"Watchdog set with timeout {timeout}s")
-    except IOError as e:
-        logging.error(f"Failed to open watchdog: {e}. Ensure bcm2835_wdt module loaded.")
-        watchdog_fd = None
-def pet_watchdog():
-    if watchdog_fd:
         try:
-            watchdog_fd.write('1')  # Pet the dog
-            watchdog_fd.flush()
+            magic = ord('W') << 8 | 0x06  # WDIOC_SETTIMEOUT
+            fcntl.ioctl(watchdog_fd, magic, struct.pack("I", timeout))
+            logging.info(f"Watchdog set with timeout {timeout}s")
         except IOError as e:
-            logging.error(f"Failed to pet watchdog: {e}")
+            logging.warning(f"Failed to set watchdog timeout: {e}. Using default timeout.")
+        logging.debug("Watchdog successfully initialized")
+    except Exception as e:
+        logging.error(f"Failed to setup watchdog: {e}. Ensure appropriate module loaded (bcm2835_wdt for Pi 1-4, rp1-wdt for Pi 5 or newer).")
+        watchdog_fd = None
 def close_watchdog():
     if watchdog_fd:
         try:
