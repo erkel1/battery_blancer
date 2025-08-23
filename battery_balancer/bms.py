@@ -911,7 +911,7 @@ def set_relay_connection(high, low, settings):
             relay_state |= (1 << 0) # Relay 1.
             logging.debug("Relays 1 activated for high to low.") # Log.
         elif high == 2 and low == 3:
-            relay_state |= (1 << 0) | (1 << 2) | (1 << 3) # Relays 1, 3, 4.
+            relay_state |=(1 << 0) | (1 << 2) | (1 << 3) # Relays 1, 3, 4.
             logging.debug("Relays 1, 3, and 4 activated for high to low.") # Log.
         elif high == 3 and low == 1:
             relay_state |= (1 << 0) | (1 << 1) # Relays 1, 2.
@@ -1593,7 +1593,7 @@ def startup_self_test(settings, stdscr):
                 except curses.error:
                     logging.warning("addstr error for temp failure.") # Error.
         else:
-            logging.debug("Initial temperature read successful: {len(initial_temps)} values, {initial_temps}") # Good.
+            logging.debug(f"Initial temperature read successful: {len(initial_temps)} values, {initial_temps}") # Good.
             valid_count = sum(1 for t in initial_temps if t > settings['valid_min']) # Count good.
             logging.debug(f"Valid temperature readings: {valid_count}/{settings['num_channels']}, valid_min={settings['valid_min']}") # Log count.
             if y + 1 < stdscr.getmaxyx()[0]: # Fits?
@@ -1963,7 +1963,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                     const alertsContainer = document.getElementById('alerts-container');
                     if (data.alerts.length > 0) {
                         alertsContainer.innerHTML = data.alerts.map(alert => `<p class="alert">${alert}</p>`).join('');
-                    } else {
+                    } else:
                         alertsContainer.innerHTML = '<p class="normal">No alerts</p>';
                     }
                     const balanceBtn = document.getElementById('balance-btn');
@@ -1980,7 +1980,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                 .then(data => {
                     if (data.success) {
                         alert('Balancing initiated');
-                    } else {
+                    } else:
                         alert('Error: ' + data.message);
                     }
                 })
@@ -2178,8 +2178,7 @@ def main(stdscr):
             settings['num_channels'], settings['scaling_factor'],
             settings['max_retries'], settings['retry_backoff_base']
         ) # Read.
-        # Check if the result is a string (error message) - error?
-        temps_alerts = []
+        temps_alerts = [] # Initialize here.
         if isinstance(temp_result, str):
             # Handle error (e.g., log it, set all temps to None, etc.) - bad.
             logging.error(f"Error reading temperatures: {temp_result}") # Log.
@@ -2205,7 +2204,6 @@ def main(stdscr):
             raw_temps = temp_result # Raw.
             bank_medians = compute_bank_medians(calibrated_temps, settings['valid_min']) # Medians.
             # Check for temperature issues - look for problems.
-            temps_alerts = [] # List.
             for ch, raw in enumerate(raw_temps, 1):
                 if check_invalid_reading(raw, ch, temps_alerts, settings['valid_min']): # Invalid?
                     continue # Skip.
@@ -2246,12 +2244,6 @@ def main(stdscr):
             # Start balancing if conditions met - go.
             if balancing_active or (alert_needed is False and max_v - min_v > settings['VoltageDifferenceToBalance'] and min_v > 0 and current_time - last_balance_time > settings['BalanceRestPeriodSeconds']):
                 balance_battery_voltages(stdscr, high_b, low_b, settings, temps_alerts) # Balance.
-                balancing_active = False # Reset.
-            # Check for heating mode - cold?
-            low_temp = any(t is not None and t < 10 for t in calibrated_temps) # Any <10?
-            if low_temp and not balancing_active and alert_needed is False and current_time - last_balance_time > settings['BalanceRestPeriodSeconds']:
-                logging.info("Low temperature detected; balancing for heating.") # Log heat.
-                balance_battery_voltages(stdscr, high_b, low_b, settings, temps_alerts) # Heat balance.
                 balancing_active = False # Reset.
         # Update web data - web update.
         web_data['voltages'] = battery_voltages # Voltages.
