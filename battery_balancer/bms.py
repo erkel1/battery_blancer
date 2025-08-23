@@ -2179,6 +2179,7 @@ def main(stdscr):
             settings['max_retries'], settings['retry_backoff_base']
         ) # Read.
         # Check if the result is a string (error message) - error?
+        temps_alerts = []
         if isinstance(temp_result, str):
             # Handle error (e.g., log it, set all temps to None, etc.) - bad.
             logging.error(f"Error reading temperatures: {temp_result}") # Log.
