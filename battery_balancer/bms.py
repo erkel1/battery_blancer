@@ -3,7 +3,7 @@
 # --------------------------------------------------------------------------------
 #
 # **Script Name:** bms.py
-# **Version:** 1.1 (As of August 24, 2025) - Updated with time-series data logging using RRD, ASCII charts in TUI, and web charts via Chart.js.
+# **Version:** 1.2 (As of August 24, 2025) - Updated with improved RRD configuration for faster graph population, removed spinner for display stability, ASCII charts in TUI, and web charts via Chart.js.
 # **Author:** [Your Name or Original Developer] - Built for Raspberry Pi-based battery monitoring and balancing.
 # **Purpose:** This script acts as a complete Battery Management System (BMS) for a 3s8p battery configuration (3 series banks, each with 8 parallel cells). It monitors temperatures and voltages, balances charge between banks, detects issues, logs events, sends alerts, and provides user interfaces via terminal (TUI) and web dashboard. Now includes time-series logging of voltages and median temperatures using RRDTool for persistent storage, ASCII line charts in the TUI for visual history, and interactive charts in the web dashboard using Chart.js.
 #
@@ -25,9 +25,9 @@
 # - **Alerts & Notifications:** Logs to 'battery_monitor.log'. Activates alarm relay on issues. Sends throttled emails (e.g., every 3600s) via SMTP.
 # - **Watchdog:** If enabled, pets hardware watchdog during long operations to prevent resets. Uses /dev/watchdog with 30s timeout.
 # - **User Interfaces:**
-# - **TUI (Terminal UI):** Uses curses for real-time display: ASCII art batteries with voltages/temps, alerts, balancing progress bar/animation, spinner (indicates running), last 20 events. Now includes ASCII line charts for voltage history per bank and median temperature, placed in the top-right section for visualization of trends over time.
+# - **TUI (Terminal UI):** Uses curses for real-time display: ASCII art batteries with voltages/temps, alerts, balancing progress bar/animation, last 20 events. Now includes ASCII line charts for voltage history per bank and median temperature, placed in the top-right section for visualization of trends over time.
 # - **Web Dashboard:** HTTP server on port 8080 (configurable). Shows voltages, temps, alerts, balancing status. Supports API for status/balance/history. Optional auth/CORS. Now includes interactive time-series charts using Chart.js for voltages per bank and median temperature, placed at the top of the page after the header for easy viewing.
-# - **Time-Series Logging:** Uses RRDTool for persistent storage of bank voltages and overall median temperature. Data is updated every poll interval (e.g., 10s), but RRD is configured with 5min steps for aggregation. History is limited to ~100 entries (e.g., 8 hours). Fetch functions retrieve data for TUI and web rendering.
+# - **Time-Series Logging:** Uses RRDTool for persistent storage of bank voltages and overall median temperature. Data is updated every poll interval (e.g., 10s), but RRD is configured with 1min steps for aggregation. History is limited to ~480 entries (e.g., 8 hours). Fetch functions retrieve data for TUI and web rendering.
 # - **Startup Self-Test:** Validates config, hardware connections (I2C/Modbus), initial reads, balancer (tests all pairs for voltage changes).
 # - Retries on failure after 2min. Alerts and activates alarm if fails.
 # - **Error Handling:** Retries reads (exponential backoff), handles missing hardware (test mode), logs tracebacks, graceful shutdown on Ctrl+C.
@@ -200,7 +200,7 @@
 # - **Offsets File:** 'offsets.txt' stores calibration – delete to recalibrate.
 # - **RRD Issues:** If rrdtool commands fail, check installation and permissions. Database 'bms.rrd' stores aggregated data; use rrdtool info bms.rrd for details.
 # - **Common Errors:** I2C errors = check wiring/connections. Modbus errors = check Lantronix IP/port. RRD errors = ensure rrdtool installed and path correct.
-# - **Performance:** Poll interval ~10s; balancing ~5s. Adjust in INI. Charts fetch from RRD (~100 entries) won't impact performance.
+# - **Performance:** Poll interval ~10s; balancing ~5s. Adjust in INI. Charts fetch from RRD (~480 entries) won't impact performance.
 # - **Customization:** Edit thresholds in INI for your battery specs (e.g., Li-ion safe ranges). For longer history, adjust RRA in RRD creation.
 #
 # **battery_monitor.ini Documentation (With Comments - Copy This to Your File):**
@@ -367,7 +367,7 @@ WATCHDOG_DEV = '/dev/watchdog' # Device file for watchdog - hardware reset preve
 watchdog_fd = None # File handle for watchdog - open connection.
 # RRD globals for time-series - database file and history limit.
 RRD_FILE = 'bms.rrd' # RRD database file for storing time-series data - persistent storage.
-HISTORY_LIMIT = 100 # Number of historical entries to retain (e.g., ~8 hours at 5min steps) - limit for memory/efficiency.
+HISTORY_LIMIT = 480 # Number of historical entries to retain (e.g., ~8 hours at 1min steps) - limit for memory/efficiency.
 def get_bank_for_channel(ch):
     """
     Find which battery bank a temperature sensor belongs to.
@@ -626,16 +626,18 @@ def setup_hardware(settings):
             logging.info("Recreating RRD database for updated configuration.")
             os.remove(RRD_FILE)
         subprocess.check_call(['rrdtool', 'create', RRD_FILE,
-                               '--step', '60',
-                               'DS:volt1:GAUGE:120:0:25',
-                               'DS:volt2:GAUGE:120:0:25',
-                               'DS:volt3:GAUGE:120:0:25',
-                               'DS:medtemp:GAUGE:120:-20:100',
-                               'RRA:LAST:0.0:1:480',
-                               'RRA:LAST:0.0:5:100'])
+                               '--step', '60', # 1min step for aggregation.
+                               'DS:volt1:GAUGE:120:0:25', # Bank 1 voltage (heartbeat 2min, range 0-25V).
+                               'DS:volt2:GAUGE:120:0:25', # Bank 2.
+                               'DS:volt3:GAUGE:120:0:25', # Bank 3.
+                               'DS:medtemp:GAUGE:120:-20:100', # Median temp (-20 to 100°C).
+                               'RRA:LAST:0.0:1:480', # Last value, retain 480 steps (~8 hours at 1min).
+                               'RRA:LAST:0.0:5:100']) # Last value, 5min consolidation for longer trends.
         logging.info("Created RRD database for time-series logging.") # Log creation.
-    except subprocess.CalledProcessError:
-        logging.info("RRD database already exists - using existing for time-series.") # Log existing.
+    except subprocess.CalledProcessError as e:
+        logging.error(f"RRD creation failed: {e}") # Log error if creation fails.
+    except FileNotFoundError:
+        logging.error("rrdtool not found. Please install rrdtool (sudo apt install rrdtool).") # Log if rrdtool missing.
     logging.info("Hardware setup complete, including RRD initialization.") # Log successful setup - done.
 def signal_handler(sig, frame):
     """
@@ -864,9 +866,9 @@ def ascii_line_chart(data, width=40, height=5, symbols=' ▁▂▃▄▅▆▇�
     """
     if not data: # No data?
         return '\n'.join([' ' * width] * height) # Empty chart.
-    data = [d for d in data if d is not None]  # Filter None
+    data = [d for d in data if d is not None] # Filter None values to avoid errors.
     if not data:
-        return '\n'.join([' ' * width] * height)
+        return '\n'.join([' ' * width] * height) # Empty if all None.
     min_val, max_val = min(data), max(data) # Min and max values.
     range_val = max_val - min_val or 1 # Range, avoid divide by zero.
     # Scale data to symbol indices - normalize.
@@ -1215,13 +1217,13 @@ def fetch_rrd_history():
     Returns:
         list: List of dicts with historical data - [{'time': ts, 'volt1': v1, 'volt2': v2, 'volt3': v3, 'medtemp': mt}, ...] recent first.
     """
-    start = int(time.time()) - (HISTORY_LIMIT * 300) # Last 100 steps (5min each) - calculate start time.
+    start = int(time.time()) - (HISTORY_LIMIT * 60) # Last 480 steps (1min each, ~8 hours) - calculate start time.
     try:
         # Run rrdtool xport to get XML data - export command.
         output = subprocess.check_output(['rrdtool', 'xport',
                                           '--start', str(start),
                                           '--end', 'now',
-                                          '--step', '300',
+                                          '--step', '60',
                                           'DEF:v1=bms.rrd:volt1:LAST',
                                           'DEF:v2=bms.rrd:volt2:LAST',
                                           'DEF:v3=bms.rrd:volt3:LAST',
@@ -1238,13 +1240,16 @@ def fetch_rrd_history():
             data.append({'time': t, 'volt1': vs[0], 'volt2': vs[1], 'volt3': vs[2], 'medtemp': vs[3]}) # Dict.
         logging.debug(f"Fetched {len(data)} history entries from RRD.") # Log count.
         return data[::-1] # Reverse to recent first - order.
-    except Exception as e:
-        logging.error(f"RRD fetch error: {e}") # Log fail.
+    except subprocess.CalledProcessError as e:
+        logging.error(f"RRD xport failed: {e}") # Log fail.
         return [] # Empty on error.
-def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_medians, startup_median, alerts, settings, startup_set, is_startup, spinner_char=None):
+    except FileNotFoundError:
+        logging.error("rrdtool not found for fetch. Install rrdtool.") # Log missing.
+        return [] # Empty.
+def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_medians, startup_median, alerts, settings, startup_set, is_startup):
     """
     Draw the Text User Interface (TUI) to show battery status, alerts, balancing, and event history.
-    Updates the terminal display, now including ASCII line charts for voltage and median temp history in top-right.
+    Updates the terminal display, including ASCII line charts for voltage and median temp history in top-right. Draws chart labels even if no data, showing empty charts.
     Args:
         stdscr: Curses screen object for terminal display - screen.
         voltages (list): List of bank voltages - voltages.
@@ -1257,7 +1262,6 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
         settings (dict): Configuration settings - settings.
         startup_set (bool): Whether temperature calibration is set - flag.
         is_startup (bool): Whether this is the startup display - first?
-        spinner_char (str): Character for spinner animation - spinny.
     """
     logging.debug("Refreshing TUI.") # Log update.
     stdscr.clear() # Clear screen.
@@ -1451,34 +1455,37 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
             logging.warning("Skipping no alerts message - out of bounds.") # No.
     # Fetch history and draw ASCII charts in top-right - trends.
     history = fetch_rrd_history() # Get data.
-    if history: # Have data?
-        volt_hist = [[d[f'volt{b+1}'] for d in history if d[f'volt{b+1}'] is not None] for b in range(3)] # Per bank voltages.
-        temp_hist = [d['medtemp'] for d in history if d['medtemp'] is not None] # Median temps.
-        y_chart = 1 # Top-right y start.
-        # Draw per-bank voltage charts - voltages.
-        for b in range(3):
-            chart = ascii_line_chart(volt_hist[b], width=30, height=5) # Generate.
-            for i, line in enumerate(chart.splitlines()): # Lines.
-                if y_chart + i < height and right_half_x + len(f"Bank {b+1} V: {line}") < width: # Fits?
-                    try:
-                        stdscr.addstr(y_chart + i, right_half_x, f"Bank {b+1} V: {line}", curses.color_pair(4)) # Green.
-                    except curses.error:
-                        logging.warning(f"addstr error for Bank {b+1} voltage chart line {i}.") # Error.
-                else:
-                    logging.warning(f"Skipping Bank {b+1} voltage chart line {i} - out of bounds.") # No fit.
-            y_chart += 6 # Space down.
-        # Draw median temp chart - temp.
-        temp_chart = ascii_line_chart(temp_hist, width=30, height=5) # Generate.
-        for i, line in enumerate(temp_chart.splitlines()): # Lines.
-            if y_chart + i < height and right_half_x + len(f"Med Temp: {line}") < width: # Fits?
+    y_chart = 1 # Top-right y start.
+    chart_width = 30 # Chart width for ASCII.
+    chart_height = 5 # Chart height.
+    # Draw per-bank voltage charts - voltages. Draw labels and empty if no data.
+    for b in range(3):
+        volt_hist = [d[f'volt{b+1}'] for d in history if d[f'volt{b+1}'] is not None] if history else [] # Per bank or empty.
+        chart = ascii_line_chart(volt_hist, width=chart_width, height=chart_height) # Generate or empty.
+        label = f"Bank {b+1} V: "
+        for i, line in enumerate(chart.splitlines()): # Lines.
+            full_line = label + line if i == 0 else ' ' * len(label) + line # Label on first line.
+            if y_chart + i < height and right_half_x + len(full_line) < width: # Fits?
                 try:
-                    stdscr.addstr(y_chart + i, right_half_x, f"Med Temp: {line}", curses.color_pair(7)) # Cyan.
+                    stdscr.addstr(y_chart + i, right_half_x, full_line, curses.color_pair(4)) # Green.
                 except curses.error:
-                    logging.warning(f"addstr error for median temp chart line {i}.") # Error.
+                    logging.warning(f"addstr error for Bank {b+1} voltage chart line {i}.") # Error.
             else:
-                logging.warning(f"Skipping median temp chart line {i} - out of bounds.") # No fit.
-    else:
-        logging.warning("No history data for ASCII charts.") # No data.
+                logging.warning(f"Skipping Bank {b+1} voltage chart line {i} - out of bounds.") # No fit.
+        y_chart += chart_height + 1 # Space down.
+    # Draw median temp chart - temp.
+    temp_hist = [d['medtemp'] for d in history if d['medtemp'] is not None] if history else [] # Median or empty.
+    temp_chart = ascii_line_chart(temp_hist, width=chart_width, height=chart_height) # Generate or empty.
+    label = "Med Temp: "
+    for i, line in enumerate(temp_chart.splitlines()): # Lines.
+        full_line = label + line if i == 0 else ' ' * len(label) + line # Label on first line.
+        if y_chart + i < height and right_half_x + len(full_line) < width: # Fits?
+            try:
+                stdscr.addstr(y_chart + i, right_half_x, full_line, curses.color_pair(7)) # Cyan.
+            except curses.error:
+                logging.warning(f"addstr error for median temp chart line {i}.") # Error.
+        else:
+            logging.warning(f"Skipping median temp chart line {i} - out of bounds.") # No fit.
     # Display event history on bottom-right half - history.
     y_offset = height // 2 # Middle for bottom.
     if y_offset < height: # Fits?
@@ -1496,11 +1503,6 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
             y_offset += 1 # Down.
         else:
             logging.warning(f"Skipping event '{event}' - out of bounds.") # No.
-    if spinner_char and 0 < height and width - 1 < width: # Check bounds
-        try:
-            stdscr.addstr(0, width - 1, spinner_char, curses.color_pair(5)) # Top-right corner, white
-        except curses.error:
-            logging.warning("addstr error for spinner.")
     pet_watchdog()
     stdscr.refresh() # Update screen.
 def setup_watchdog(timeout=60):
@@ -2018,7 +2020,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
         self.settings = server.settings # Store settings.
         super().__init__(request, client_address, server) # Parent init.
     def log_message(self, format, *args):
-        pass  # Suppress console output.
+        pass  # Suppress console output; optionally use logging.info instead.
     def do_GET(self):
         """
         Handle GET requests (e.g., load dashboard or API data).
@@ -2185,7 +2187,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
         updateStatus();
         updateChart(); // Initial chart load
         setInterval(updateStatus, 5000);
-        setInterval(updateChart, 300000); // 5min chart refresh
+        setInterval(updateChart, 60000); // 1min chart refresh for faster testing
     </script>
 </body>
 </html>"""
@@ -2370,8 +2372,6 @@ def main(stdscr):
     # Set up watchdog - if on.
     if settings['WatchdogEnabled']:
         setup_watchdog(30) # 30s.
-    spinner_frames = ['|', '/', '-', '\\'] # Spin frames.
-    spinner_index = 0 # Start.
     while True: # Forever loop.
         # Read temperatures - get temps.
         temp_result = read_ntc_sensors(
@@ -2455,8 +2455,11 @@ def main(stdscr):
         # Update RRD with current data - log to database.
         timestamp = int(time.time()) # Current time.
         values = f"{timestamp}:{battery_voltages[0]}:{battery_voltages[1]}:{battery_voltages[2]}:{overall_median}" # Format N:volt1:volt2:volt3:medtemp.
-        subprocess.call(['rrdtool', 'update', RRD_FILE, values]) # Update command.
-        logging.debug(f"RRD updated with: {values}") # Log update.
+        try:
+            subprocess.call(['rrdtool', 'update', RRD_FILE, values]) # Update command.
+            logging.debug(f"RRD updated with: {values}") # Log update.
+        except FileNotFoundError:
+            logging.error("rrdtool not found for update. Install rrdtool.") # Log missing.
         # Check if balancing is needed - balance?
         if len(battery_voltages) == NUM_BANKS:
             max_v = max(battery_voltages) # Max.
@@ -2476,14 +2479,11 @@ def main(stdscr):
         web_data['last_update'] = time.time() # Time.
         web_data['system_status'] = 'Alert' if alert_needed else 'Running' # Status.
         # Update TUI - draw screen.
-        spinner_char = spinner_frames[spinner_index % len(spinner_frames)] # Spin char.
         draw_tui(
             stdscr, battery_voltages, calibrated_temps, raw_temps,
             startup_offsets or [0]*settings['num_channels'], bank_medians,
-            startup_median, all_alerts, settings, startup_set, is_startup=(run_count == 0),
-            spinner_char=spinner_char
+            startup_median, all_alerts, settings, startup_set, is_startup=(run_count == 0)
         ) # Draw.
-        spinner_index += 1 # Next spin.
         # Increment run count and clean up - count up.
         run_count += 1 # +1.
         gc.collect() # Clean memory.
