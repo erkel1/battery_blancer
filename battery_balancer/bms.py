@@ -1,39 +1,39 @@
 # --------------------------------------------------------------------------------
 # Battery Management System (BMS) Script Documentation
 # --------------------------------------------------------------------------------
-# 
+#
 # **Script Name:** bms.py
 # **Version:** 1.0 (As of August 24, 2025)
 # **Author:** [Your Name or Original Developer] - Built for Raspberry Pi-based battery monitoring and balancing.
 # **Purpose:** This script acts as a complete Battery Management System (BMS) for a 3s8p battery configuration (3 series banks, each with 8 parallel cells). It monitors temperatures and voltages, balances charge between banks, detects issues, logs events, sends alerts, and provides user interfaces via terminal (TUI) and web dashboard.
-# 
+#
 # **Detailed Overview:**
 # - **Temperature Monitoring:** Connects to 24 NTC thermistors (8 per bank) via a Lantronix EDS4100 device using Modbus TCP. Reads raw values, applies calibration offsets (calculated at startup or loaded from file), and checks for anomalies like high/low temperatures, deviations from bank medians, rapid rises, lags in group tracking, or disconnections.
-#   - Calibration: On first valid read (all sensors > valid_min), computes median temperature and offsets for each sensor to normalize readings. Saves to 'offsets.txt' for future runs.
-#   - Anomalies Checked:
-#     - Invalid/Disconnected: Reading <= valid_min (e.g., 0.0°C).
-#     - High: > high_threshold (e.g., 42.0°C).
-#     - Low: < low_threshold (e.g., 0.0°C).
-#     - Deviation: Absolute > abs_deviation_threshold (e.g., 2.0°C) or relative > deviation_threshold (e.g., 10%) from bank median.
-#     - Abnormal Rise: Increase > rise_threshold (e.g., 2.0°C) since last poll.
-#     - Group Lag: Change differs from bank median change by > disconnection_lag_threshold (e.g., 0.5°C).
-#     - Sudden Disconnection: Was valid, now invalid.
+# - Calibration: On first valid read (all sensors > valid_min), computes median temperature and offsets for each sensor to normalize readings. Saves to 'offsets.txt' for future runs.
+# - Anomalies Checked:
+# - Invalid/Disconnected: Reading <= valid_min (e.g., 0.0°C).
+# - High: > high_threshold (e.g., 42.0°C).
+# - Low: < low_threshold (e.g., 0.0°C).
+# - Deviation: Absolute > abs_deviation_threshold (e.g., 2.0°C) or relative > deviation_threshold (e.g., 10%) from bank median.
+# - Abnormal Rise: Increase > rise_threshold (e.g., 2.0°C) since last poll.
+# - Group Lag: Change differs from bank median change by > disconnection_lag_threshold (e.g., 0.5°C).
+# - Sudden Disconnection: Was valid, now invalid.
 # - **Voltage Monitoring & Balancing:** Uses ADS1115 ADC over I2C to measure voltages of 3 banks. Balances if difference > VoltageDifferenceToBalance (e.g., 0.1V) by connecting high to low bank via relays and DC-DC converter.
-#   - Heating Mode: If any temperature < 10°C, balances regardless of voltage difference to generate heat.
-#   - Safety: Skips balancing if alerts active (e.g., anomalies). Rests for BalanceRestPeriodSeconds (e.g., 60s) after balancing.
-#   - Voltage Checks: Alerts if < LowVoltageThresholdPerBattery (e.g., 18.5V), > HighVoltageThresholdPerBattery (e.g., 21.0V), or zero.
+# - Heating Mode: If any temperature < 10°C, balances regardless of voltage difference to generate heat.
+# - Safety: Skips balancing if alerts active (e.g., anomalies). Rests for BalanceRestPeriodSeconds (e.g., 60s) after balancing.
+# - Voltage Checks: Alerts if < LowVoltageThresholdPerBattery (e.g., 18.5V), > HighVoltageThresholdPerBattery (e.g., 21.0V), or zero.
 # - **Alerts & Notifications:** Logs to 'battery_monitor.log'. Activates alarm relay on issues. Sends throttled emails (e.g., every 3600s) via SMTP.
 # - **Watchdog:** If enabled, pets hardware watchdog during long operations to prevent resets. Uses /dev/watchdog with 30s timeout.
 # - **User Interfaces:**
-#   - **TUI (Terminal UI):** Uses curses for real-time display: ASCII art batteries with voltages/temps, alerts, balancing progress bar/animation, spinner (indicates running), last 20 events.
-#   - **Web Dashboard:** HTTP server on port 8080 (configurable). Shows voltages, temps, alerts, balancing status. Supports API for status/balance. Optional auth/CORS.
+# - **TUI (Terminal UI):** Uses curses for real-time display: ASCII art batteries with voltages/temps, alerts, balancing progress bar/animation, spinner (indicates running), last 20 events.
+# - **Web Dashboard:** HTTP server on port 8080 (configurable). Shows voltages, temps, alerts, balancing status. Supports API for status/balance. Optional auth/CORS.
 # - **Startup Self-Test:** Validates config, hardware connections (I2C/Modbus), initial reads, balancer (tests all pairs for voltage changes).
-#   - Retries on failure after 2min. Alerts and activates alarm if fails.
+# - Retries on failure after 2min. Alerts and activates alarm if fails.
 # - **Error Handling:** Retries reads (exponential backoff), handles missing hardware (test mode), logs tracebacks, graceful shutdown on Ctrl+C.
 # - **Configuration:** From 'battery_monitor.ini'. Defaults if missing keys. See INI documentation below.
 # - **Logging:** Configurable level (e.g., INFO). Timestamps events.
 # - **Shutdown:** Cleans GPIO, web server, watchdog on exit.
-# 
+#
 # **Key Features Explained for Non-Programmers:**
 # - Imagine this script as a vigilant guardian for your battery pack. It constantly checks the "health" (temperature and voltage) of each part of the battery.
 # - Temperatures: Like checking body temperature with 24 thermometers. If one is too hot/cold or acting weird, it raises an alarm.
@@ -42,116 +42,116 @@
 # - Alerts: If something's wrong, it logs it, turns on a buzzer/light (alarm relay), and emails you (but not too often to avoid spam).
 # - Interfaces: Terminal shows a fancy text-based dashboard; web page lets you view from browser.
 # - Startup Check: Like a self-diagnostic when your car starts – ensures everything's connected and working before running.
-# 
+#
 # **How It Works (Step-by-Step for Non-Programmers):**
 # 1. **Start:** Loads settings from INI file (like a recipe book).
 # 2. **Setup:** Connects to hardware (sensors, relays) – if missing, runs in "pretend" mode.
 # 3. **Self-Test:** Checks if config makes sense, hardware responds, sensors give good readings, balancing actually changes voltages. If fail, alerts and retries.
 # 4. **Main Loop (Repeats Forever):**
-#    - Read temperatures from all 24 sensors.
-#    - Calibrate them (adjust based on startup values for accuracy).
-#    - Check for temperature problems (too hot, too cold, etc.).
-#    - Read voltages from 3 banks.
-#    - Check for voltage problems (too high, too low, zero).
-#    - If cold (<10°C anywhere), balance to heat up.
-#    - Else, if voltages differ too much, balance to equalize.
-#    - Update terminal/web displays.
-#    - Log events, send emails if issues.
-#    - Pet watchdog (tell hardware "I'm alive" to avoid auto-reset).
-#    - Wait a bit (e.g., 10s), repeat.
+# - Read temperatures from all 24 sensors.
+# - Calibrate them (adjust based on startup values for accuracy).
+# - Check for temperature problems (too hot, too cold, etc.).
+# - Read voltages from 3 banks.
+# - Check for voltage problems (too high, too low, zero).
+# - If cold (<10°C anywhere), balance to heat up.
+# - Else, if voltages differ too much, balance to equalize.
+# - Update terminal/web displays.
+# - Log events, send emails if issues.
+# - Pet watchdog (tell hardware "I'm alive" to avoid auto-reset).
+# - Wait a bit (e.g., 10s), repeat.
 # 5. **Balancing Process:** Connects high to low bank with relays, turns on converter to transfer charge, shows progress, turns off after time.
 # 6. **Shutdown:** If you press Ctrl+C, cleans up connections safely.
-# 
+#
 # **Updated Logic Flow Diagram (ASCII - More Detailed):**
-# 
+#
 # +-------------------------+
-# | Load Config from INI   |
-# | (Read settings file)   |
+# | Load Config from INI |
+# | (Read settings file) |
 # +-------------------------+
-#          |
-#          v
+# |
+# v
 # +-------------------------+
-# | Setup Hardware         |
-# | (I2C bus, GPIO pins)  |
+# | Setup Hardware |
+# | (I2C bus, GPIO pins) |
 # +-------------------------+
-#          |
-#          v
+# |
+# v
 # +-------------------------+
-# | Startup Self-Test      |
-# | (Config valid?         |
-# |  Hardware connected?   |
-# |  Initial reads OK?     |
-# |  Balancer works?)      |
-# | If fail: Alert, Retry  |
+# | Startup Self-Test |
+# | (Config valid? |
+# | Hardware connected? |
+# | Initial reads OK? |
+# | Balancer works?) |
+# | If fail: Alert, Retry |
 # +-------------------------+
-#          |
-#          v
+# |
+# v
 # +-------------------------+ <---------------------+
-# | Main Loop (Repeat)     |                       |
-# +-------------------------+                       |
-#          |                                        |
-#          v                                        |
-# +-------------------------+                       |
-# | Read Temps (Modbus)    |                       |
-# | (24 sensors via TCP)   |                       |
-# +-------------------------+                       |
-#          |                                        |
-#          v                                        |
-# +-------------------------+                       |
-# | Calibrate Temps        |                       |
-# | (Apply offsets if set) |                       |
-# +-------------------------+                       |
-#          |                                        |
-#          v                                        |
-# +-------------------------+                       |
-# | Check Temp Issues      |                       |
-# | (High/Low/Deviation/   |                       |
-# |  Rise/Lag/Disconnect)  |                       |
-# +-------------------------+                       |
-#          |                                        |
-#          v                                        |
-# +-------------------------+                       |
-# | Read Voltages (ADC)    |                       |
-# | (3 banks via I2C)      |                       |
-# +-------------------------+                       |
-#          |                                        |
-#          v                                        |
-# +-------------------------+                       |
-# | Check Voltage Issues   |                       |
-# | (High/Low/Zero)        |                       |
-# +-------------------------+                       |
-#          |                                        |
-#          v                                        |
-# +-------------------------+                       |
-# | If Any Temp < 10°C:    |                       |
-# |   Balance for Heating  |                       |
-# | Else If Volt Diff > Th: |                       |
-# |   Balance Normally     |                       |
-# | (High to Low Bank)     |                       |
-# | Skip if Alerts Active  |                       |
-# +-------------------------+                       |
-#          |                                        |
-#          v                                        |
-# +-------------------------+                       |
-# | Update TUI (Terminal)  |                       |
-# | & Web Dashboard        |                       |
-# | (Show status, alerts)  |                       |
-# +-------------------------+                       |
-#          |                                        |
-#          v                                        |
-# +-------------------------+                       |
-# | Log Events, Send Email |                       |
-# | if Issues & Throttled  |                       |
-# +-------------------------+                       |
-#          |                                        |
-#          v                                        |
-# +-------------------------+                       |
-# | Sleep (Poll Interval)  |                       |
-# | Pet Watchdog if Enabled|                       |
-# +-------------------------+                       |
-#          |                                        |
-#          +----------------------------------------+
-# 
+# | Main Loop (Repeat) | |
+# +-------------------------+ |
+# | |
+# v |
+# +-------------------------+ |
+# | Read Temps (Modbus) | |
+# | (24 sensors via TCP) | |
+# +-------------------------+ |
+# | |
+# v |
+# +-------------------------+ |
+# | Calibrate Temps | |
+# | (Apply offsets if set) | |
+# +-------------------------+ |
+# | |
+# v |
+# +-------------------------+ |
+# | Check Temp Issues | |
+# | (High/Low/Deviation/ | |
+# | Rise/Lag/Disconnect) | |
+# +-------------------------+ |
+# | |
+# v |
+# +-------------------------+ |
+# | Read Voltages (ADC) | |
+# | (3 banks via I2C) | |
+# +-------------------------+ |
+# | |
+# v |
+# +-------------------------+ |
+# | Check Voltage Issues | |
+# | (High/Low/Zero) | |
+# +-------------------------+ |
+# | |
+# v |
+# +-------------------------+ |
+# | If Any Temp < 10°C: | |
+# | Balance for Heating | |
+# | Else If Volt Diff > Th: | |
+# | Balance Normally | |
+# | (High to Low Bank) | |
+# | Skip if Alerts Active | |
+# +-------------------------+ |
+# | |
+# v |
+# +-------------------------+ |
+# | Update TUI (Terminal) | |
+# | & Web Dashboard | |
+# | (Show status, alerts) | |
+# +-------------------------+ |
+# | |
+# v |
+# +-------------------------+ |
+# | Log Events, Send Email | |
+# | if Issues & Throttled | |
+# +-------------------------+ |
+# | |
+# v |
+# +-------------------------+ |
+# | Sleep (Poll Interval) | |
+# | Pet Watchdog if Enabled| |
+# +-------------------------+ |
+# | |
+# +----------------------------------------+
+#
 # **Dependencies (What the Script Needs to Run):**
 # - **Python Version:** 3.11 or higher (core language for running the code).
 # - **Hardware Libraries:** smbus (for I2C communication with sensors/relays), RPi.GPIO (for controlling Raspberry Pi pins). Install: sudo apt install python3-smbus python3-rpi.gpio.
@@ -159,7 +159,7 @@
 # - **Standard Python Libraries:** socket (networking), statistics (math like medians), time (timing/delays), configparser (read INI), logging (save logs), signal (handle shutdown), gc (memory cleanup), os (files), sys (exit), smtplib/email (emails), curses (TUI), threading (web server), json/http.server/urllib/base64 (web), traceback (errors), fcntl/struct (watchdog).
 # - **Hardware Requirements:** Raspberry Pi (any model, detects for watchdog), ADS1115 ADC (voltage), TCA9548A multiplexer (I2C channels), Relays (balancing), Lantronix EDS4100 (Modbus for temps), GPIO pins (e.g., 5 for DC-DC, 6 for alarm).
 # - **No Internet for Installs:** All libraries must be pre-installed; script can't download.
-# 
+#
 # **Installation Guide (Step-by-Step for Non-Programmers):**
 # 1. **Install Python:** On Raspberry Pi, run in terminal: sudo apt update; sudo apt install python3.
 # 2. **Install Hardware Libraries:** sudo apt install python3-smbus python3-rpi.gpio.
@@ -169,7 +169,7 @@
 # 6. **Run Script:** sudo python bms.py (needs root for hardware access).
 # 7. **View Web Dashboard:** Open browser to http://<your-pi-ip>:8080.
 # 8. **Logs:** Check 'battery_monitor.log' for details. Set LoggingLevel=DEBUG in INI for more info.
-# 
+#
 # **Notes & Troubleshooting:**
 # - **Hardware Matching:** Ensure INI addresses/pins match your setup. Wrong IP/port = no temps.
 # - **Email Setup:** Use Gmail app password (not regular password) for SMTP_Password.
@@ -180,13 +180,13 @@
 # - **Common Errors:** I2C errors = check wiring/connections. Modbus errors = check Lantronix IP/port.
 # - **Performance:** Poll interval ~10s; balancing ~5s. Adjust in INI.
 # - **Customization:** Edit thresholds in INI for your battery specs (e.g., Li-ion safe ranges).
-# 
+#
 # **battery_monitor.ini Documentation (With Comments - Copy This to Your File):**
 # ; battery_monitor.ini - Configuration File for BMS Script
 # ; Comments start with ; - Explain each setting for non-programmers.
 # ; Sections in [Brackets], keys = values.
 # ; Defaults used if missing.
-# 
+#
 # [Temp] ; Settings for temperature sensors.
 # ip = 192.168.15.240 ; IP address of Lantronix device (like a network address for sensor box).
 # modbus_port = 10001 ; Network port for sensor communication (like a door number).
@@ -203,7 +203,7 @@
 # query_delay = 0.25 ; Wait seconds after sending sensor query.
 # num_channels = 24 ; Number of sensors (fixed for 3 banks x 8).
 # abs_deviation_threshold = 2.0 ; Max absolute difference from bank average (°C).
-# 
+#
 # [General] ; Overall system settings.
 # NumberOfBatteries = 3 ; Number of banks (fixed at 3 for 3s8p).
 # VoltageDifferenceToBalance = 0.1 ; Balance if banks differ by more than this (V).
@@ -219,16 +219,16 @@
 # WebInterfaceEnabled = True ; Turn on web dashboard (True/False).
 # StartupSelfTestEnabled = True ; Run checks at start (True/False).
 # WatchdogEnabled = True ; Use hardware watchdog to prevent freezes (True/False).
-# 
+#
 # [I2C] ; Addresses for I2C devices (in hex, like 0x70).
 # MultiplexerAddress = 0x70 ; I2C switch address.
 # VoltageMeterAddress = 0x49 ; ADC for voltages.
 # RelayAddress = 0x26 ; Relay controller.
-# 
+#
 # [GPIO] ; Pi pin numbers for relays.
 # DC_DC_RelayPin = 5 ; Pin to control DC-DC converter.
 # AlarmRelayPin = 6 ; Pin for alarm (buzzer/light).
-# 
+#
 # [Email] ; Settings for alert emails.
 # SMTP_Server = smtp.gmail.com ; Email server (Gmail).
 # SMTP_Port = 587 ; Server port.
@@ -236,24 +236,24 @@
 # RecipientEmail = recipient@example.com ; To address.
 # SMTP_Username = your_email@gmail.com ; Login user.
 # SMTP_Password = your_app_password ; App-specific password (not regular).
-# 
+#
 # [ADC] ; Settings for voltage ADC (hex values).
 # ConfigRegister = 0x01 ; ADC config location.
 # ConversionRegister = 0x00 ; Where to read values.
 # ContinuousModeConfig = 0x0100 ; Continuous reading mode.
 # SampleRateConfig = 0x0080 ; How fast to sample.
 # GainConfig = 0x0400 ; Sensitivity setting.
-# 
+#
 # [Calibration] ; Fine-tune voltage readings (close to 1.0).
 # Sensor1_Calibration = 0.99856 ; For bank 1.
 # Sensor2_Calibration = 0.99856 ; For bank 2.
 # Sensor3_Calibration = 0.99809 ; For bank 3.
-# 
+#
 # [Startup] ; Self-test settings.
 # test_balance_duration = 15 ; Balance time during test (seconds).
 # min_voltage_delta = 0.01 ; Min voltage change to pass test (V).
 # test_read_interval = 2.0 ; Read interval during test (seconds).
-# 
+#
 # [Web] ; Dashboard settings.
 # host = 0.0.0.0 ; Listen on all IPs.
 # web_port = 8080 ; Port for web access.
@@ -263,11 +263,10 @@
 # api_enabled = True ; Allow API calls.
 # cors_enabled = False ; Allow cross-origin (for apps).
 # cors_origins = * ; Allowed origins (* = all).
-# 
+#
 # --------------------------------------------------------------------------------
 # Code Begins Below - With Line-by-Line Comments for Non-Programmers
 # --------------------------------------------------------------------------------
-
 # Import necessary Python libraries for various tasks - these are like toolboxes for different jobs.
 import socket # Used to connect to the Lantronix EDS4100 device over the network - like making a phone call to the sensor box.
 import statistics # Helps calculate averages and medians for temperature data - math helpers.
@@ -403,6 +402,7 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
             s.settimeout(3) # Set a 3-second timeout for the connection - don't wait forever.
             s.connect((ip, modbus_port)) # Connect to the device - dial the number.
             s.send(query) # Send the Modbus query - ask for data.
+            pet_watchdog()
             time.sleep(query_delay) # Wait for the device to respond - pause.
             response = s.recv(1024) # Receive up to 1024 bytes of response - get answer.
             s.close() # Close the connection - hang up.
@@ -434,6 +434,7 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
             # Handle network errors - connection problems.
             logging.warning(f"Temp read attempt {attempt+1} failed: {str(e)}. Retrying.") # Log warning.
             if attempt < max_retries - 1:
+                pet_watchdog()
                 time.sleep(retry_backoff_base ** attempt) # Wait before retrying - longer each time.
             else:
                 logging.error(f"Temp read failed after {max_retries} attempts - {str(e)}.") # Log final error.
@@ -442,6 +443,7 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
             # Handle data validation errors - bad data.
             logging.warning(f"Temp read attempt {attempt+1} failed (validation): {str(e)}. Retrying.") # Log warning.
             if attempt < max_retries - 1:
+                pet_watchdog()
                 time.sleep(retry_backoff_base ** attempt) # Wait.
             else:
                 logging.error(f"Temp read failed after {max_retries} attempts - {str(e)}.") # Log error.
@@ -481,7 +483,8 @@ def load_config():
         'retry_backoff_base': config_parser.getint('Temp', 'retry_backoff_base', fallback=1), # Retry delay base.
         'query_delay': config_parser.getfloat('Temp', 'query_delay', fallback=0.25), # Delay after Modbus query.
         'num_channels': config_parser.getint('Temp', 'num_channels', fallback=24), # Number of sensors.
-        'abs_deviation_threshold': config_parser.getfloat('Temp', 'abs_deviation_threshold', fallback=2.0) # Max absolute deviation.
+        'abs_deviation_threshold': config_parser.getfloat('Temp', 'abs_deviation_threshold', fallback=2.0), # Max absolute deviation.
+        'cabinet_over_temp_threshold': config_parser.getfloat('Temp', 'cabinet_over_temp_threshold', fallback=35.0)
     }
     # Voltage and balancing settings - general voltage.
     voltage_settings = {
@@ -512,7 +515,8 @@ def load_config():
     # GPIO pin settings - pin numbers.
     gpio_settings = {
         'DC_DC_RelayPin': config_parser.getint('GPIO', 'DC_DC_RelayPin', fallback=17), # Pin for DC-DC converter relay.
-        'AlarmRelayPin': config_parser.getint('GPIO', 'AlarmRelayPin', fallback=27) # Pin for alarm relay.
+        'AlarmRelayPin': config_parser.getint('GPIO', 'AlarmRelayPin', fallback=27), # Pin for alarm relay.
+        'FanRelayPin': config_parser.getint('GPIO', 'FanRelayPin', fallback=4)
     }
     # Email alert settings - email info.
     email_settings = {
@@ -584,6 +588,7 @@ def setup_hardware(settings):
         GPIO.setmode(GPIO.BCM) # Use BCM numbering for GPIO pins - pin naming style.
         GPIO.setup(settings['DC_DC_RelayPin'], GPIO.OUT, initial=GPIO.LOW) # Set up DC-DC converter relay pin - off at start.
         GPIO.setup(settings['AlarmRelayPin'], GPIO.OUT, initial=GPIO.LOW) # Set up alarm relay pin - off at start.
+        GPIO.setup(settings['FanRelayPin'], GPIO.OUT, initial=GPIO.LOW) # Set up fan relay pin - off at start.
     else:
         logging.warning("RPi.GPIO not available - running in test mode") # Warn if GPIO library is missing.
     logging.info("Hardware setup complete.") # Log successful setup - done.
@@ -770,7 +775,7 @@ def check_group_tracking_lag(current, previous_temps, bank_median_rise, ch, aler
         alerts (list): List to store alert messages - add here.
         disconnection_lag_threshold (float): Maximum allowed lag - max behind.
     """
-    previous = previous_temps[ch-1] # Get the previous temperature - old.
+    previous = previous_temps[ch-1] # Get previous.
     if previous is not None: # Have old?
         rise = current - previous # Calculate temperature increase - up.
         if abs(rise - bank_median_rise) > disconnection_lag_threshold: # Check if lag is too large - too different?
@@ -858,6 +863,7 @@ def read_voltage_with_retry(bank_id, settings):
             if bus: # If hardware.
                 try:
                     bus.write_byte(settings['VoltageMeterAddress'], 0x01) # Start ADC conversion - trigger.
+                    pet_watchdog()
                     time.sleep(0.05) # Wait for conversion to complete - pause.
                     raw_adc = bus.read_word_data(settings['VoltageMeterAddress'], settings['ConversionRegister']) # Read value.
                     raw_adc = (raw_adc & 0xFF) << 8 | (raw_adc >> 8) # Adjust byte order - fix format.
@@ -1472,6 +1478,7 @@ def startup_self_test(settings, stdscr):
             except curses.error:
                 logging.warning("addstr error for step 1.") # Error.
         stdscr.refresh() # Update.
+        pet_watchdog()
         time.sleep(0.5) # Pause.
         # Check if number of banks matches expected - right number?
         if settings['NumberOfBatteries'] != NUM_BANKS:
@@ -1503,6 +1510,7 @@ def startup_self_test(settings, stdscr):
             except curses.error:
                 logging.warning("addstr error for step 2.") # Error.
         stdscr.refresh() # Update.
+        pet_watchdog()
         time.sleep(0.5) # Pause.
         # Test I2C connectivity - hardware talk.
         logging.debug(f"Testing I2C connectivity on bus {settings['I2C_BusNumber']}: "
@@ -1572,6 +1580,7 @@ def startup_self_test(settings, stdscr):
             except curses.error:
                 logging.warning("addstr error for step 3.") # Error.
         stdscr.refresh() # Update.
+        pet_watchdog()
         time.sleep(0.5) # Pause.
         # Test temperature sensor reading - temps.
         logging.debug(f"Reading {settings['num_channels']} temperature channels from {settings['ip']}:{settings['modbus_port']} "
@@ -1660,6 +1669,7 @@ def startup_self_test(settings, stdscr):
                     logging.warning("addstr error for step 4.") # Error.
             y += 1 # Down.
             stdscr.refresh() # Update.
+            pet_watchdog()
             time.sleep(0.5) # Pause.
             # Read initial voltages for all banks - start values.
             initial_bank_voltages = []
@@ -1720,6 +1730,7 @@ def startup_self_test(settings, stdscr):
                 # Read initial voltages - start.
                 initial_source_v = read_voltage_with_retry(source, settings)[0] or 0.0 # Source.
                 initial_dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0 # Dest.
+                pet_watchdog()
                 time.sleep(0.5) # Pause.
                 logging.debug(f"Balance test from Bank {source} to Bank {dest}: Initial - Bank {source}={initial_source_v:.2f}V, Bank {dest}={initial_dest_v:.2f}V") # Log.
                 # Start test balancing - test.
@@ -1732,6 +1743,7 @@ def startup_self_test(settings, stdscr):
                 progress_y = y + 1 # Progress position.
                 # Run test for duration - loop.
                 while time.time() - start_time < test_duration:
+                    pet_watchdog()
                     time.sleep(read_interval) # Wait.
                     source_v = read_voltage_with_retry(source, settings)[0] or 0.0 # Read source.
                     dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0 # Read dest.
@@ -1749,6 +1761,7 @@ def startup_self_test(settings, stdscr):
                 # Read final voltages - end.
                 final_source_v = read_voltage_with_retry(source, settings)[0] or 0.0 # Source.
                 final_dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0 # Dest.
+                pet_watchdog()
                 time.sleep(0.5) # Pause.
                 logging.debug(f"Balance test from Bank {source} to Bank {dest}: Final - Bank {source}={final_source_v:.2f}V, Bank {dest}={final_dest_v:.2f}V") # Log.
                 control_dcdc_converter(False, settings) # Off.
@@ -1798,6 +1811,7 @@ def startup_self_test(settings, stdscr):
                             logging.warning("addstr error for test failed insufficient readings.") # Error.
                 stdscr.refresh() # Update.
                 y = progress_y + 2 # Down.
+                pet_watchdog()
                 time.sleep(2) # Pause.
         # Store test results - save.
         startup_alerts = alerts # Save.
@@ -1840,6 +1854,7 @@ def startup_self_test(settings, stdscr):
                 except curses.error:
                     logging.warning("addstr error for self-test OK.") # Error.
             stdscr.refresh() # Update.
+            pet_watchdog()
             time.sleep(2) # Pause.
             logging.info("Startup self-test passed.") # Log good.
             return [] # Proceed.
@@ -2227,6 +2242,23 @@ def main(stdscr):
             # Update previous values - remember.
             previous_temps = calibrated_temps[:] # Copy.
             previous_bank_medians = bank_medians[:] # Copy.
+        # Calculate overall median temperature for cabinet over-temp check - cabinet temp.
+        valid_calib_temps = [t for t in calibrated_temps if t is not None] # Valid only.
+        overall_median = statistics.median(valid_calib_temps) if valid_calib_temps else 0.0 # Median or 0.
+        # Check for cabinet over-temp and control fan - fan on/off.
+        if overall_median > settings['cabinet_over_temp_threshold']:
+            if GPIO:
+                GPIO.output(settings['FanRelayPin'], GPIO.HIGH) # Fan on.
+            logging.info(f"Cabinet over temp: {overall_median:.1f}°C > {settings['cabinet_over_temp_threshold']}°C. Fan activated.") # Log on.
+            if not any("Cabinet over temp" in a for a in temps_alerts): # Avoid duplicates.
+                temps_alerts.append(f"Cabinet over temp: {overall_median:.1f}°C > {settings['cabinet_over_temp_threshold']}°C. Fan on.") # Add alert.
+                event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: Cabinet over temp: {overall_median:.1f}°C > {settings['cabinet_over_temp_threshold']}°C. Fan on.") # Log event.
+                if len(event_log) > 20:
+                    event_log.pop(0) # Trim.
+        else:
+            if GPIO:
+                GPIO.output(settings['FanRelayPin'], GPIO.LOW) # Fan off.
+            logging.info("Cabinet temp normal. Fan deactivated.") # Log off.
         # Read voltages - get V.
         battery_voltages = [] # List.
         for i in range(1, NUM_BANKS + 1):
