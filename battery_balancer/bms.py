@@ -990,23 +990,23 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
         logging.warning("TUI y_offset exceeds height; skipping art.")
         return
     battery_art_base = [
-        " _______________________________ ",
-        " |                               | ",
-        " |                               | ",
-        " |                               | ",
-        " |                               | ",
-        " |            +++                | ",
-        " |            +++                | ",
-        " |                               | ",
-        " |                               | ",
-        " |                               | ",
-        " |                               | ",
-        " |            ---                | ",
-        " |            ---                | ",
-        " |            ---                | ",
-        " |                               | ",
-        " |                               | ",
-        " |_______________________________| "
+        " _______________ ",
+        " |             | ",
+        " |             | ",
+        " |             | ",
+        " |             | ",
+        " |     +++     | ",
+        " |     +++     | ",
+        " |             | ",
+        " |             | ",
+        " |             | ",
+        " |             | ",
+        " |     ---     | ",
+        " |     ---     | ",
+        " |     ---     | ",
+        " |             | ",
+        " |             | ",
+        " |_____________| "
     ]
     art_height = len(battery_art_base)
     art_width = len(battery_art_base[0])
@@ -1038,18 +1038,22 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
         else:
             logging.warning(f"Skipping voltage overlay for Bank {bank_id+1} - out of bounds.")
         summary = bank_stats[bank_id]
-        summary_str = f"Med: {summary['median']:.1f} Min: {summary['min']:.1f} Max: {summary['max']:.1f} Inv: {summary['invalid']}"
+        med_str = f"Med: {summary['median']:.1f}"
+        min_str = f"Min: {summary['min']:.1f}"
+        max_str = f"Max: {summary['max']:.1f}"
+        inv_str = f"Inv: {summary['invalid']}"
         s_color = curses.color_pair(2) if summary['median'] > settings['high_threshold'] or summary['median'] < settings['low_threshold'] or summary['invalid'] > 0 else curses.color_pair(4)
-        s_center = start_pos + (art_width - len(summary_str)) // 2
         s_y = y_offset + art_height
-        if s_y < height and s_center + len(summary_str) < right_half_x:
-            try:
-                stdscr.addstr(s_y, s_center, summary_str, s_color)
-            except curses.error:
-                logging.warning(f"addstr error for summary overlay Bank {bank_id+1}.")
-        else:
-            logging.warning(f"Skipping summary overlay for Bank {bank_id+1} - out of bounds.")
-    y_offset += art_height + 2
+        for idx, s_str in enumerate([med_str, min_str, max_str, inv_str]):
+            s_center = start_pos + (art_width - len(s_str)) // 2
+            if s_y + idx < height and s_center + len(s_str) < right_half_x:
+                try:
+                    stdscr.addstr(s_y + idx, s_center, s_str, s_color)
+                except curses.error:
+                    logging.warning(f"addstr error for summary line {idx+1} Bank {bank_id+1}.")
+            else:
+                logging.warning(f"Skipping summary line {idx+1} for Bank {bank_id+1} - out of bounds.")
+    y_offset += art_height + 5
     for bank_id in range(NUM_BANKS):
         if y_offset < height:
             try:
@@ -1118,9 +1122,9 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
             logging.warning("Skipping no alerts message - out of bounds.")
     history = fetch_rrd_history()
     y_chart = 1
-    chart_width = 20
+    chart_width = 30
     chart_height = 5
-    for b in range(3):
+    for b in range(NUM_BANKS):
         volt_hist = [h[f'volt{b+1}'] for h in history if h[f'volt{b+1}'] is not None] if history else []
         chart = ascii_line_chart(volt_hist, width=chart_width, height=chart_height)
         label = f"Bank {b+1} V: "
