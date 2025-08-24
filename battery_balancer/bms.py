@@ -3,43 +3,44 @@
 # --------------------------------------------------------------------------------
 #
 # **Script Name:** bms.py
-# **Version:** 1.3 (As of August 24, 2025) - Updated with robust RRD fetching to handle empty/malformed XML, removed spinner for display stability, ASCII charts in TUI, and web charts via Chart.js.
-# **Author:** [Your Name or Original Developer] - Built for Raspberry Pi-based battery monitoring and balancing.
-# **Purpose:** This script acts as a complete Battery Management System (BMS) for a 3s8p battery configuration (3 series banks, each with 8 parallel cells). It monitors temperatures and voltages, balances charge between banks, detects issues, logs events, sends alerts, and provides user interfaces via terminal (TUI) and web dashboard. Now includes time-series logging of voltages and median temperatures using RRDTool for persistent storage, ASCII line charts in the TUI for visual history, and interactive charts in the web dashboard using Chart.js.
+# **Version:** 1.4 (As of August 24, 2025) - Updated to support multiple parallel batteries, each with its own Modbus slave device for temperature sensors in a multidrop RS485 configuration. The total number of temperature sensors is dynamically computed as num_parallel * 24 (e.g., 96 sensors for 4 parallel batteries). Voltage monitoring remains unchanged for the 3 series banks, as voltages are shared across all parallel batteries and do not require duplication or modification. Enhanced alerts, TUI, and web interfaces to handle per-battery grouping and localization of issues. Includes robust RRD fetching to handle empty or malformed XML output, ASCII line charts in the TUI for visual history, and interactive charts in the web dashboard using Chart.js. Removed spinner animations for display stability in TUI.
+# **Author:** [Your Name or Original Developer] - Built for Raspberry Pi-based battery monitoring and balancing. This version extends the original to scalable parallel configurations while maintaining compatibility and efficiency.
+# **Purpose:** This script serves as a comprehensive Battery Management System (BMS) for a 3sXp battery configuration, where there are 3 series banks, each consisting of X parallel cells per bank, and multiple parallel batteries (e.g., 4 parallel 3s8p units forming a 3s32p system with 96 temperature sensors). It monitors temperatures across all sensors grouped by battery and bank, measures voltages for the shared series banks, balances charge between series banks if differences exceed thresholds, detects anomalies, logs events, sends throttled alerts, and provides real-time user interfaces via terminal (TUI) and web dashboard. Time-series logging of voltages and overall median temperature is handled via RRDTool for persistent storage and trend visualization. The system supports heating mode by deliberate balancing in cold conditions and ensures safety by skipping operations during alerts.
 #
 # **Detailed Overview:**
-# - **Temperature Monitoring:** Connects to 24 NTC thermistors (8 per bank) via a Lantronix EDS4100 device using Modbus TCP. Reads raw values, applies calibration offsets (calculated at startup or loaded from file), and checks for anomalies like high/low temperatures, deviations from bank medians, rapid rises, lags in group tracking, or disconnections.
-# - Calibration: On first valid read (all sensors > valid_min), computes median temperature and offsets for each sensor to normalize readings. Saves to 'offsets.txt' for future runs.
+# - **Parallel Battery Support:** The script now supports a configurable number of parallel batteries through the 'modbus_slaves' setting in the INI file, which lists unique Modbus slave addresses (e.g., 1,2,3,4). Each each parallel battery has its own Modbus slave on the RS485 bus. Each slave corresponds to one parallel battery's 24 NTC thermistors (8 per series bank). The total number of channels is automatically calculated as len(modbus_slaves) * 24. Temperature readings are fetched sequentially from each slave, with error handling for individual failures (e.g., a failed slave sets its 24 temps to invalid and alerts specifically for that battery). Voltage logic remains for 3 series banks only, as parallels share the same voltage levels—no need for per-battery voltage monitoring.
+# - **Temperature Monitoring:** Connects to NTC thermistors via Lantronix EDS4100 using Modbus TCP in a TCP tunnel mode to the RS485 bus. For multiple slaves, reads are looped with the slave address in the query. Raw values are read, calibration offsets applied (computed at startup or loaded from 'offsets.txt' using an overall system median for normalization), and anomalies checked per local bank within each battery (high/low temperatures, deviations from local bank medians, rapid rises, lags in group tracking, or disconnections). Anomalies are localized to "Battery X Bank Y Ch Z" for precise diagnostics. Per-slave Modbus failures are handled gracefully with specific alerts.
+# - Calibration: On the first valid read where all sensors across all batteries report > valid_min, computes the overall system median temperature and individual offsets to normalize readings. Saves to 'offsets.txt' for persistence. If any sensor is invalid (e.g., due to a failed slave), skips calibration until all are good.
 # - Anomalies Checked:
-# - Invalid/Disconnected: Reading <= valid_min (e.g., 0.0°C).
-# - High: > high_threshold (e.g., 42.0°C).
-# - Low: < low_threshold (e.g., 0.0°C).
-# - Deviation: Absolute > abs_deviation_threshold (e.g., 2.0°C) or relative > deviation_threshold (e.g., 10%) from bank median.
-# - Abnormal Rise: Increase > rise_threshold (e.g., 2.0°C) since last poll.
-# - Group Lag: Change differs from bank median change by > disconnection_lag_threshold (e.g., 0.5°C).
-# - Sudden Disconnection: Was valid, now invalid.
-# - **Voltage Monitoring & Balancing:** Uses ADS1115 ADC over I2C to measure voltages of 3 banks. Balances if difference > VoltageDifferenceToBalance (e.g., 0.1V) by connecting high to low bank via relays and DC-DC converter.
-# - Heating Mode: If any temperature < 10°C, balances regardless of voltage difference to generate heat.
-# - Safety: Skips balancing if alerts active (e.g., anomalies). Rests for BalanceRestPeriodSeconds (e.g., 60s) after balancing.
-# - Voltage Checks: Alerts if < LowVoltageThresholdPerBattery (e.g., 18.5V), > HighVoltageThresholdPerBattery (e.g., 21.0V), or zero.
-# - **Alerts & Notifications:** Logs to 'battery_monitor.log'. Activates alarm relay on issues. Sends throttled emails (e.g., every 3600s) via SMTP.
-# - **Watchdog:** If enabled, pets hardware watchdog during long operations to prevent resets. Uses /dev/watchdog with 30s timeout.
+#   - Invalid/Disconnected: Reading <= valid_min (e.g., 0.0°C).
+#   - High: > high_threshold (e.g., 42.0°C).
+#   - Low: < low_threshold (e.g., 0.0°C).
+#   - Deviation: Absolute > abs_deviation_threshold (e.g., 2.0°C) or relative > deviation_threshold (e.g., 10%) from local bank median.
+#   - Abnormal Rise: Increase > rise_threshold (e.g., 2.0°C) since last poll.
+#   - Group Lag: Change differs from local bank median change by > disconnection_lag_threshold (e.g., 0.5°C).
+#   - Sudden Disconnection: Previously valid, now invalid.
+#   - Per-slave failures alerted as "Battery X (slave Y) Modbus failure".
+# - **Voltage Monitoring & Balancing:** Uses ADS1115 ADC over I2C to measure voltages of the 3 shared series banks. Balances if difference > VoltageDifferenceToBalance (e.g., 0.1V) by connecting high to low bank via relays and DC-DC converter. This operation affects all parallels simultaneously since voltages are shared.
+# - Heating Mode: If any temperature across any battery < 10°C, initiates balancing regardless of voltage difference to generate internal heat (system-wide).
+# - Safety: Skips balancing if any alerts are active (temperature or voltage anomalies across the system). Rests for BalanceRestPeriodSeconds (e.g., 60s) after each balancing cycle to allow settling and prevent overuse.
+# - Voltage Checks: Alerts if any bank < LowVoltageThresholdPerBattery (e.g., 18.5V), > HighVoltageThresholdPerBattery (e.g., 21.0V), or reads zero (possible disconnection or measurement error).
+# - **Alerts & Notifications:** Logs all events to 'battery_monitor.log' with timestamps. Activates alarm relay on any issue (system-wide or per-battery). Sends throttled emails (e.g., every 3600s) via SMTP with detailed messages including battery/bank/channel locations for quick troubleshooting.
+# - **Watchdog:** If enabled, pets the hardware watchdog (/dev/watchdog) during long operations to prevent resets due to hangs. Auto-detects Pi model for correct module (bcm2835_wdt for Pi 1-4, rp1-wdt for Pi 5+).
 # - **User Interfaces:**
-# - **TUI (Terminal UI):** Uses curses for real-time display: ASCII art batteries with voltages/temps, alerts, balancing progress bar/animation, last 20 events. Now includes ASCII line charts for voltage history per bank and median temperature, placed in the top-right section for visualization of trends over time.
-# - **Web Dashboard:** HTTP server on port 8080 (configurable). Shows voltages, temps, alerts, balancing status. Supports API for status/balance/history. Optional auth/CORS. Now includes interactive time-series charts using Chart.js for voltages per bank and median temperature, placed at the top of the page after the header for easy viewing.
-# - **Time-Series Logging:** Uses RRDTool for persistent storage of bank voltages and overall median temperature. Data is updated every poll interval (e.g., 10s), but RRD is configured with 1min steps for aggregation. History is limited to ~480 entries (e.g., 8 hours). Fetch functions retrieve data for TUI and web rendering.
-# - **Startup Self-Test:** Validates config, hardware connections (I2C/Modbus), initial reads, balancer (tests all pairs for voltage changes).
-# - Retries on failure after 2min. Alerts and activates alarm if fails.
-# - **Error Handling:** Retries reads (exponential backoff), handles missing hardware (test mode), logs tracebacks, graceful shutdown on Ctrl+C.
+#   - **TUI (Terminal UI):** Uses curses for real-time display: ASCII art batteries grouped vertically by parallel battery with shared series voltages and local bank medians (detailed sensor temps summarized to medians due to space limitations; full details available in logs/web). Includes alerts with locations, balancing progress bar/animation, last 20 events. Now includes ASCII line charts for voltage history per series bank and overall median temperature, placed in the top-right section for visualization of trends over time. For multiple batteries, stacks battery art; if terminal too small, clips—use web for full view.
+#   - **Web Dashboard:** HTTP server on configurable port (e.g., 8080). Shows shared voltages in a "Shared Banks" section, temperatures grouped by battery and bank in "Batteries Temperatures" section, alerts, balancing status. Supports API for /api/status (includes num_parallel, num_series_banks, sensors_per_bank for JS grouping), /api/balance (POST to initiate if safe), /api/history (time-series for charts). Optional basic auth and CORS. Now includes interactive time-series charts using Chart.js for voltages per bank and overall median temperature, placed at the top of the page after the header for easy viewing.
+# - **Time-Series Logging:** Uses RRDTool for persistent storage of bank voltages and overall median temperature (system-wide). Data is updated every poll interval (e.g., 10s), but RRD is configured with 1min steps for aggregation. History is limited to ~480 entries (e.g., 8 hours). Fetch functions retrieve data for TUI and web rendering, with robust parsing to skip invalid rows.
+# - **Startup Self-Test:** Validates config (e.g., unique modbus_slaves, NumberOfBatteries=3), hardware connections (I2C/Modbus to all slaves), initial reads (all temps across batteries and voltages good), balancer (tests all pairs for voltage changes). Retries on failure after 2min. Alerts and activates alarm if fails.
+# - **Error Handling:** Retries reads (exponential backoff), handles missing hardware (test mode with mocks), logs tracebacks, graceful shutdown on Ctrl+C.
 # - **Configuration:** From 'battery_monitor.ini'. Defaults if missing keys. See INI documentation below.
 # - **Logging:** Configurable level (e.g., INFO). Timestamps events.
 # - **Shutdown:** Cleans GPIO, web server, watchdog on exit.
 #
 # **Key Features Explained for Non-Programmers:**
-# - Imagine this script as a vigilant guardian for your battery pack. It constantly checks the "health" (temperature and voltage) of each part of the battery.
-# - Temperatures: Like checking body temperature with 24 thermometers. If one is too hot/cold or acting weird, it raises an alarm.
-# - Voltages: Measures "energy level" in each of 3 groups. If one has more energy than another, it transfers some to balance them, like pouring water between buckets.
-# - Heating: In cold weather (<10°C), it deliberately transfers energy to create warmth inside the battery cabinet.
+# - Imagine this script as a vigilant guardian for your battery pack. It constantly checks the "health" (temperature and voltage) of each part of the battery, now scaled to multiple parallel units.
+# - Temperatures: Like checking body temperature with 96 thermometers (24 per battery). If one is too hot/cold or acting weird, it raises an alarm with exact location (Battery 2 Bank 1 Ch 3).
+# - Voltages: Measures "energy level" in each of 3 shared groups. If one has more energy than another, it transfers some to balance them, like pouring water between buckets—affects all parallels.
+# - Heating: In cold weather (<10°C anywhere), it deliberately transfers energy to create warmth inside the battery cabinet.
 # - Alerts: If something's wrong, it logs it, turns on a buzzer/light (alarm relay), and emails you (but not too often to avoid spam).
 # - Interfaces: Terminal shows a fancy text-based dashboard with ASCII charts for trends; web page lets you view from browser with interactive charts.
 # - Startup Check: Like a self-diagnostic when your car starts – ensures everything's connected and working before running.
@@ -50,7 +51,7 @@
 # 2. **Setup:** Connects to hardware (sensors, relays) – if missing, runs in "pretend" mode. Creates/loads RRD database for history.
 # 3. **Self-Test:** Checks if config makes sense, hardware responds, sensors give good readings, balancing actually changes voltages. If fail, alerts and retries.
 # 4. **Main Loop (Repeats Forever):**
-# - Read temperatures from all 24 sensors.
+# - Read temperatures from all slaves (one per battery).
 # - Calibrate them (adjust based on startup values for accuracy).
 # - Check for temperature problems (too hot, too cold, etc.).
 # - Read voltages from 3 banks.
@@ -98,7 +99,7 @@
 # v |
 # +-------------------------+ |
 # | Read Temps (Modbus) | |
-# | (24 sensors via TCP) | |
+# | (Loop over slaves, 24/ch) | |
 # +-------------------------+ |
 # | |
 # v |
@@ -175,7 +176,7 @@
 # - **Hardware Libraries:** smbus (for I2C communication with sensors/relays), RPi.GPIO (for controlling Raspberry Pi pins). Install: sudo apt install python3-smbus python3-rpi.gpio.
 # - **External Library:** art (for ASCII art in TUI). Install: pip install art.
 # - **Time-Series Storage:** rrdtool (for RRD database). Install: sudo apt install rrdtool.
-# - **Standard Python Libraries:** socket (networking), statistics (math like medians), time (timing/delays), configparser (read INI), logging (save logs), signal (handle shutdown), gc (memory cleanup), os (files), sys (exit), smtplib/email (emails), curses (TUI), threading (web server), json/http.server/urllib/base64 (web), traceback (errors), fcntl/struct (watchdog), subprocess (for rrdtool commands), xml.etree.ElementTree (for parsing RRD XML output).
+# - **Standard Python Libraries:** socket (networking), statistics (math like medians), time (timing/delays), configparser (read INI), logging (save logs), signal (handle shutdown), gc (memory cleanup), os (files), sys (exit), smtplib/email (emails), curses (TUI), threading (web server), json/http.server/urllib/base64 (web), traceback (errors), fcntl/struct (watchdog), subprocess (rrdtool), xml.etree.ElementTree (RRD XML).
 # - **Hardware Requirements:** Raspberry Pi (any model, detects for watchdog), ADS1115 ADC (voltage), TCA9548A multiplexer (I2C channels), Relays (balancing), Lantronix EDS4100 (Modbus for temps), GPIO pins (e.g., 5 for DC-DC, 6 for alarm, 4 for fan).
 # - **No Internet for Installs:** All libraries must be pre-installed; script can't download. For web charts, Chart.js is loaded via CDN (requires internet for dashboard users).
 #
@@ -223,12 +224,12 @@
 # max_retries = 3 ; Retry failed reads this many times.
 # retry_backoff_base = 1 ; Delay base for retries (1s, 2s, 4s...).
 # query_delay = 0.25 ; Wait seconds after sending sensor query.
-# num_channels = 24 ; Number of sensors (fixed for 3 banks x 8).
 # abs_deviation_threshold = 2.0 ; Max absolute difference from bank average (°C).
 # cabinet_over_temp_threshold = 35.0 ; Cabinet too hot if median > this (°C) - fan on!
+# modbus_slaves = 1,2,3,4 ; Comma-separated Modbus slave addresses for each parallel battery (each handles 24 sensors). Default: '1'. Number of parallels = length of this list.
 #
 # [General] ; Overall system settings.
-# NumberOfBatteries = 3 ; Number of banks (fixed at 3 for 3s8p).
+# NumberOfBatteries = 3 ; Number of series banks (fixed at 3 for 3sXp).
 # VoltageDifferenceToBalance = 0.1 ; Balance if banks differ by more than this (V).
 # BalanceDurationSeconds = 5 ; How long to balance each time (seconds).
 # SleepTimeBetweenChecks = 0.1 ; Short wait in loop (seconds) - for responsiveness.
@@ -360,8 +361,10 @@ web_data = {
     'system_status': 'Initializing' # System status (e.g., Running, Alert) - status string.
 }
 # Define which temperature sensors belong to each bank (3 banks, 8 sensors each) - bank groups.
-BANK_RANGES = [(1, 8), (9, 16), (17, 24)] # Channels 1-8 (Bank 1), 9-16 (Bank 2), 17-24 (Bank 3) - fixed ranges.
-NUM_BANKS = 3 # Fixed number of banks for 3s8p configuration - constant 3.
+BANK_RANGES = [] # Dynamic for parallels.
+NUM_BANKS = 3 # Fixed for series.
+NUM_PARALLEL = 1 # Dynamic from config.
+SENSORS_PER_BANK = 8 # Fixed.
 # Global for watchdog - watchdog file path.
 WATCHDOG_DEV = '/dev/watchdog' # Device file for watchdog - hardware reset preventer.
 watchdog_fd = None # File handle for watchdog - open connection.
@@ -371,11 +374,11 @@ HISTORY_LIMIT = 480 # Number of historical entries to retain (e.g., ~8 hours at 
 def get_bank_for_channel(ch):
     """
     Find which battery bank a temperature sensor belongs to.
-    This function takes a sensor number (1-24) and figures out which group (bank 1,2,3) it belongs to.
+    This function takes a sensor number (1-96) and figures out which group (bank 1-12 for 4 parallels) it belongs to.
     Args:
-        ch (int): Sensor channel number (1 to 24) - the sensor ID.
+        ch (int): Sensor channel number (1 to 96) - the sensor ID.
     Returns:
-        int: Bank number (1 to 3) or None if the channel is invalid - the group ID.
+        int: Bank number (1 to 12) or None if the channel is invalid - the group ID.
     """
     # Loop through each bank’s channel range - check each group.
     for bank_id, (start, end) in enumerate(BANK_RANGES, 1): # For bank 1: start=1 end=8, etc.
@@ -504,17 +507,22 @@ def load_config():
         'rise_threshold': config_parser.getfloat('Temp', 'rise_threshold', fallback=2.0), # Max allowed temperature rise.
         'deviation_threshold': config_parser.getfloat('Temp', 'deviation_threshold', fallback=0.1), # Max relative deviation.
         'disconnection_lag_threshold': config_parser.getfloat('Temp', 'disconnection_lag_threshold', fallback=0.5), # Lag threshold.
-        'high_threshold': config_parser.getfloat('Temp', 'high_threshold', fallback=60.0), # Max safe temperature.
+        'high_threshold': config_parser.getfloat('Temp', 'high_threshold', fallback=42.0), # Max safe temperature.
         'low_threshold': config_parser.getfloat('Temp', 'low_threshold', fallback=0.0), # Min safe temperature.
         'scaling_factor': config_parser.getfloat('Temp', 'scaling_factor', fallback=100.0), # Converts raw data to °C.
         'valid_min': config_parser.getfloat('Temp', 'valid_min', fallback=0.0), # Min valid temperature.
         'max_retries': config_parser.getint('Temp', 'max_retries', fallback=3), # Max retries for failed reads.
         'retry_backoff_base': config_parser.getint('Temp', 'retry_backoff_base', fallback=1), # Retry delay base.
         'query_delay': config_parser.getfloat('Temp', 'query_delay', fallback=0.25), # Delay after Modbus query.
-        'num_channels': config_parser.getint('Temp', 'num_channels', fallback=24), # Number of sensors.
         'abs_deviation_threshold': config_parser.getfloat('Temp', 'abs_deviation_threshold', fallback=2.0), # Max absolute deviation.
         'cabinet_over_temp_threshold': config_parser.getfloat('Temp', 'cabinet_over_temp_threshold', fallback=35.0) # Cabinet over-temp for fan.
     }
+    # Parse modbus_slaves for parallel support - new for v1.4.
+    modbus_slaves_str = config_parser.get('Temp', 'modbus_slaves', fallback='1') # Get as string.
+    modbus_slaves = [int(s.strip()) for s in modbus_slaves_str.split(',')] # Convert to list of ints.
+    temp_settings['modbus_slaves'] = modbus_slaves # Store the list.
+    temp_settings['num_parallel'] = len(modbus_slaves) # Compute number of parallels.
+    temp_settings['num_channels'] = temp_settings['num_parallel'] * 24 # Total sensors, dynamic.
     # Voltage and balancing settings - general voltage.
     voltage_settings = {
         'NumberOfBatteries': config_parser.getint('General', 'NumberOfBatteries', fallback=3), # Number of banks.
@@ -584,13 +592,13 @@ def load_config():
         'username': config_parser.get('Web', 'username', fallback='admin'), # Web username.
         'password': config_parser.get('Web', 'password', fallback='admin123'), # Web password.
         'api_enabled': config_parser.getboolean('Web', 'api_enabled', fallback=True), # Enable API endpoints.
-        'cors_enabled': config_parser.getboolean('Web', 'cors_enabled', fallback=True), # Enable CORS.
+        'cors_enabled': config_parser.getboolean('Web', 'cors_enabled', fallback=False), # Enable CORS.
         'cors_origins': config_parser.get('Web', 'cors_origins', fallback='*') # Allowed CORS origins.
     }
     # Set logging level based on configuration - adjust diary detail.
     log_level = getattr(logging, voltage_settings['LoggingLevel'].upper(), logging.INFO) # Get level from string.
     logging.getLogger().setLevel(log_level) # Apply the logging level - set detail.
-    # Initialize alert states for each temperature sensor - setup alert trackers.
+    # Initialize alert states for each temperature channel - setup alert trackers.
     alert_states = {ch: {'last_type': None, 'count': 0} for ch in range(1, temp_settings['num_channels'] + 1)} # Dict for each sensor.
     logging.info("Configuration loaded successfully.") # Log successful config load - done.
     # Combine all settings into one dictionary - big collection.
@@ -719,15 +727,15 @@ def check_invalid_reading(raw, ch, alerts, valid_min):
         bool: True if the reading is invalid, False otherwise - bad or good.
     """
     if raw <= valid_min: # Check if the reading is below the minimum valid value - too low?
-        bank = get_bank_for_channel(ch) # Find which bank the sensor belongs to - group.
-        alert = f"Bank {bank} Ch {ch}: Invalid reading (≤ {valid_min})." # Create alert message - make string.
+        bat, local_bank, local_ch = get_location(ch) # Find battery, bank, channel - localize for alert.
+        alert = f"Battery {bat} Bank {local_bank} Ch {local_ch}: Invalid reading (≤ {valid_min})." # Create alert message - make string with location.
         alerts.append(alert) # Add alert to the list - store it.
         event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}") # Add to event log with timestamp - history.
         if len(event_log) > 20:
             event_log.pop(0) # Keep only the last 20 events - remove oldest.
-        logging.warning(f"Invalid reading on Bank {bank} Ch {ch}: {raw} ≤ {valid_min}.") # Log the issue - note.
-        return True # Yes, invalid.
-    return False # No, good.
+        logging.warning(f"Invalid reading on Battery {bat} Bank {local_bank} Ch {local_ch}: {raw} ≤ {valid_min}.") # Log the issue - note with location.
+        return True # Yes, invalid - skip further checks for this sensor.
+    return False # No, good - proceed with other checks.
 def check_high_temp(calibrated, ch, alerts, high_threshold):
     """
     Check if a temperature is too high.
@@ -739,13 +747,13 @@ def check_high_temp(calibrated, ch, alerts, high_threshold):
         high_threshold (float): Maximum safe temperature - max ok.
     """
     if calibrated > high_threshold: # Check if temperature exceeds the high threshold - too hot?
-        bank = get_bank_for_channel(ch) # Find the bank - group.
-        alert = f"Bank {bank} Ch {ch}: High temp ({calibrated:.1f}°C > {high_threshold}°C)." # Create alert - string.
+        bat, local_bank, local_ch = get_location(ch) # Find the location - battery, bank, channel.
+        alert = f"Battery {bat} Bank {local_bank} Ch {local_ch}: High temp ({calibrated:.1f}°C > {high_threshold}°C)." # Create alert - string with location.
         alerts.append(alert) # Add to alerts - store.
         event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}") # Add to event log - history.
         if len(event_log) > 20:
-            event_log.pop(0) # Trim.
-        logging.warning(f"High temp alert on Bank {bank} Ch {ch}: {calibrated:.1f} > {high_threshold}.") # Log the issue - note.
+            event_log.pop(0) # Trim to 20.
+        logging.warning(f"High temp alert on Battery {bat} Bank {local_bank} Ch {local_ch}: {calibrated:.1f} > {high_threshold}.") # Log the issue - note with location.
 def check_low_temp(calibrated, ch, alerts, low_threshold):
     """
     Check if a temperature is too low.
@@ -757,13 +765,13 @@ def check_low_temp(calibrated, ch, alerts, low_threshold):
         low_threshold (float): Minimum safe temperature - min ok.
     """
     if calibrated < low_threshold: # Check if temperature is below the low threshold - too cold?
-        bank = get_bank_for_channel(ch) # Find the bank - group.
-        alert = f"Bank {bank} Ch {ch}: Low temp ({calibrated:.1f}°C < {low_threshold}°C)." # Create alert - string.
+        bat, local_bank, local_ch = get_location(ch) # Find the location - battery, bank, channel.
+        alert = f"Battery {bat} Bank {local_bank} Ch {local_ch}: Low temp ({calibrated:.1f}°C < {low_threshold}°C)." # Create alert - string with location.
         alerts.append(alert) # Add to alerts - store.
         event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}") # Add to event log - history.
         if len(event_log) > 20:
             event_log.pop(0) # Trim.
-        logging.warning(f"Low temp alert on Bank {bank} Ch {ch}: {calibrated:.1f} < {low_threshold}.") # Log the issue - note.
+        logging.warning(f"Low temp alert on Battery {bat} Bank {local_bank} Ch {local_ch}: {calibrated:.1f} < {low_threshold}.") # Log the issue - note with location.
 def check_deviation(calibrated, bank_median, ch, alerts, abs_deviation_threshold, deviation_threshold):
     """
     Check if a temperature deviates too much from the bank’s average.
@@ -780,13 +788,13 @@ def check_deviation(calibrated, bank_median, ch, alerts, abs_deviation_threshold
     rel_dev = abs_dev / abs(bank_median) if bank_median != 0 else 0 # Calculate relative difference - % far.
     # Check if deviation is too high - too different?
     if abs_dev > abs_deviation_threshold or rel_dev > deviation_threshold:
-        bank = get_bank_for_channel(ch) # Find the bank - group.
-        alert = f"Bank {bank} Ch {ch}: Deviation from bank median (abs {abs_dev:.1f}°C or {rel_dev:.2%})." # Create alert - string.
+        bat, local_bank, local_ch = get_location(ch) # Find the location - battery, bank, channel.
+        alert = f"Battery {bat} Bank {local_bank} Ch {local_ch}: Deviation from bank median (abs {abs_dev:.1f}°C or {rel_dev:.2%})." # Create alert - string with location.
         alerts.append(alert) # Add to alerts - store.
         event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}") # Add to event log - history.
         if len(event_log) > 20:
             event_log.pop(0) # Trim.
-        logging.warning(f"Deviation alert on Bank {bank} Ch {ch}: abs {abs_dev:.1f}, rel {rel_dev:.2%}.") # Log issue.
+        logging.warning(f"Deviation alert on Battery {bat} Bank {local_bank} Ch {local_ch}: abs {abs_dev:.1f}, rel {rel_dev:.2%}.") # Log issue with location.
 def check_abnormal_rise(current, previous_temps, ch, alerts, poll_interval, rise_threshold):
     """
     Check if a temperature has risen too quickly since the last check.
@@ -803,13 +811,13 @@ def check_abnormal_rise(current, previous_temps, ch, alerts, poll_interval, rise
     if previous is not None: # Check if previous reading exists - have old?
         rise = current - previous # Calculate temperature increase - how much up.
         if rise > rise_threshold: # Check if increase is too large - too fast?
-            bank = get_bank_for_channel(ch) # Find the bank - group.
-            alert = f"Bank {bank} Ch {ch}: Abnormal rise ({rise:.1f}°C in {poll_interval}s)." # Create alert - string.
-            alerts.append(alert) # Add to alerts - store.
-            event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}") # Add to log.
+            bat, local_bank, local_ch = get_location(ch) # Find location.
+            alert = f"Battery {bat} Bank {local_bank} Ch {local_ch}: Abnormal rise ({rise:.1f}°C in {poll_interval}s)." # Alert string.
+            alerts.append(alert) # Add.
+            event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}") # Log.
             if len(event_log) > 20:
                 event_log.pop(0) # Trim.
-            logging.warning(f"Abnormal rise alert on Bank {bank} Ch {ch}: {rise:.1f}°C.") # Log issue.
+            logging.warning(f"Abnormal rise alert on Battery {bat} Bank {local_bank} Ch {local_ch}: {rise:.1f}°C.") # Log.
 def check_group_tracking_lag(current, previous_temps, bank_median_rise, ch, alerts, disconnection_lag_threshold):
     """
     Check if a sensor’s temperature change lags behind the bank’s average change.
@@ -824,15 +832,15 @@ def check_group_tracking_lag(current, previous_temps, bank_median_rise, ch, aler
     """
     previous = previous_temps[ch-1] # Get previous.
     if previous is not None: # Have old?
-        rise = current - previous # Calculate temperature increase - up.
-        if abs(rise - bank_median_rise) > disconnection_lag_threshold: # Check if lag is too large - too different?
-            bank = get_bank_for_channel(ch) # Find bank.
-            alert = f"Bank {bank} Ch {ch}: Lag from bank group ({rise:.1f}°C vs {bank_median_rise:.1f}°C)." # Alert string.
+        rise = current - previous # Calculate rise.
+        if abs(rise - bank_median_rise) > disconnection_lag_threshold: # Too different?
+            bat, local_bank, local_ch = get_location(ch) # Location.
+            alert = f"Battery {bat} Bank {local_bank} Ch {local_ch}: Lag from bank group ({rise:.1f}°C vs {bank_median_rise:.1f}°C)." # Alert.
             alerts.append(alert) # Add.
             event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}") # Log.
             if len(event_log) > 20:
                 event_log.pop(0) # Trim.
-            logging.warning(f"Lag alert on Bank {bank} Ch {ch}: rise {rise:.1f} vs median {bank_median_rise:.1f}.") # Log.
+            logging.warning(f"Lag alert on Battery {bat} Bank {local_bank} Ch {local_ch}: rise {rise:.1f} vs median {bank_median_rise:.1f}.") # Log.
 def check_sudden_disconnection(current, previous_temps, ch, alerts):
     """
     Check if a sensor has suddenly stopped working.
@@ -845,13 +853,13 @@ def check_sudden_disconnection(current, previous_temps, ch, alerts):
     """
     previous = previous_temps[ch-1] # Get previous.
     if previous is not None and current is None: # Was good, now bad?
-        bank = get_bank_for_channel(ch) # Bank.
-        alert = f"Bank {bank} Ch {ch}: Sudden disconnection." # Alert.
+        bat, local_bank, local_ch = get_location(ch) # Location.
+        alert = f"Battery {bat} Bank {local_bank} Ch {local_ch}: Sudden disconnection." # Alert.
         alerts.append(alert) # Add.
         event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}") # Log.
         if len(event_log) > 20:
             event_log.pop(0) # Trim.
-        logging.warning(f"Sudden disconnection alert on Bank {bank} Ch {ch}.") # Log.
+        logging.warning(f"Sudden disconnection alert on Battery {bat} Bank {local_bank} Ch {local_ch}.") # Log.
 def ascii_line_chart(data, width=40, height=5, symbols=' ▁▂▃▄▅▆▇█'):
     """
     Generate an ASCII line chart from data series.
@@ -872,12 +880,12 @@ def ascii_line_chart(data, width=40, height=5, symbols=' ▁▂▃▄▅▆▇�
     min_val, max_val = min(data), max(data) # Min and max values.
     range_val = max_val - min_val or 1 # Range, avoid divide by zero.
     # Scale data to symbol indices - normalize.
-    scaled = [(val - min_val) / range_val * (len(symbols) - 1) for val in data]
+    scaled = [(val - min_val) / range_val * (len(symbols) - 1) for val in data] # List.
     chart = [] # List for lines.
     # Build each row from top to bottom - high to low.
     for y in range(height - 1, -1, -1):
         # For each x, choose symbol if data exists - build line.
-        line = ''.join(symbols[int(scaled[x])] if len(data) > x else ' ' for x in range(width))
+        line = ''.join(symbols[int(scaled[x])] if len(data) > x else ' ' for x in range(width)) # Join symbols.
         chart.append(line) # Add line.
     return '\n'.join(chart) # Return as string.
 def choose_channel(channel, multiplexer_address):
@@ -992,7 +1000,7 @@ def set_relay_connection(high, low, settings):
             relay_state |= (1 << 0) # Relay 1.
             logging.debug("Relays 1 activated for high to low.") # Log.
         elif high == 2 and low == 3:
-            relay_state |=(1 << 0) | (1 << 2) | (1 << 3) # Relays 1, 3, 4.
+            relay_state |= (1 << 0) | (1 << 2) | (1 << 3) # Relays 1, 3, 4.
             logging.debug("Relays 1, 3, and 4 activated for high to low.") # Log.
         elif high == 3 and low == 1:
             relay_state |= (1 << 0) | (1 << 1) # Relays 1, 2.
@@ -1196,16 +1204,16 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
     last_balance_time = time.time() # End time.
 def compute_bank_medians(calibrated_temps, valid_min):
     """
-    Calculate the median temperature for each bank.
+    Calculate the median temperature for each local bank.
     Gets average per group.
     Args:
         calibrated_temps (list): List of calibrated temperatures - adjusted list.
         valid_min (float): Minimum valid temperature - min ok.
     Returns:
-        list: Median temperatures for each bank - averages.
+        list: Median temperatures for each local bank - averages.
     """
     bank_medians = [] # List for medians.
-    for start, end in BANK_RANGES: # Loop banks.
+    for start, end in BANK_RANGES: # Loop all local banks.
         bank_temps = [calibrated_temps[i-1] for i in range(start, end+1) if calibrated_temps[i-1] is not None] # Valid temps.
         bank_median = statistics.median(bank_temps) if bank_temps else 0.0 # Median or 0.
         bank_medians.append(bank_median) # Add.
@@ -1454,7 +1462,7 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
         logging.warning("Skipping startup median - out of bounds.") # No.
     y_offset += 2 # Space.
     # Display alerts section on the left - issues.
-    if y_offset < height: # Fits?
+    if y_offset < height:
         try:
             stdscr.addstr(y_offset, 0, "Alerts:", curses.color_pair(7)) # Header cyan.
         except curses.error:
@@ -1949,7 +1957,7 @@ def startup_self_test(settings, stdscr):
                     logging.debug(f"Balance test from Bank {source} to Bank {dest} analysis: Bank {source} Initial={initial_source_v:.2f}V, Final={final_source_v:.2f}V, Change={source_change:+.3f}V, Bank {dest} Initial={initial_dest_v:.2f}V, Final={final_dest_v:.2f}V, Change={dest_change:+.3f}V, Min change={min_delta}V") # Log analysis.
                     # Check if changes are as expected (source decreases, destination increases) - correct direction?
                     if source_change >= 0 or dest_change <= 0 or abs(source_change) < min_delta or dest_change < min_delta:
-                        alert = f"Balance test from Bank {source} to Bank {dest} failed: Unexpected trend or insufficient change (Bank {source} Initial={initial_source_v:.2f}V, Final={final_source_v:.2f}V, Change={source_change:+.3f}V, Bank {dest} Initial={initial_dest_v:.2f}V, Final={final_dest_v:.2f}V, Change={dest_change:+.3f}V)." # Alert.
+                        alert = f"Balance test from Bank {source} to Bank {dest} failed: Unexpected trend or insufficient change (Bank {source} Change={source_change:+.3f}V, Bank {dest} Change={dest_change:+.3f}V)." # Alert.
                         alerts.append(alert) # Add.
                         event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}") # Log.
                         if len(event_log) > 20:
@@ -1957,14 +1965,14 @@ def startup_self_test(settings, stdscr):
                         logging.error(f"Balance test from Bank {source} to Bank {dest} failed: Source did not decrease or destination did not increase sufficiently.") # Log fail.
                         if progress_y + 1 < stdscr.getmaxyx()[0]: # Fits?
                             try:
-                                stdscr.addstr(progress_y + 1, 0, f"Test failed: Unexpected trend or insufficient change (Bank {source} Initial={initial_source_v:.2f}V, Final={final_source_v:.2f}V, Change={source_change:+.3f}V, Bank {dest} Initial={initial_dest_v:.2f}V, Final={final_dest_v:.2f}V, Change={dest_change:+.3f}V).", curses.color_pair(2)) # Red.
+                                stdscr.addstr(progress_y + 1, 0, "Test failed: Unexpected trend or insufficient change.", curses.color_pair(2)) # Red.
                             except curses.error:
                                 logging.warning("addstr error for test failed insufficient change.") # Error.
                     else:
                         logging.debug(f"Balance test from Bank {source} to Bank {dest} passed: Correct trend and sufficient voltage change.") # Good.
                         if progress_y + 1 < stdscr.getmaxyx()[0]: # Fits?
                             try:
-                                stdscr.addstr(progress_y + 1, 0, f"Test passed (Bank {source} Initial={initial_source_v:.2f}V, Final={final_source_v:.2f}V, Change={source_change:+.3f}V, Bank {dest} Initial={initial_dest_v:.2f}V, Final={final_dest_v:.2f}V, Change={dest_change:+.3f}V).", curses.color_pair(4)) # Green.
+                                stdscr.addstr(progress_y + 1, 0, "Test passed.", curses.color_pair(4)) # Green.
                             except curses.error:
                                 logging.warning("addstr error for test passed.") # Error.
                 else:
@@ -1982,7 +1990,7 @@ def startup_self_test(settings, stdscr):
                 stdscr.refresh() # Update.
                 y = progress_y + 2 # Down.
                 pet_watchdog()
-                time.sleep(2) # Pause.
+                time.sleep(2) # Pause for next test.
         # Store test results - save.
         startup_alerts = alerts # Save.
         if alerts:
@@ -2157,7 +2165,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                     const alertsContainer = document.getElementById('alerts-container');
                     if (data.alerts.length > 0) {
                         alertsContainer.innerHTML = data.alerts.map(alert => `<p class="alert">${alert}</p>`).join('');
-                    } else {
+                    } else:
                         alertsContainer.innerHTML = '<p class="normal">No alerts</p>';
                     }
                     const balanceBtn = document.getElementById('balance-btn');
@@ -2172,25 +2180,27 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
             fetch('/api/history')
                 .then(response => response.json())
                 .then(data => {
-                    const hist = data.history;
-                    const labels = hist.map(h => new Date(h.time * 1000).toLocaleTimeString());
-                    const datasets = [
-                        { label: 'Bank 1 V', data: hist.map(h => h.volt1), borderColor: 'green' },
-                        { label: 'Bank 2 V', data: hist.map(h => h.volt2), borderColor: 'blue' },
-                        { label: 'Bank 3 V', data: hist.map(h => h.volt3), borderColor: 'red' },
-                        { label: 'Median Temp °C', data: hist.map(h => h.medtemp), borderColor: 'cyan', yAxisID: 'temp' }
-                    ];
-                    const ctx = document.getElementById('bmsChart').getContext('2d');
-                    new Chart(ctx, {
-                        type: 'line',
-                        data: { labels, datasets },
-                        options: {
-                            scales: {
-                                y: { type: 'linear', position: 'left', title: { display: true, text: 'Voltage (V)' } },
-                                temp: { type: 'linear', position: 'right', title: { display: true, text: 'Temp (°C)' }, grid: { drawOnChartArea: false } }
+                    if (data.history) { // Check if history exists
+                        const hist = data.history;
+                        const labels = hist.map(h => new Date(h.time * 1000).toLocaleTimeString());
+                        const datasets = [
+                            { label: 'Bank 1 V', data: hist.map(h => h.volt1), borderColor: 'green' },
+                            { label: 'Bank 2 V', data: hist.map(h => h.volt2), borderColor: 'blue' },
+                            { label: 'Bank 3 V', data: hist.map(h => h.volt3), borderColor: 'red' },
+                            { label: 'Median Temp °C', data: hist.map(h => h.medtemp), borderColor: 'cyan', yAxisID: 'temp' }
+                        ];
+                        const ctx = document.getElementById('bmsChart').getContext('2d');
+                        new Chart(ctx, {
+                            type: 'line',
+                            data: { labels, datasets },
+                            options: {
+                                scales: {
+                                    y: { type: 'linear', position: 'left', title: { display: true, text: 'Voltage (V)' } },
+                                    temp: { type: 'linear', position: 'right', title: { display: true, text: 'Temp (°C)' }, grid: { drawOnChartArea: false } }
+                                }
                             }
-                        }
-                    });
+                        });
+                    }
                 });
         }
         function initiateBalance() {
@@ -2371,152 +2381,136 @@ def main(stdscr):
     Args:
         stdscr: Curses screen object - terminal.
     """
-    # Initialize TUI colors (repeated for main loop) - colors again.
+    global startup_offsets, startup_median, startup_set, battery_voltages, previous_temps, previous_bank_medians, run_count, balancing_active, web_data
+    # Setup TUI - keypad/nonblock.
     stdscr.keypad(True) # Keypad on.
-    curses.start_color() # Color on.
-    curses.use_default_colors() # Defaults.
-    curses.init_pair(1, curses.COLOR_RED, -1) # Red.
-    curses.init_pair(2, curses.COLOR_RED, -1) # Red.
-    curses.init_pair(3, curses.COLOR_YELLOW, -1) # Yellow.
-    curses.init_pair(4, curses.COLOR_GREEN, -1) # Green.
-    curses.init_pair(5, curses.COLOR_WHITE, -1) # White.
-    curses.init_pair(6, curses.COLOR_YELLOW, -1) # Yellow.
-    curses.init_pair(7, curses.COLOR_CYAN, -1) # Cyan.
-    curses.init_pair(8, curses.COLOR_MAGENTA, -1) # Magenta.
     stdscr.nodelay(True) # Non block.
-    # Global variables for state - shared.
-    global previous_temps, previous_bank_medians, run_count, startup_offsets, startup_median, startup_set, battery_voltages, web_data, balancing_active
-    # Load config and setup hardware - start.
+    # Load config - settings.
     settings = load_config() # Load.
+    # Set up dynamic ranges - for parallels.
+    global BANK_RANGES, NUM_PARALLEL
+    NUM_PARALLEL = settings['num_parallel'] # Set.
+    BANK_RANGES = [] # Build.
+    for bat in range(NUM_PARALLEL):
+        for bank in range(NUM_BANKS):
+            start = bat * 24 + bank * SENSORS_PER_BANK + 1 # Calculate start.
+            end = start + SENSORS_PER_BANK - 1 # End.
+            BANK_RANGES.append((start, end)) # Add range.
+    # Setup hardware - I2C/GPIO/RRD.
     setup_hardware(settings) # Setup.
-    # Start web server - web.
-    start_web_server(settings) # Start if enabled.
-    # Run startup test - check.
+    # Start web - if enabled.
+    start_web_server(settings) # Start.
+    # Self-test - check all.
     startup_self_test(settings, stdscr) # Run.
-    # Set up shutdown handler - catch stop.
+    # Shutdown handler - catch Ctrl+C.
     signal.signal(signal.SIGINT, signal_handler) # Handle.
-    # Set up watchdog - if on.
+    # Watchdog - if on.
     if settings['WatchdogEnabled']:
         setup_watchdog(30) # 30s.
-    while True: # Forever loop.
-        # Read temperatures - get temps.
-        temp_result = read_ntc_sensors(
-            settings['ip'], settings['modbus_port'], settings['query_delay'],
-            settings['num_channels'], settings['scaling_factor'],
-            settings['max_retries'], settings['retry_backoff_base']
-        ) # Read.
-        temps_alerts = [] # Initialize here.
-        if isinstance(temp_result, str):
-            # Handle error (e.g., log it, set all temps to None, etc.) - bad.
-            logging.error(f"Error reading temperatures: {temp_result}") # Log.
-            temps_alerts = [] # Reset.
-            calibrated_temps = [None] * settings['num_channels'] # None.
-            raw_temps = [settings['valid_min']] * settings['num_channels'] # Min.
-            bank_medians = [0.0] * NUM_BANKS # 0.
-        else:
-            # Process valid readings - good.
-            valid_count = sum(1 for t in temp_result if t > settings['valid_min']) # Count good.
-            # Set calibration if not set - adjust.
-            if not startup_set and valid_count == settings['num_channels']:
-                startup_median = statistics.median(temp_result) # Median.
-                startup_offsets = [startup_median - t for t in temp_result] # Offsets.
-                save_offsets(startup_median, startup_offsets) # Save.
-                startup_set = True # Set.
-                logging.info(f"Temp calibration set. Median: {startup_median:.1f}°C") # Log.
-            # Reset if offsets missing - no offsets.
-            if startup_set and startup_offsets is None:
-                startup_set = False # Reset.
-            # Apply calibration - adjust list.
-            calibrated_temps = [temp_result[i] + startup_offsets[i] if startup_set and temp_result[i] > settings['valid_min'] else temp_result[i] if temp_result[i] > settings['valid_min'] else None for i in range(settings['num_channels'])] # Calib.
-            raw_temps = temp_result # Raw.
-            bank_medians = compute_bank_medians(calibrated_temps, settings['valid_min']) # Medians.
-            # Check for temperature issues - look for problems.
-            for ch, raw in enumerate(raw_temps, 1):
-                if check_invalid_reading(raw, ch, temps_alerts, settings['valid_min']) : # Invalid?
-                    continue # Skip.
-                calib = calibrated_temps[ch-1] # Calib.
-                bank_id = get_bank_for_channel(ch) # Bank.
-                bank_median = bank_medians[bank_id - 1] # Median.
-                check_high_temp(calib, ch, temps_alerts, settings['high_threshold']) # High.
-                check_low_temp(calib, ch, temps_alerts, settings['low_threshold']) # Low.
-                check_deviation(calib, bank_median, ch, temps_alerts, settings['abs_deviation_threshold'], settings['deviation_threshold']) # Dev.
-            # Check time-based issues if not first run - advanced checks.
-            if run_count > 0 and previous_temps and previous_bank_medians is not None:
-                for bank_id in range(1, NUM_BANKS + 1):
-                    bank_median_rise = bank_medians[bank_id - 1] - previous_bank_medians[bank_id - 1] # Rise.
-                    start, end = BANK_RANGES[bank_id - 1] # Range.
-                    for ch in range(start, end + 1):
-                        calib = calibrated_temps[ch - 1] # Temp.
-                        if calib is not None:
-                            check_abnormal_rise(calib, previous_temps, ch, temps_alerts, settings['poll_interval'], settings['rise_threshold']) # Rise.
-                            check_group_tracking_lag(calib, previous_temps, bank_median_rise, ch, temps_alerts, settings['disconnection_lag_threshold']) # Lag.
-                        check_sudden_disconnection(calib, previous_temps, ch, temps_alerts) # Disconnect.
-            # Update previous values - remember.
-            previous_temps = calibrated_temps[:] # Copy.
-            previous_bank_medians = bank_medians[:] # Copy.
-        # Calculate overall median temperature for cabinet over-temp check and logging - cabinet temp.
-        valid_calib_temps = [t for t in calibrated_temps if t is not None] # Valid only.
+    while True: # Main loop.
+        # Read temps - multi-slave.
+        all_raw_temps = [] # List for all.
+        temps_alerts = [] # Alerts.
+        for idx, slave in enumerate(settings['modbus_slaves']): # Loop slaves.
+            temps = read_ntc_sensors(settings['ip'], settings['modbus_port'], settings['query_delay'], 24, settings['scaling_factor'], settings['max_retries'], settings['retry_backoff_base']) # Read 24.
+            if isinstance(temps, str): # Error?
+                logging.error(f"Battery {idx+1} (slave {slave}): {temps}") # Log.
+                temps_alerts.append(f"Battery {idx+1} (slave {slave}) Modbus failure: {temps}") # Alert.
+                all_raw_temps.extend([settings['valid_min']] * 24) # Invalid.
+            else:
+                all_raw_temps.extend(temps) # Add good.
+        # Calibrate if ready - all valid.
+        valid_count = sum(1 for t in all_raw_temps if t > settings['valid_min']) # Count.
+        if not startup_set and valid_count == settings['num_channels']: # All good?
+            startup_median = statistics.median(all_raw_temps) # Overall median.
+            startup_offsets = [startup_median - t for t in all_raw_temps] # Offsets.
+            save_offsets(startup_median, startup_offsets) # Save.
+            startup_set = True # Set.
+            logging.info(f"Temp calibration set. Median: {startup_median:.1f}°C") # Log.
+        # Apply offsets - calib list.
+        calibrated_temps = [all_raw_temps[i] + startup_offsets[i] if startup_set and all_raw_temps[i] > settings['valid_min'] else all_raw_temps[i] if all_raw_temps[i] > settings['valid_min'] else None for i in range(settings['num_channels'])] # Calib.
+        raw_temps = all_raw_temps # Raw.
+        bank_medians = compute_bank_medians(calibrated_temps, settings['valid_min']) # Medians per local bank.
+        # Temp checks - anomalies.
+        for ch, raw in enumerate(raw_temps, 1):
+            if check_invalid_reading(raw, ch, temps_alerts, settings['valid_min']): # Invalid?
+                continue # Skip.
+            calib = calibrated_temps[ch-1] # Calib.
+            bank_id = get_bank_for_channel(ch) # Global bank.
+            bank_median = bank_medians[bank_id - 1] # Local median.
+            check_high_temp(calib, ch, temps_alerts, settings['high_threshold']) # High.
+            check_low_temp(calib, ch, temps_alerts, settings['low_threshold']) # Low.
+            check_deviation(calib, bank_median, ch, temps_alerts, settings['abs_deviation_threshold'], settings['deviation_threshold']) # Dev.
+        # Time-based checks if not first - rise/lag.
+        if run_count > 0 and previous_temps and previous_bank_medians is not None:
+            for bank_id in range(1, len(bank_medians) + 1):
+                bank_median_rise = bank_medians[bank_id - 1] - previous_bank_medians[bank_id - 1] # Rise.
+                start, end = BANK_RANGES[bank_id - 1] # Range.
+                for ch in range(start, end + 1):
+                    calib = calibrated_temps[ch - 1] # Temp.
+                    if calib is not None:
+                        check_abnormal_rise(calib, previous_temps, ch, temps_alerts, settings['poll_interval'], settings['rise_threshold']) # Rise.
+                        check_group_tracking_lag(calib, previous_temps, bank_median_rise, ch, temps_alerts, settings['disconnection_lag_threshold']) # Lag.
+                    check_sudden_disconnection(calib, previous_temps, ch, temps_alerts) # Disconnect.
+        # Update previous - remember.
+        previous_temps = calibrated_temps[:] # Copy.
+        previous_bank_medians = bank_medians[:] # Copy.
+        # Overall median for fan/RRD - system temp.
+        valid_calib_temps = [t for t in calibrated_temps if t is not None] # Valid.
         overall_median = statistics.median(valid_calib_temps) if valid_calib_temps else 0.0 # Median or 0.
-        # Check for cabinet over-temp and control fan - fan on/off.
+        # Fan control - over temp.
         if overall_median > settings['cabinet_over_temp_threshold']:
             if GPIO:
-                GPIO.output(settings['FanRelayPin'], GPIO.HIGH) # Fan on.
+                GPIO.output(settings['FanRelayPin'], GPIO.HIGH) # On.
             logging.info(f"Cabinet over temp: {overall_median:.1f}°C > {settings['cabinet_over_temp_threshold']}°C. Fan activated.") # Log on.
-            if not any("Cabinet over temp" in a for a in temps_alerts): # Avoid duplicates.
-                temps_alerts.append(f"Cabinet over temp: {overall_median:.1f}°C > {settings['cabinet_over_temp_threshold']}°C. Fan on.") # Add alert.
-                event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: Cabinet over temp: {overall_median:.1f}°C > {settings['cabinet_over_temp_threshold']}°C. Fan on.") # Log event.
+            if not any("Cabinet over temp" in a for a in temps_alerts): # Avoid dup.
+                temps_alerts.append(f"Cabinet over temp: {overall_median:.1f}°C > {settings['cabinet_over_temp_threshold']}°C. Fan on.") # Add.
+                event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: Cabinet over temp: {overall_median:.1f}°C > {settings['cabinet_over_temp_threshold']}°C. Fan on.") # Log.
                 if len(event_log) > 20:
                     event_log.pop(0) # Trim.
         else:
             if GPIO:
-                GPIO.output(settings['FanRelayPin'], GPIO.LOW) # Fan off.
+                GPIO.output(settings['FanRelayPin'], GPIO.LOW) # Off.
             logging.info("Cabinet temp normal. Fan deactivated.") # Log off.
-        # Read voltages - get V.
+        # Read voltages - shared.
         battery_voltages = [] # List.
         for i in range(1, NUM_BANKS + 1):
             v, _, _ = read_voltage_with_retry(i, settings) # Read.
-            battery_voltages.append(v if v is not None else 0.0) # Add or 0.
-        # Check for issues - problems?
+            battery_voltages.append(v if v is not None else 0.0) # Add.
+        # Issues check - alerts.
         alert_needed, all_alerts = check_for_issues(battery_voltages, temps_alerts, settings) # Check.
-        # Update RRD with current data - log to database.
-        timestamp = int(time.time()) # Current time.
-        values = f"{timestamp}:{battery_voltages[0]}:{battery_voltages[1]}:{battery_voltages[2]}:{overall_median}" # Format N:volt1:volt2:volt3:medtemp.
-        subprocess.call(['rrdtool', 'update', RRD_FILE, values]) # Update command.
-        logging.debug(f"RRD updated with: {values}") # Log update.
-        # Check if balancing is needed - balance?
+        # RRD update - log data.
+        timestamp = int(time.time()) # Now.
+        values = f"{timestamp}:{battery_voltages[0]}:{battery_voltages[1]}:{battery_voltages[2]}:{overall_median}" # Format.
+        subprocess.call(['rrdtool', 'update', RRD_FILE, values]) # Update.
+        logging.debug(f"RRD updated with: {values}") # Log.
+        # Balance if needed - check.
         if len(battery_voltages) == NUM_BANKS:
             max_v = max(battery_voltages) # Max.
             min_v = min(battery_voltages) # Min.
             high_b = battery_voltages.index(max_v) + 1 # High.
             low_b = battery_voltages.index(min_v) + 1 # Low.
             current_time = time.time() # Now.
-            # Start balancing if conditions met - go.
-            if balancing_active or (alert_needed is False and max_v - min_v > settings['VoltageDifferenceToBalance'] and min_v > 0 and current_time - last_balance_time > settings['BalanceRestPeriodSeconds']):
+            # Balance if conditions - normal.
+            if alert_needed is False and max_v - min_v > settings['VoltageDifferenceToBalance'] and min_v > 0 and current_time - last_balance_time > settings['BalanceRestPeriodSeconds']:
                 balance_battery_voltages(stdscr, high_b, low_b, settings, temps_alerts) # Balance.
-                balancing_active = False # Reset.
-        # Update web data - web update.
+        # Update web - data.
         web_data['voltages'] = battery_voltages # Voltages.
         web_data['temperatures'] = calibrated_temps # Temps.
         web_data['alerts'] = all_alerts # Alerts.
         web_data['balancing'] = balancing_active # Balance.
         web_data['last_update'] = time.time() # Time.
         web_data['system_status'] = 'Alert' if alert_needed else 'Running' # Status.
-        # Update TUI - draw screen.
-        draw_tui(
-            stdscr, battery_voltages, calibrated_temps, raw_temps,
-            startup_offsets or [0]*settings['num_channels'], bank_medians,
-            startup_median, all_alerts, settings, startup_set, is_startup=(run_count == 0)
-        ) # Draw.
-        # Increment run count and clean up - count up.
+        # Draw TUI - display.
+        draw_tui(stdscr, battery_voltages, calibrated_temps, raw_temps, startup_offsets or [0]*settings['num_channels'], bank_medians, startup_median, all_alerts, settings, startup_set, is_startup=(run_count == 0)) # Draw.
+        # Increment - count.
         run_count += 1 # +1.
-        gc.collect() # Clean memory.
+        gc.collect() # Clean.
         logging.info("Poll cycle complete.") # Log end.
         if settings['WatchdogEnabled']:
             pet_watchdog() # Pet.
-        # Sleep before next cycle - wait.
-        time.sleep(settings['poll_interval']) # Sleep.
+        time.sleep(settings['poll_interval']) # Wait.
     if settings['WatchdogEnabled']:
         close_watchdog() # Close.
-# Run the main function with curses wrapper - start.
 if __name__ == '__main__':
-    curses.wrapper(main) # Start TUI and loop.
+    curses.wrapper(main) # Run main with curses - start loop.
