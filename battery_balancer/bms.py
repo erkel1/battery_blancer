@@ -1038,9 +1038,9 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
         else:
             logging.warning(f"Skipping voltage overlay for Bank {bank_id+1} - out of bounds.")
         summary = bank_stats[bank_id]
-        med_str = f"Med: {summary['median'],C:.1f}"
-        min_str = f"Min: {summary['min'],C:.1f}"
-        max_str = f"Max: {summary['max'],C:.1f}"
+        med_str = f"Med: {summary['median']:.1f}°C"
+        min_str = f"Min: {summary['min']:.1f}°C"
+        max_str = f"Max: {summary['max']:.1f}°C"
         inv_str = f"Inv: {summary['invalid']}"
         s_color = curses.color_pair(2) if summary['median'] > settings['high_threshold'] or summary['median'] < settings['low_threshold'] or summary['invalid'] > 0 else curses.color_pair(4)
         for idx, s_str in enumerate([med_str, min_str, max_str, inv_str]):
