@@ -67,7 +67,7 @@
 # 6. **Shutdown:** If you press Ctrl+C, cleans up connections safely.
 #
 # **Updated Logic Flow Diagram (ASCII - More Detailed):**
-#
+"""
 +--------------------------------------+
 | Load Config from INI                 |
 | (Read settings file, incl. parallel) |
@@ -169,7 +169,7 @@ v                                                             |
 +--------------------------------------+                      |
 |                                                             |
 +-------------------------------------------------------------+
-
+"""
 # **Dependencies (What the Script Needs to Run):**
 # - **Python Version:** 3.11 or higher (core language for running the code).
 # - **Hardware Libraries:** smbus (for I2C communication with sensors/relays), RPi.GPIO (for controlling Raspberry Pi pins). Install: sudo apt install python3-smbus python3-rpi.gpio.
