@@ -432,7 +432,7 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
             s.connect((ip, modbus_port)) # Connect to the device - dial the number.
             s.send(query) # Send the Modbus query - ask for data.
             pet_watchdog()
-            time.sleep(query_delay) # Wait for the device to respond - pause.
+            safe_sleep(query_delay) # Wait for the device to respond - pause.
             response = s.recv(1024) # Receive up to 1024 bytes of response - get answer.
             s.close() # Close the connection - hang up.
             # Check if the response is too short - too little data?
@@ -464,7 +464,7 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
             logging.warning(f"Temp read attempt {attempt+1} failed: {str(e)}. Retrying.") # Log warning.
             if attempt < max_retries - 1:
                 pet_watchdog()
-                time.sleep(retry_backoff_base ** attempt) # Wait before retrying - longer each time.
+                safe_sleep(retry_backoff_base ** attempt) # Wait before retrying - longer each time.
             else:
                 logging.error(f"Temp read failed after {max_retries} attempts - {str(e)}.") # Log final error.
                 return f"Error: Failed after {max_retries} attempts - {str(e)}." # Return error message.
@@ -473,7 +473,7 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
             logging.warning(f"Temp read attempt {attempt+1} failed (validation): {str(e)}. Retrying.") # Log warning.
             if attempt < max_retries - 1:
                 pet_watchdog()
-                time.sleep(retry_backoff_base ** attempt) # Wait.
+                safe_sleep(retry_backoff_base ** attempt) # Wait.
             else:
                 logging.error(f"Temp read failed after {max_retries} attempts - {str(e)}.") # Log error.
                 return f"Error: Failed after {max_retries} attempts - {str(e)}." # Return error.
@@ -597,6 +597,22 @@ def load_config():
     return {**temp_settings, **voltage_settings, **general_flags, **i2c_settings,
             **gpio_settings, **email_settings, **adc_settings, **calibration_settings,
             **startup_settings, **web_settings} # Merge all.
+def safe_sleep(duration, pet_interval=1.0):
+    """
+    Safe sleep function that pets the watchdog every pet_interval seconds during the sleep duration.
+    This prevents watchdog resets during long sleeps while maintaining the total sleep time.
+    Args:
+        duration (float): Total time to sleep in seconds.
+        pet_interval (float): Interval to pet the watchdog, default 1.0s.
+    """
+    if duration <= 0:
+        return # No sleep if duration <=0.
+    start = time.time()
+    while time.time() - start < duration:
+        pet_watchdog() # Pet to reset timer.
+        remaining = duration - (time.time() - start)
+        if remaining > 0:
+            time.sleep(min(pet_interval, remaining)) # Sleep min of interval or remaining.
 def setup_hardware(settings):
     """
     Set up the I2C bus and GPIO pins for hardware communication.
@@ -939,7 +955,7 @@ def read_voltage_with_retry(bank_id, settings):
                 try:
                     bus.write_byte(settings['VoltageMeterAddress'], 0x01) # Start ADC conversion - trigger.
                     pet_watchdog()
-                    time.sleep(0.05) # Wait for conversion to complete - pause.
+                    safe_sleep(0.05) # Wait for conversion to complete - pause.
                     raw_adc = bus.read_word_data(settings['VoltageMeterAddress'], settings['ConversionRegister']) # Read value.
                     raw_adc = (raw_adc & 0xFF) << 8 | (raw_adc >> 8) # Adjust byte order - fix format.
                 except IOError as e:
@@ -1181,7 +1197,7 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
         # Pet the watchdog every loop - keep alive.
         if settings.get('WatchdogEnabled', False):
             pet_watchdog() # Pet.
-        time.sleep(0.01) # Short delay for animation.
+        safe_sleep(0.01) # Short delay for animation.
     # Finish balancing - done.
     logging.info("Balancing process completed.") # Log done.
     event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: Balancing completed from Bank {high} to Bank {low}") # Log event.
@@ -1213,7 +1229,7 @@ def compute_bank_medians(calibrated_temps, valid_min):
 def fetch_rrd_history():
     """
     Fetch historical data from RRD database.
-    This function uses rrdtool xport to export data as XML, parses it, and returns a list of dicts with time, voltages, and median temp.
+    This function uses rrdtool xport to export content as XML, parses it, and returns a list of dicts with time, voltages, and median temp.
     Returns:
         list: List of dicts with historical data - [{'time': ts, 'volt1': v1, 'volt2': v2, 'volt3': v3, 'medtemp': mt}, ...] recent first.
     """
@@ -1505,13 +1521,13 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_median
             logging.warning(f"Skipping event '{event}' - out of bounds.") # No.
     pet_watchdog()
     stdscr.refresh() # Update screen.
-def setup_watchdog(timeout=60):
+def setup_watchdog(timeout=30):
     """
     Set up the hardware watchdog timer for the Raspberry Pi.
     Detects Pi model and loads appropriate watchdog module (bcm2835_wdt for Pi 1-4, rp1-wdt for Pi 5 and newer).
     Falls back to opening /dev/watchdog for unknown models.
     Args:
-        timeout (int): Watchdog timeout in seconds (default: 60) - reset time.
+        timeout (int): Watchdog timeout in seconds (default: 30) - reset time.
     """
     global watchdog_fd # Shared handle.
     try:
@@ -1530,7 +1546,7 @@ def setup_watchdog(timeout=60):
         # Load watchdog module - activate.
         os.system(f'sudo modprobe {module}') # System command.
         logging.info(f"Loaded watchdog module: {module}") # Log loaded.
-        time.sleep(1) # Wait init.
+        safe_sleep(1) # Wait init.
         # Verify /dev/watchdog exists - check device.
         if not os.path.exists(WATCHDOG_DEV):
             logging.error(f"Watchdog device {WATCHDOG_DEV} not found. Attempting to open anyway.") # Log error.
@@ -1623,7 +1639,7 @@ def startup_self_test(settings, stdscr):
                 logging.warning("addstr error for step 1.") # Error.
         stdscr.refresh() # Update.
         pet_watchdog()
-        time.sleep(0.5) # Pause.
+        safe_sleep(0.5) # Pause.
         # Check if number of banks matches expected - right number?
         if settings['NumberOfBatteries'] != NUM_BANKS:
             alert = f"Config mismatch: NumberOfBatteries={settings['NumberOfBatteries']} != {NUM_BANKS}." # Alert.
@@ -1655,7 +1671,7 @@ def startup_self_test(settings, stdscr):
                 logging.warning("addstr error for step 2.") # Error.
         stdscr.refresh() # Update.
         pet_watchdog()
-        time.sleep(0.5) # Pause.
+        safe_sleep(0.5) # Pause.
         # Test I2C connectivity - hardware talk.
         logging.debug(f"Testing I2C connectivity on bus {settings['I2C_BusNumber']}: "
                       f"Multiplexer=0x{settings['MultiplexerAddress']:02x}, "
@@ -1725,7 +1741,7 @@ def startup_self_test(settings, stdscr):
                 logging.warning("addstr error for step 3.") # Error.
         stdscr.refresh() # Update.
         pet_watchdog()
-        time.sleep(0.5) # Pause.
+        safe_sleep(0.5) # Pause.
         # Test temperature sensor reading - temps.
         logging.debug(f"Reading {settings['num_channels']} temperature channels from {settings['ip']}:{settings['modbus_port']} "
                       f"with query_delay={settings['query_delay']}, scaling_factor={settings['scaling_factor']}, "
@@ -1814,7 +1830,7 @@ def startup_self_test(settings, stdscr):
             y += 1 # Down.
             stdscr.refresh() # Update.
             pet_watchdog()
-            time.sleep(0.5) # Pause.
+            safe_sleep(0.5) # Pause.
             # Read initial voltages for all banks - start values.
             initial_bank_voltages = []
             for bank in range(1, NUM_BANKS + 1):
@@ -1875,7 +1891,7 @@ def startup_self_test(settings, stdscr):
                 initial_source_v = read_voltage_with_retry(source, settings)[0] or 0.0 # Source.
                 initial_dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0 # Dest.
                 pet_watchdog()
-                time.sleep(0.5) # Pause.
+                safe_sleep(0.5) # Pause.
                 logging.debug(f"Balance test from Bank {source} to Bank {dest}: Initial - Bank {source}={initial_source_v:.2f}V, Bank {dest}={initial_dest_v:.2f}V") # Log.
                 # Start test balancing - go.
                 set_relay_connection(source, dest, settings) # Connect.
@@ -1888,7 +1904,7 @@ def startup_self_test(settings, stdscr):
                 # Run test for duration - loop.
                 while time.time() - start_time < test_duration:
                     pet_watchdog()
-                    time.sleep(read_interval) # Wait.
+                    safe_sleep(read_interval) # Wait.
                     source_v = read_voltage_with_retry(source, settings)[0] or 0.0 # Read source.
                     dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0 # Read dest.
                     source_trend.append(source_v) # Add.
@@ -1906,7 +1922,7 @@ def startup_self_test(settings, stdscr):
                 final_source_v = read_voltage_with_retry(source, settings)[0] or 0.0 # Source.
                 final_dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0 # Dest.
                 pet_watchdog()
-                time.sleep(0.5) # Pause.
+                safe_sleep(0.5) # Pause.
                 logging.debug(f"Balance test from Bank {source} to Bank {dest}: Final - Bank {source}={final_source_v:.2f}V, Bank {dest}={final_dest_v:.2f}V") # Log.
                 control_dcdc_converter(False, settings) # Off.
                 set_relay_connection(0, 0, settings) # Reset.
@@ -1956,7 +1972,7 @@ def startup_self_test(settings, stdscr):
                 stdscr.refresh() # Update.
                 y = progress_y + 2 # Down.
                 pet_watchdog()
-                time.sleep(2) # Pause.
+                safe_sleep(2) # Pause.
         # Store test results - save.
         startup_alerts = alerts # Save.
         if alerts:
@@ -1983,7 +1999,7 @@ def startup_self_test(settings, stdscr):
                 pet_watchdog() # Pet.
             for _ in range(12): # 120s / 10s
                 pet_watchdog()
-                time.sleep(10)
+                safe_sleep(10)
             if settings.get('WatchdogEnabled', False):
                 pet_watchdog() # Pet.
             retries += 1 # Next try.
@@ -2001,7 +2017,7 @@ def startup_self_test(settings, stdscr):
                     logging.warning("addstr error for self-test OK.") # Error.
             stdscr.refresh() # Update.
             pet_watchdog()
-            time.sleep(2) # Pause.
+            safe_sleep(2) # Pause.
             logging.info("Startup self-test passed.") # Log good.
             return [] # Proceed.
 class BMSRequestHandler(BaseHTTPRequestHandler):
@@ -2491,7 +2507,7 @@ def main(stdscr):
         if settings['WatchdogEnabled']:
             pet_watchdog() # Pet.
         # Sleep before next cycle - wait.
-        time.sleep(settings['poll_interval']) # Sleep.
+        safe_sleep(settings['poll_interval']) # Sleep.
     if settings['WatchdogEnabled']:
         close_watchdog() # Close.
 # Run the main function with curses wrapper - start.
