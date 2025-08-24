@@ -3,7 +3,7 @@
 # --------------------------------------------------------------------------------
 #
 # **Script Name:** bms.py
-# **Version:** 1.2 (As of August 24, 2025) - Updated with improved RRD configuration for faster graph population, removed spinner for display stability, ASCII charts in TUI, and web charts via Chart.js.
+# **Version:** 1.3 (As of August 24, 2025) - Updated with robust RRD fetching to handle empty/malformed XML, removed spinner for display stability, ASCII charts in TUI, and web charts via Chart.js.
 # **Author:** [Your Name or Original Developer] - Built for Raspberry Pi-based battery monitoring and balancing.
 # **Purpose:** This script acts as a complete Battery Management System (BMS) for a 3s8p battery configuration (3 series banks, each with 8 parallel cells). It monitors temperatures and voltages, balances charge between banks, detects issues, logs events, sends alerts, and provides user interfaces via terminal (TUI) and web dashboard. Now includes time-series logging of voltages and median temperatures using RRDTool for persistent storage, ASCII line charts in the TUI for visual history, and interactive charts in the web dashboard using Chart.js.
 #
@@ -432,7 +432,7 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
             s.connect((ip, modbus_port)) # Connect to the device - dial the number.
             s.send(query) # Send the Modbus query - ask for data.
             pet_watchdog()
-            safe_sleep(query_delay) # Wait for the device to respond - pause.
+            time.sleep(query_delay) # Wait for the device to respond - pause.
             response = s.recv(1024) # Receive up to 1024 bytes of response - get answer.
             s.close() # Close the connection - hang up.
             # Check if the response is too short - too little data?
@@ -464,7 +464,7 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
             logging.warning(f"Temp read attempt {attempt+1} failed: {str(e)}. Retrying.") # Log warning.
             if attempt < max_retries - 1:
                 pet_watchdog()
-                safe_sleep(retry_backoff_base ** attempt) # Wait before retrying - longer each time.
+                time.sleep(retry_backoff_base ** attempt) # Wait before retrying - longer each time.
             else:
                 logging.error(f"Temp read failed after {max_retries} attempts - {str(e)}.") # Log final error.
                 return f"Error: Failed after {max_retries} attempts - {str(e)}." # Return error message.
@@ -473,7 +473,7 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
             logging.warning(f"Temp read attempt {attempt+1} failed (validation): {str(e)}. Retrying.") # Log warning.
             if attempt < max_retries - 1:
                 pet_watchdog()
-                safe_sleep(retry_backoff_base ** attempt) # Wait.
+                time.sleep(retry_backoff_base ** attempt) # Wait.
             else:
                 logging.error(f"Temp read failed after {max_retries} attempts - {str(e)}.") # Log error.
                 return f"Error: Failed after {max_retries} attempts - {str(e)}." # Return error.
@@ -597,22 +597,6 @@ def load_config():
     return {**temp_settings, **voltage_settings, **general_flags, **i2c_settings,
             **gpio_settings, **email_settings, **adc_settings, **calibration_settings,
             **startup_settings, **web_settings} # Merge all.
-def safe_sleep(duration, pet_interval=1.0):
-    """
-    Safe sleep function that pets the watchdog every pet_interval seconds during the sleep duration.
-    This prevents watchdog resets during long sleeps while maintaining the total sleep time.
-    Args:
-        duration (float): Total time to sleep in seconds.
-        pet_interval (float): Interval to pet the watchdog, default 1.0s.
-    """
-    if duration <= 0:
-        return # No sleep if duration <=0.
-    start = time.time()
-    while time.time() - start < duration:
-        pet_watchdog() # Pet to reset timer.
-        remaining = duration - (time.time() - start)
-        if remaining > 0:
-            time.sleep(min(pet_interval, remaining)) # Sleep min of interval or remaining.
 def setup_hardware(settings):
     """
     Set up the I2C bus and GPIO pins for hardware communication.
@@ -955,7 +939,7 @@ def read_voltage_with_retry(bank_id, settings):
                 try:
                     bus.write_byte(settings['VoltageMeterAddress'], 0x01) # Start ADC conversion - trigger.
                     pet_watchdog()
-                    safe_sleep(0.05) # Wait for conversion to complete - pause.
+                    time.sleep(0.05) # Wait for conversion to complete - pause.
                     raw_adc = bus.read_word_data(settings['VoltageMeterAddress'], settings['ConversionRegister']) # Read value.
                     raw_adc = (raw_adc & 0xFF) << 8 | (raw_adc >> 8) # Adjust byte order - fix format.
                 except IOError as e:
@@ -1197,7 +1181,7 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
         # Pet the watchdog every loop - keep alive.
         if settings.get('WatchdogEnabled', False):
             pet_watchdog() # Pet.
-        safe_sleep(0.01) # Short delay for animation.
+        time.sleep(0.01) # Short delay for animation.
     # Finish balancing - done.
     logging.info("Balancing process completed.") # Log done.
     event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: Balancing completed from Bank {high} to Bank {low}") # Log event.
@@ -1229,7 +1213,7 @@ def compute_bank_medians(calibrated_temps, valid_min):
 def fetch_rrd_history():
     """
     Fetch historical data from RRD database.
-    This function uses rrdtool xport to export content as XML, parses it, and returns a list of dicts with time, voltages, and median temp.
+    This function uses rrdtool xport to export data as XML, parses it, and returns a list of dicts with time, voltages, and median temp.
     Returns:
         list: List of dicts with historical data - [{'time': ts, 'volt1': v1, 'volt2': v2, 'volt3': v3, 'medtemp': mt}, ...] recent first.
     """
@@ -1248,20 +1232,46 @@ def fetch_rrd_history():
                                           'XPORT:v2:Bank2',
                                           'XPORT:v3:Bank3',
                                           'XPORT:mt:MedianTemp'])
+        logging.debug(f"Raw RRD xport output: {output.decode()}") # Log raw XML for debug.
         root = ET.fromstring(output.decode()) # Parse XML.
         data = [] # List for rows.
         for row in root.findall('.//row'): # Loop rows.
-            t = int(row.find('t').text) # Timestamp.
-            vs = [float(v.text) if v.text != 'NaN' else None for v in row.findall('v')] # Values, None for NaN.
+            t_elem = row.find('t') # Find timestamp element.
+            if t_elem is None or t_elem.text is None: # Skip if missing or empty.
+                logging.warning("Skipping RRD row with missing timestamp.") # Log warning.
+                continue # Skip row.
+            try:
+                t = int(t_elem.text) # Timestamp.
+            except ValueError:
+                logging.warning("Skipping RRD row with invalid timestamp.") # Log warning.
+                continue # Skip if not int.
+            vs = [] # List for values.
+            for v in row.findall('v'): # Loop values.
+                if v.text is None: # Skip if missing.
+                    vs.append(None) # None for missing.
+                    continue
+                try:
+                    vs.append(float(v.text) if v.text != 'NaN' else None) # Float or None.
+                except ValueError:
+                    vs.append(None) # None if invalid.
+            if len(vs) != 4: # Skip if not 4 values.
+                logging.warning(f"Skipping RRD row with incomplete values (got {len(vs)}).") # Log warning.
+                continue # Skip.
             data.append({'time': t, 'volt1': vs[0], 'volt2': vs[1], 'volt3': vs[2], 'medtemp': vs[3]}) # Dict.
         logging.debug(f"Fetched {len(data)} history entries from RRD.") # Log count.
         return data[::-1] # Reverse to recent first - order.
     except subprocess.CalledProcessError as e:
         logging.error(f"RRD xport failed: {e}") # Log fail.
         return [] # Empty on error.
+    except ET.ParseError as e:
+        logging.error(f"RRD XML parse error: {e}. Output was: {output.decode()}") # Log parse error with output.
+        return [] # Empty on parse error.
     except FileNotFoundError:
         logging.error("rrdtool not found for fetch. Install rrdtool.") # Log missing.
         return [] # Empty.
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_rrd_history: {e}\n{traceback.format_exc()}") # Log unexpected.
+        return [] # Empty on unexpected.
 def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_medians, startup_median, alerts, settings, startup_set, is_startup):
     """
     Draw the Text User Interface (TUI) to show battery status, alerts, balancing, and event history.
@@ -1546,7 +1556,7 @@ def setup_watchdog(timeout=30):
         # Load watchdog module - activate.
         os.system(f'sudo modprobe {module}') # System command.
         logging.info(f"Loaded watchdog module: {module}") # Log loaded.
-        safe_sleep(1) # Wait init.
+        time.sleep(1) # Wait init.
         # Verify /dev/watchdog exists - check device.
         if not os.path.exists(WATCHDOG_DEV):
             logging.error(f"Watchdog device {WATCHDOG_DEV} not found. Attempting to open anyway.") # Log error.
@@ -1639,7 +1649,7 @@ def startup_self_test(settings, stdscr):
                 logging.warning("addstr error for step 1.") # Error.
         stdscr.refresh() # Update.
         pet_watchdog()
-        safe_sleep(0.5) # Pause.
+        time.sleep(0.5) # Pause.
         # Check if number of banks matches expected - right number?
         if settings['NumberOfBatteries'] != NUM_BANKS:
             alert = f"Config mismatch: NumberOfBatteries={settings['NumberOfBatteries']} != {NUM_BANKS}." # Alert.
@@ -1671,7 +1681,7 @@ def startup_self_test(settings, stdscr):
                 logging.warning("addstr error for step 2.") # Error.
         stdscr.refresh() # Update.
         pet_watchdog()
-        safe_sleep(0.5) # Pause.
+        time.sleep(0.5) # Pause.
         # Test I2C connectivity - hardware talk.
         logging.debug(f"Testing I2C connectivity on bus {settings['I2C_BusNumber']}: "
                       f"Multiplexer=0x{settings['MultiplexerAddress']:02x}, "
@@ -1741,7 +1751,7 @@ def startup_self_test(settings, stdscr):
                 logging.warning("addstr error for step 3.") # Error.
         stdscr.refresh() # Update.
         pet_watchdog()
-        safe_sleep(0.5) # Pause.
+        time.sleep(0.5) # Pause.
         # Test temperature sensor reading - temps.
         logging.debug(f"Reading {settings['num_channels']} temperature channels from {settings['ip']}:{settings['modbus_port']} "
                       f"with query_delay={settings['query_delay']}, scaling_factor={settings['scaling_factor']}, "
@@ -1830,7 +1840,7 @@ def startup_self_test(settings, stdscr):
             y += 1 # Down.
             stdscr.refresh() # Update.
             pet_watchdog()
-            safe_sleep(0.5) # Pause.
+            time.sleep(0.5) # Pause.
             # Read initial voltages for all banks - start values.
             initial_bank_voltages = []
             for bank in range(1, NUM_BANKS + 1):
@@ -1850,7 +1860,7 @@ def startup_self_test(settings, stdscr):
             pairs = [] # List.
             for source in sorted_banks:
                 for dest in [b for b in range(1, NUM_BANKS + 1) if b != source]:
-                    pairs.append((source, dest)) # All pairs.
+                    pairs.append((source, dest) ) # All pairs.
             test_duration = settings['test_balance_duration'] # Time.
             read_interval = settings['test_read_interval'] # Interval.
             min_delta = settings['min_voltage_delta'] # Min change.
@@ -1891,7 +1901,7 @@ def startup_self_test(settings, stdscr):
                 initial_source_v = read_voltage_with_retry(source, settings)[0] or 0.0 # Source.
                 initial_dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0 # Dest.
                 pet_watchdog()
-                safe_sleep(0.5) # Pause.
+                time.sleep(0.5) # Pause.
                 logging.debug(f"Balance test from Bank {source} to Bank {dest}: Initial - Bank {source}={initial_source_v:.2f}V, Bank {dest}={initial_dest_v:.2f}V") # Log.
                 # Start test balancing - go.
                 set_relay_connection(source, dest, settings) # Connect.
@@ -1904,7 +1914,7 @@ def startup_self_test(settings, stdscr):
                 # Run test for duration - loop.
                 while time.time() - start_time < test_duration:
                     pet_watchdog()
-                    safe_sleep(read_interval) # Wait.
+                    time.sleep(read_interval) # Wait.
                     source_v = read_voltage_with_retry(source, settings)[0] or 0.0 # Read source.
                     dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0 # Read dest.
                     source_trend.append(source_v) # Add.
@@ -1922,7 +1932,7 @@ def startup_self_test(settings, stdscr):
                 final_source_v = read_voltage_with_retry(source, settings)[0] or 0.0 # Source.
                 final_dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0 # Dest.
                 pet_watchdog()
-                safe_sleep(0.5) # Pause.
+                time.sleep(0.5) # Pause.
                 logging.debug(f"Balance test from Bank {source} to Bank {dest}: Final - Bank {source}={final_source_v:.2f}V, Bank {dest}={final_dest_v:.2f}V") # Log.
                 control_dcdc_converter(False, settings) # Off.
                 set_relay_connection(0, 0, settings) # Reset.
@@ -1972,7 +1982,7 @@ def startup_self_test(settings, stdscr):
                 stdscr.refresh() # Update.
                 y = progress_y + 2 # Down.
                 pet_watchdog()
-                safe_sleep(2) # Pause.
+                time.sleep(2) # Pause.
         # Store test results - save.
         startup_alerts = alerts # Save.
         if alerts:
@@ -1999,7 +2009,7 @@ def startup_self_test(settings, stdscr):
                 pet_watchdog() # Pet.
             for _ in range(12): # 120s / 10s
                 pet_watchdog()
-                safe_sleep(10)
+                time.sleep(10)
             if settings.get('WatchdogEnabled', False):
                 pet_watchdog() # Pet.
             retries += 1 # Next try.
@@ -2017,7 +2027,7 @@ def startup_self_test(settings, stdscr):
                     logging.warning("addstr error for self-test OK.") # Error.
             stdscr.refresh() # Update.
             pet_watchdog()
-            safe_sleep(2) # Pause.
+            time.sleep(2) # Pause.
             logging.info("Startup self-test passed.") # Log good.
             return [] # Proceed.
 class BMSRequestHandler(BaseHTTPRequestHandler):
@@ -2422,7 +2432,7 @@ def main(stdscr):
             bank_medians = compute_bank_medians(calibrated_temps, settings['valid_min']) # Medians.
             # Check for temperature issues - look for problems.
             for ch, raw in enumerate(raw_temps, 1):
-                if check_invalid_reading(raw, ch, temps_alerts, settings['valid_min']): # Invalid?
+                if check_invalid_reading(raw, ch, temps_alerts, settings['valid_min']) : # Invalid?
                     continue # Skip.
                 calib = calibrated_temps[ch-1] # Calib.
                 bank_id = get_bank_for_channel(ch) # Bank.
@@ -2471,11 +2481,8 @@ def main(stdscr):
         # Update RRD with current data - log to database.
         timestamp = int(time.time()) # Current time.
         values = f"{timestamp}:{battery_voltages[0]}:{battery_voltages[1]}:{battery_voltages[2]}:{overall_median}" # Format N:volt1:volt2:volt3:medtemp.
-        try:
-            subprocess.call(['rrdtool', 'update', RRD_FILE, values]) # Update command.
-            logging.debug(f"RRD updated with: {values}") # Log update.
-        except FileNotFoundError:
-            logging.error("rrdtool not found for update. Install rrdtool.") # Log missing.
+        subprocess.call(['rrdtool', 'update', RRD_FILE, values]) # Update command.
+        logging.debug(f"RRD updated with: {values}") # Log update.
         # Check if balancing is needed - balance?
         if len(battery_voltages) == NUM_BANKS:
             max_v = max(battery_voltages) # Max.
@@ -2507,7 +2514,7 @@ def main(stdscr):
         if settings['WatchdogEnabled']:
             pet_watchdog() # Pet.
         # Sleep before next cycle - wait.
-        safe_sleep(settings['poll_interval']) # Sleep.
+        time.sleep(settings['poll_interval']) # Sleep.
     if settings['WatchdogEnabled']:
         close_watchdog() # Close.
 # Run the main function with curses wrapper - start.
