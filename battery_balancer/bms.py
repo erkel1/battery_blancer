@@ -929,7 +929,7 @@ def set_relay_connection(high, low, settings):
         elif high == 1 and low == 3:
             relay_state |= (1 << 2) | (1 << 3) # Relays 3 and 4.
             logging.debug("Relays 3, and 4 activated for high to low.") # Log.
-        elif high == 2 and low = 1:
+        elif high == 2 and low == 1:
             relay_state |= (1 << 0) # Relay 1.
             logging.debug("Relays 1 activated for high to low.") # Log.
         elif high == 2 and low == 3:
