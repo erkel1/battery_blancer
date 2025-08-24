@@ -3,12 +3,12 @@
 # --------------------------------------------------------------------------------
 #
 # **Script Name:** bms.py
-# **Version:** 1.6 (As of August 24, 2025) - Watchdog reimplemented with dedicated thread for reliable petting (every 5s, with aliveness check via timestamp). Timeout set to 15s (Pi max). Restored full docs/diagram. TUI/web show all temps + min/max.
+# **Version:** 1.7 (As of August 24, 2025) - Made battery configuration fully configurable: num_series_banks (e.g., 3), sensors_per_bank (e.g., 8), number_of_parallel_batteries (e.g., 4). Total sensors = parallel * series * sensors_per_bank. Generalized BANK_SENSOR_INDICES, TUI art/loops, web loops, balancing pairs/relays (assumes relay hardware scales; note for >3). Retained full docs/diagram/comments. Watchdog thread as is.
 # **Author:** [Your Name or Original Developer] - Built for Raspberry Pi-based battery monitoring and balancing.
-# **Purpose:** This script acts as a complete Battery Management System (BMS) for a 3sXp battery configuration (3 series banks, X parallel cells per bank, where X = 8 * number_of_parallel_batteries). It monitors temperatures from multiple Modbus slaves and voltages, balances charge between banks, detects issues, logs events, sends alerts, and provides user interfaces via terminal (TUI) and web dashboard. Includes time-series logging using RRDTool, ASCII line charts in TUI, and interactive charts in web via Chart.js.
+# **Purpose:** This script acts as a complete Battery Management System (BMS) for a configurable NsXp battery configuration (N series banks, X parallel cells per bank, where X = sensors_per_bank * number_of_parallel_batteries). It monitors temperatures from multiple Modbus slaves and voltages, balances charge between banks, detects issues, logs events, sends alerts, and provides user interfaces via terminal (TUI) and web dashboard. Includes time-series logging using RRDTool, ASCII line charts in TUI, and interactive charts in web via Chart.js.
 #
 # **Detailed Overview:**
-# - **Temperature Monitoring:** Connects to NTC thermistors via Lantronix EDS4100 using Modbus TCP in multidrop RS485 configuration. Supports multiple slaves (one per parallel battery), each with 24 channels (8 per series bank). Aggregates readings into global channels (e.g., 96 for 4 batteries), groups by series bank for analysis. Applies calibration offsets, checks anomalies (high/low, deviations, rises, lags, disconnections). Handles per-slave errors gracefully.
+# - **Temperature Monitoring:** Connects to NTC thermistors via Lantronix EDS4100 using Modbus TCP in multidrop RS485 configuration. Supports multiple slaves (one per parallel battery), each with num_series_banks * sensors_per_bank channels. Aggregates readings into global channels, groups by series bank for analysis. Applies calibration offsets, checks anomalies (high/low, deviations, rises, lags, disconnections). Handles per-slave errors gracefully.
 # - Calibration: On first valid read (all sensors > valid_min across all slaves), computes overall median and offsets. Saves to 'offsets.txt' for future runs.
 # - Anomalies Checked:
 #   - Invalid/Disconnected: Reading <= valid_min (e.g., 0.0°C).
@@ -18,15 +18,15 @@
 #   - Abnormal Rise: Increase > rise_threshold (e.g., 2.0°C) since last poll.
 #   - Group Lag: Change differs from bank median change by > disconnection_lag_threshold (e.g., 0.5°C).
 #   - Sudden Disconnection: Was valid, now invalid.
-# - **Voltage Monitoring & Balancing:** Uses ADS1115 ADC over I2C to measure voltages of 3 banks. Balances if difference > VoltageDifferenceToBalance (e.g., 0.1V) by connecting high to low bank via relays and DC-DC converter.
+# - **Voltage Monitoring & Balancing:** Uses ADS1115 ADC over I2C to measure voltages of num_series_banks banks (note: hardware limited to ~4 channels; for more, extend). Balances if difference > VoltageDifferenceToBalance (e.g., 0.1V) by connecting high to low bank via relays and DC-DC converter (relay logic generalized for N banks, assumes hardware supports).
 # - Heating Mode: If any temperature < 10°C, balances regardless of voltage difference to generate heat.
 # - Safety: Skips balancing if alerts active (e.g., anomalies). Rests for BalanceRestPeriodSeconds (e.g., 60s) after balancing.
 # - Voltage Checks: Alerts if < LowVoltageThresholdPerBattery (e.g., 18.5V), > HighVoltageThresholdPerBattery (e.g., 21.0V), or zero.
 # - **Alerts & Notifications:** Logs to 'battery_monitor.log'. Activates alarm relay on issues. Sends throttled emails (e.g., every 3600s) via SMTP.
-# - **Watchdog:** If enabled, pets hardware watchdog via dedicated thread (every 5s if main alive via timestamp check) to prevent resets on hangs. Uses /dev/watchdog with 15s timeout (Pi max).
+# - **Watchdog:** If enabled, pets hardware watchdog via dedicated thread (every 5s with aliveness check via timestamp) to prevent resets on hangs. Uses /dev/watchdog with 15s timeout (Pi max).
 # - **User Interfaces:**
-#   - **TUI (Terminal UI):** Uses curses for real-time display: ASCII art batteries with voltages/temps, alerts, balancing progress bar/animation, last 20 events. Now includes ASCII line charts for voltage history per bank and median temperature, placed in the top-right section for visualization of trends over time.
-# - **Web Dashboard:** HTTP server on port 8080 (configurable). Shows voltages, temps, alerts, balancing status. Supports API for status/balance/history. Optional auth/CORS. Now includes interactive time-series charts using Chart.js for voltages per bank and median temperature, placed at the top of the page after the header for easy viewing.
+#   - **TUI (Terminal UI):** Uses curses for real-time display: ASCII art batteries (dynamic for num_series_banks) with voltages/temps, alerts, balancing progress bar/animation, last 20 events. Now includes ASCII line charts for voltage history per bank and median temperature, placed in the top-right section for visualization of trends over time.
+#   - **Web Dashboard:** HTTP server on port 8080 (configurable). Shows voltages, temps, alerts, balancing status. Supports API for status/balance/history. Optional auth/CORS. Now includes interactive time-series charts using Chart.js for voltages per bank and median temperature, placed at the top of the page after the header for easy viewing.
 # - **Time-Series Logging:** Uses RRDTool for persistent storage of bank voltages and overall median temperature. Data is updated every poll interval (e.g., 10s), but RRD is configured with 1min steps for aggregation. History is limited to ~480 entries (e.g., 8 hours). Fetch functions retrieve data for TUI and web rendering.
 # - **Startup Self-Test:** Validates config, hardware connections (I2C/Modbus per slave), initial reads, balancer (tests all pairs for voltage changes).
 # - Retries on failure after 2min. Alerts and activates alarm if fails.
@@ -68,7 +68,7 @@
 
 # **Updated Logic Flow Diagram (ASCII - More Detailed):**
 #
-""""
+"""
 +--------------------------------------+
 | Load Config from INI                 |
 | (Read settings file, incl. parallel) |
@@ -421,9 +421,11 @@ def load_config():
         'cabinet_over_temp_threshold': config_parser.getfloat('Temp', 'cabinet_over_temp_threshold', fallback=35.0),
         'number_of_parallel_batteries': config_parser.getint('Temp', 'number_of_parallel_batteries', fallback=1),
         'modbus_slave_addresses': [int(x.strip()) for x in config_parser.get('Temp', 'modbus_slave_addresses', fallback='1').split(',')],
-        'sensors_per_battery': 24  # Fixed: 24 sensors per parallel battery.
+        'sensors_per_bank': config_parser.getint('Temp', 'sensors_per_bank', fallback=8),  # New: sensors per bank per battery.
+        'num_series_banks': config_parser.getint('Temp', 'num_series_banks', fallback=3)  # New: number of series banks.
     }
-    temp_settings['total_channels'] = temp_settings['number_of_parallel_batteries'] * temp_settings['sensors_per_battery']
+    temp_settings['sensors_per_battery'] = temp_settings['num_series_banks'] * temp_settings['sensors_per_bank']  # Calc per battery.
+    temp_settings['total_channels'] = temp_settings['number_of_parallel_batteries'] * temp_settings['sensors_per_battery']  # Total sensors.
     voltage_settings = {
         'NumberOfBatteries': config_parser.getint('General', 'NumberOfBatteries', fallback=3),
         'VoltageDifferenceToBalance': config_parser.getfloat('General', 'VoltageDifferenceToBalance', fallback=0.1),
@@ -1282,7 +1284,7 @@ def startup_self_test(settings, stdscr):
                 logging.warning("addstr error for step 2.")
         stdscr.refresh()
         time.sleep(0.5)
-        logging.debug(f"Testing I2Cconnectivity on bus {settings['I2C_BusNumber']}: "
+        logging.debug(f"Testing I2C connectivity on bus {settings['I2C_BusNumber']}: "
                       f"Multiplexer=0x{settings['MultiplexerAddress']:02x}, "
                       f"VoltageMeter=0x{settings['VoltageMeterAddress']:02x}, "
                       f"Relay=0x{settings['RelayAddress']:02x}")
@@ -1759,7 +1761,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
                 .then(data => {
                     if (data.success) {
                         alert('Balancing initiated');
-                    } else {
+                    } else:
                         alert('Error: ' + data.message);
                     }
                 })
@@ -1903,18 +1905,20 @@ def main(stdscr):
     curses.init_pair(7, curses.COLOR_CYAN, -1)
     curses.init_pair(8, curses.COLOR_MAGENTA, -1)
     stdscr.nodelay(True)
-    global previous_temps, previous_bank_medians, run_count, startup_offsets, startup_median, startup_set, battery_voltages, web_data, balancing_active, BANK_SENSOR_INDICES, alive_timestamp
+    global previous_temps, previous_bank_medians, run_count, startup_offsets, startup_median, startup_set, battery_voltages, web_data, balancing_active, BANK_SENSOR_INDICES, alive_timestamp, NUM_BANKS
     settings = load_config()
+    NUM_BANKS = settings['num_series_banks']  # Dynamic now.
     number_parallel = settings['number_of_parallel_batteries']
     slave_addresses = settings['modbus_slave_addresses']
-    sensors_per_battery = settings['sensors_per_battery']
-    sensors_per_bank_per_battery = 8
+    sensors_per_bank = settings['sensors_per_bank']
+    sensors_per_battery = NUM_BANKS * sensors_per_bank
     total_channels = number_parallel * sensors_per_battery
+    BANK_SENSOR_INDICES = [[] for _ in range(NUM_BANKS)]  # Dynamic list of lists.
     for bat in range(number_parallel):
         base = bat * sensors_per_battery
-        BANK_SENSOR_INDICES[0].extend(range(base, base + sensors_per_bank_per_battery))
-        BANK_SENSOR_INDICES[1].extend(range(base + sensors_per_bank_per_battery, base + 2 * sensors_per_bank_per_battery))
-        BANK_SENSOR_INDICES[2].extend(range(base + 2 * sensors_per_bank_per_battery, base + 3 * sensors_per_bank_per_battery))
+        for bank_id in range(NUM_BANKS):
+            bank_base = base + bank_id * sensors_per_bank
+            BANK_SENSOR_INDICES[bank_id].extend(range(bank_base, bank_base + sensors_per_bank))
     setup_hardware(settings)
     start_web_server(settings)
     startup_self_test(settings, stdscr)
