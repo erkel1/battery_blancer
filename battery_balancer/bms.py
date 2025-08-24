@@ -985,33 +985,35 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
                 logging.warning(f"addstr error for total voltage art line {i+1}.")
         else:
             logging.warning(f"Skipping total voltage art line {i+1} - out of bounds.")
-    y_offset = len(roman_lines) + 2
+    y_offset = len(roman_lines) + 3
     if y_offset >= height:
         logging.warning("TUI y_offset exceeds height; skipping art.")
         return
     battery_art_base = [
-" _______________________________ ",
-" |                             | ",
-" |                             | ",
-" |                             | ",
-" |                             | ",
-" |            +++              | ",
-" |            +++              | ",
-" |                             | ",
-" |                             | ",
-" |                             | ",
-" |                             | ",
-" |            ---              | ",
-" |            ---              | ",
-" |            ---              | ",
-" |                             | ",
-" |                             | ",
-" |_____________________________| "
-]
+        " _________________________________________ ",
+        " |                                       | ",
+        " |                                       | ",
+        " |                                       | ",
+        " |                                       | ",
+        " |                 +++                   | ",
+        " |                 +++                   | ",
+        " |                                       | ",
+        " |                                       | ",
+        " |                                       | ",
+        " |                                       | ",
+        " |                 ---                   | ",
+        " |                 ---                   | ",
+        " |                 ---                   | ",
+        " |                                       | ",
+        " |                                       | ",
+        " |_______________________________________| "
+    ]
     art_height = len(battery_art_base)
     art_width = len(battery_art_base[0])
+    gap = "   "
+    gap_len = len(gap)
     for row, line in enumerate(battery_art_base):
-        full_line = line * NUM_BANKS
+        full_line = gap.join([line] * NUM_BANKS)
         if y_offset + row < height and len(full_line) < right_half_x:
             try:
                 stdscr.addstr(y_offset + row, 0, full_line, curses.color_pair(4))
@@ -1020,14 +1022,14 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
         else:
             logging.warning(f"Skipping art row {row} - out of bounds.")
     for bank_id in range(NUM_BANKS):
-        start_pos = bank_id * art_width
+        start_pos = bank_id * (art_width + gap_len)
         v_str = f"{voltages[bank_id]:.2f}V" if voltages[bank_id] > 0 else "0.00V"
         v_color = curses.color_pair(8) if voltages[bank_id] == 0.0 else \
                  curses.color_pair(2) if voltages[bank_id] > settings['HighVoltageThresholdPerBattery'] else \
                  curses.color_pair(3) if voltages[bank_id] < settings['LowVoltageThresholdPerBattery'] else \
                  curses.color_pair(4)
         v_center = start_pos + (art_width - len(v_str)) // 2
-        v_y = y_offset + 1
+        v_y = y_offset - 1
         if v_y < height and v_center + len(v_str) < right_half_x:
             try:
                 stdscr.addstr(v_y, v_center, v_str, v_color)
@@ -1039,7 +1041,7 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
         summary_str = f"Med: {summary['median']:.1f} Min: {summary['min']:.1f} Max: {summary['max']:.1f} Inv: {summary['invalid']}"
         s_color = curses.color_pair(2) if summary['median'] > settings['high_threshold'] or summary['median'] < settings['low_threshold'] or summary['invalid'] > 0 else curses.color_pair(4)
         s_center = start_pos + (art_width - len(summary_str)) // 2
-        s_y = y_offset + 3
+        s_y = y_offset + art_height
         if s_y < height and s_center + len(summary_str) < right_half_x:
             try:
                 stdscr.addstr(s_y, s_center, summary_str, s_color)
