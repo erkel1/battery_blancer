@@ -1645,7 +1645,7 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
         .battery { display: inline-block; margin: 10px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; background-color: #f9f9f9; }
         .voltage { font-size: 1.2em; font-weight: bold; }
         .bank-summary { font-size: 0.9em; }
-        .temperatures { font-size: 0.8em; max-height: 200px; overflow-y: auto; } 
+        .temperatures { font-size: 0.8em; max-height: 200px; overflow-y: auto; }
         .alert { color: #e74c3c; font-weight: bold; }
         .normal { color: #27ae60; }
         .warning { color: #f39c12; }
@@ -1886,7 +1886,7 @@ def start_web_server(settings):
     if not settings['WebInterfaceEnabled']:
         logging.info("Web interface disabled via configuration.")
         return
-    class CustomHTTPServer(HTTPServer):
+    class CustomHTTPServer(ThreadingHTTPServer):
         def __init__(self, *args, **kwargs):
             self.settings = settings
             super().__init__(*args, **kwargs)
