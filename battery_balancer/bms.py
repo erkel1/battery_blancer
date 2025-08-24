@@ -1118,7 +1118,7 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
             logging.warning("Skipping no alerts message - out of bounds.")
     history = fetch_rrd_history()
     y_chart = 1
-    chart_width = 30
+    chart_width = 20
     chart_height = 5
     for b in range(3):
         volt_hist = [h[f'volt{b+1}'] for h in history if h[f'volt{b+1}'] is not None] if history else []
