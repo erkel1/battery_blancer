@@ -990,24 +990,24 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
         logging.warning("TUI y_offset exceeds height; skipping art.")
         return
     battery_art_base = [
-        " ___________ ",
-        " | | ",
-        " | | ",
-        " | | ",
-        " | | ",
-        " | +++ | ",
-        " | +++ | ",
-        " | | ",
-        " | | ",
-        " | | ",
-        " | | ",
-        " | --- | ",
-        " | --- | ",
-        " | --- | ",
-        " | | ",
-        " | | ",
-        " |_________| "
-    ]
+" _________________________________________ ",
+" |                                       | ",
+" |                                       | ",
+" |                                       | ",
+" |                                       | ",
+" |                 +++                   | ",
+" |                 +++                   | ",
+" |                                       | ",
+" |                                       | ",
+" |                                       | ",
+" |                                       | ",
+" |                 ---                   | ",
+" |                 ---                   | ",
+" |                 ---                   | ",
+" |                                       | ",
+" |                                       | ",
+" |_______________________________________| "
+]
     art_height = len(battery_art_base)
     art_width = len(battery_art_base[0])
     for row, line in enumerate(battery_art_base):
