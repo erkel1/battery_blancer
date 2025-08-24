@@ -1029,7 +1029,7 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
                  curses.color_pair(3) if voltages[bank_id] < settings['LowVoltageThresholdPerBattery'] else \
                  curses.color_pair(4)
         v_center = start_pos + (art_width - len(v_str)) // 2
-        v_y = y_offset - 1
+        v_y = y_offset + 2
         if v_y < height and v_center + len(v_str) < right_half_x:
             try:
                 stdscr.addstr(v_y, v_center, v_str, v_color)
@@ -1043,17 +1043,17 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
         max_str = f"Max: {summary['max']:.1f}"
         inv_str = f"Inv: {summary['invalid']}"
         s_color = curses.color_pair(2) if summary['median'] > settings['high_threshold'] or summary['median'] < settings['low_threshold'] or summary['invalid'] > 0 else curses.color_pair(4)
-        s_y = y_offset + art_height
         for idx, s_str in enumerate([med_str, min_str, max_str, inv_str]):
             s_center = start_pos + (art_width - len(s_str)) // 2
-            if s_y + idx < height and s_center + len(s_str) < right_half_x:
+            s_y = y_offset + 7 + idx
+            if s_y < height and s_center + len(s_str) < right_half_x:
                 try:
-                    stdscr.addstr(s_y + idx, s_center, s_str, s_color)
+                    stdscr.addstr(s_y, s_center, s_str, s_color)
                 except curses.error:
                     logging.warning(f"addstr error for summary line {idx+1} Bank {bank_id+1}.")
             else:
                 logging.warning(f"Skipping summary line {idx+1} for Bank {bank_id+1} - out of bounds.")
-    y_offset += art_height + 5
+    y_offset += art_height + 2
     for bank_id in range(NUM_BANKS):
         if y_offset < height:
             try:
