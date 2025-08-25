@@ -248,7 +248,6 @@ import curses # Creates the terminal-based Text User Interface (TUI) - terminal 
 from art import text2art # Generates ASCII art for the TUI display - art maker.
 import fcntl # For watchdog ioctl - low-level control.
 import struct # For watchdog struct - data packer.
-from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 logging.basicConfig(
     filename='battery_monitor.log', # Log file name - where diary is saved.
     level=logging.INFO, # Log level (INFO captures key events) - how detailed.
@@ -1609,29 +1608,16 @@ def startup_self_test(settings, stdscr):
             time.sleep(2)
             logging.info("Startup self-test passed.")
             return []
-class BMSRequestHandler(BaseHTTPRequestHandler):
-    def __init__(self, request, client_address, server):
-        self.settings = server.settings
-        super().__init__(request, client_address, server)
-    def log_message(self, format, *args):
-        pass
-    def do_GET(self):
-        parsed_path = urlparse(self.path)
-        path = parsed_path.path
-        if self.settings['auth_required'] and not self.authenticate():
-            self.send_response(401)
-            self.send_header('WWW-Authenticate', 'Basic realm="BMS"')
-            self.end_headers()
-            return
-        if self.settings['cors_enabled']:
-            self.send_header('Access-Control-Allow-Origin', self.settings['cors_origins'])
-            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-            self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        if path == '/':
-            self.send_response(200)
-            self.send_header('Content-type', 'text/html')
-            self.end_headers()
-            html = """<!DOCTYPE html>
+def start_web_server(settings):
+    global web_server
+    if not settings['WebInterfaceEnabled']:
+        logging.info("Web interface disabled via configuration.")
+        return
+    app = Flask(__name__)
+
+    @app.route('/')
+    def index():
+        return """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -1786,119 +1772,66 @@ class BMSRequestHandler(BaseHTTPRequestHandler):
     </script>
 </body>
 </html>"""
-            self.wfile.write(html.encode('utf-8'))
-        elif path == '/api/status':
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            response = {
-                'voltages': web_data['voltages'],
-                'temperatures': web_data['temperatures'],
-                'bank_summaries': web_data['bank_summaries'],
-                'alerts': web_data['alerts'],
-                'balancing': web_data['balancing'],
-                'last_update': web_data['last_update'],
-                'system_status': web_data['system_status'],
-                'total_voltage': sum(web_data['voltages'])
-            }
-            self.wfile.write(json.dumps(response).encode('utf-8'))
-        elif path == '/api/history':
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            history = fetch_rrd_history()
-            response = {'history': history}
-            self.wfile.write(json.dumps(response).encode('utf-8'))
-        else:
-            self.send_response(404)
-            self.end_headers()
-    def do_POST(self):
-        parsed_path = urlparse(self.path)
-        path = parsed_path.path
-        if self.settings['auth_required'] and not self.authenticate():
-            self.send_response(401)
-            self.send_header('WWW-Authenticate', 'Basic realm="BMS"')
-            self.end_headers()
-            return
-        if self.settings['cors_enabled']:
-            self.send_header('Access-Control-Allow-Origin', self.settings['cors_origins'])
-            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-            self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        if path == '/api/balance':
-            global balancing_active
-            if balancing_active:
-                self.send_response(400)
-                self.send_header('Content-type', 'application/json')
-                self.end_headers()
-                response = {'success': False, 'message': 'Balancing already in progress'}
-                self.wfile.write(json.dumps(response).encode('utf-8'))
-                return
-            if len(web_data['alerts']) > 0:
-                self.send_response(400)
-                self.send_header('Content-type', 'application/json')
-                self.end_headers()
-                response = {'success': False, 'message': 'Cannot balance with active alerts'}
-                self.wfile.write(json.dumps(response).encode('utf-8'))
-                return
-            voltages = web_data['voltages']
-            if len(voltages) < 2:
-                self.send_response(400)
-                self.send_header('Content-type', 'application/json')
-                self.end_headers()
-                response = {'success': False, 'message': 'Not enough battery banks'}
-                self.wfile.write(json.dumps(response).encode('utf-8'))
-                return
-            max_v = max(voltages)
-            min_v = min(voltages)
-            high_bank = voltages.index(max_v) + 1
-            low_bank = voltages.index(min_v) + 1
-            if max_v - min_v < self.settings['VoltageDifferenceToBalance']:
-                self.send_response(400)
-                self.send_header('Content-type', 'application/json')
-                self.end_headers()
-                response = {'success': False, 'message': 'Voltage difference too small for balancing'}
-                self.wfile.write(json.dumps(response).encode('utf-8'))
-                return
-            balancing_active = True
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            response = {'success': True, 'message': f'Balancing initiated from Bank {high_bank} to Bank {low_bank}'}
-            self.wfile.write(json.dumps(response).encode('utf-8'))
-        else:
-            self.send_response(404)
-            self.end_headers()
-    def do_OPTIONS(self):
-        self.send_response(200)
-        if self.settings['cors_enabled']:
-            self.send_header('Access-Control-Allow-Origin', self.settings['cors_origins'])
-            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-            self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        self.end_headers()
-    def authenticate(self):
-        auth_header = self.headers.get('Authorization')
-        if auth_header and auth_header.startswith('Basic '):
-            auth_decoded = base64.b64decode(auth_header[6:]).decode('utf-8')
-            username, password = auth_decoded.split(':', 1)
-            return username == self.settings['username'] and password == self.settings['password']
-        return False
-def start_web_server(settings):
-    global web_server
-    if not settings['WebInterfaceEnabled']:
-        logging.info("Web interface disabled via configuration.")
-        return
-    class CustomHTTPServer(ThreadingHTTPServer):
-        def __init__(self, *args, **kwargs):
-            self.settings = settings
-            super().__init__(*args, **kwargs)
-    try:
-        web_server = CustomHTTPServer((settings['host'], settings['web_port']), BMSRequestHandler)
-        logging.info(f"Web server started on {settings['host']}:{settings['web_port']}")
-        server_thread = threading.Thread(target=web_server.serve_forever)
-        server_thread.daemon = True
-        server_thread.start()
-    except Exception as e:
-        logging.error(f"Failed to start web server: {e}")
+
+    @app.route('/api/status')
+    def api_status():
+        response = {
+            'voltages': web_data['voltages'],
+            'temperatures': web_data['temperatures'],
+            'bank_summaries': web_data['bank_summaries'],
+            'alerts': web_data['alerts'],
+            'balancing': web_data['balancing'],
+            'last_update': web_data['last_update'],
+            'system_status': web_data['system_status'],
+            'total_voltage': sum(web_data['voltages'])
+        }
+        return jsonify(response)
+
+    @app.route('/api/history')
+    def api_history():
+        history = fetch_rrd_history()
+        return jsonify({'history': history})
+
+    @app.route('/api/balance', methods=['POST'])
+    def api_balance():
+        global balancing_active
+        if balancing_active:
+            return jsonify({'success': False, 'message': 'Balancing already in progress'}), 400
+        if len(web_data['alerts']) > 0:
+            return jsonify({'success': False, 'message': 'Cannot balance with active alerts'}), 400
+        voltages = web_data['voltages']
+        if len(voltages) < 2:
+            return jsonify({'success': False, 'message': 'Not enough battery banks'}), 400
+        max_v = max(voltages)
+        min_v = min(voltages)
+        high_bank = voltages.index(max_v) + 1
+        low_bank = voltages.index(min_v) + 1
+        if max_v - min_v < settings['VoltageDifferenceToBalance']:
+            return jsonify({'success': False, 'message': 'Voltage difference too small for balancing'}), 400
+        balancing_active = True
+        return jsonify({'success': True, 'message': f'Balancing initiated from Bank {high_bank} to Bank {low_bank}'})
+
+    @app.before_request
+    def before_request():
+        if settings['auth_required']:
+            auth = request.authorization
+            if not auth or not (auth.username == settings['username'] and auth.password == settings['password']):
+                return make_response('Unauthorized', 401, {'WWW-Authenticate': 'Basic realm="BMS"'})
+        if settings['cors_enabled']:
+            response = make_response()
+            response.headers['Access-Control-Allow-Origin'] = settings['cors_origins']
+            if request.method == 'OPTIONS':
+                response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+                response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+                return response
+
+    def run_app():
+        app.run(host=settings['host'], port=settings['web_port'], threaded=True, debug=False, use_reloader=False)
+
+    server_thread = threading.Thread(target=run_app)
+    server_thread.daemon = True
+    server_thread.start()
+    logging.info(f"Web server started on {settings['host']}:{settings['web_port']}")
 def main(stdscr):
     stdscr.keypad(True)
     curses.start_color()
