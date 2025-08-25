@@ -1685,6 +1685,7 @@ def start_web_server(settings):
         </div>
     </div>
     <script>
+        let myChart = null;
         const body = document.body;
         const header = document.querySelector('.header');
         const statusCards = document.querySelectorAll('.status-card');
