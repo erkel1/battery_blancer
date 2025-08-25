@@ -506,18 +506,18 @@ def setup_hardware(settings):
     else:
         logging.warning("RPi.GPIO not available - running in test mode")
     try:
-        if os.path.exists(RRD_FILE):
-            logging.info("Recreating RRD database for updated configuration.")
-            os.remove(RRD_FILE)
-        subprocess.check_call(['rrdtool', 'create', RRD_FILE,
-                               '--step', '60',
-                               'DS:volt1:GAUGE:120:0:25',
-                               'DS:volt2:GAUGE:120:0:25',
-                               'DS:volt3:GAUGE:120:0:25',
-                               'DS:medtemp:GAUGE:120:-20:100',
-                               'RRA:LAST:0.0:1:480',
-                               'RRA:LAST:0.0:5:100'])
-        logging.info("Created RRD database for time-series logging.")
+        if not os.path.exists(RRD_FILE):
+            subprocess.check_call(['rrdtool', 'create', RRD_FILE,
+                                   '--step', '60',
+                                   'DS:volt1:GAUGE:120:0:25',
+                                   'DS:volt2:GAUGE:120:0:25',
+                                   'DS:volt3:GAUGE:120:0:25',
+                                   'DS:medtemp:GAUGE:120:-20:100',
+                                   'RRA:LAST:0.0:1:480',
+                                   'RRA:LAST:0.0:5:100'])
+            logging.info("Created RRD database for time-series logging.")
+        else:
+            logging.info("Using existing RRD database.")
     except subprocess.CalledProcessError as e:
         logging.error(f"RRD creation failed: {e}")
     except FileNotFoundError:
