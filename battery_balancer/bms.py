@@ -1616,8 +1616,8 @@ def start_web_server(settings):
     app = Flask(__name__)
 
     @app.route('/')
-def index():
-    return """<!DOCTYPE html>
+    def index():
+        return """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
