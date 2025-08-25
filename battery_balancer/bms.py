@@ -248,6 +248,7 @@ import curses # Creates the terminal-based Text User Interface (TUI) - terminal 
 from art import text2art # Generates ASCII art for the TUI display - art maker.
 import fcntl # For watchdog ioctl - low-level control.
 import struct # For watchdog struct - data packer.
+from flask import Flask, jsonify, request, make_response
 logging.basicConfig(
     filename='battery_monitor.log', # Log file name - where diary is saved.
     level=logging.INFO, # Log level (INFO captures key events) - how detailed.
