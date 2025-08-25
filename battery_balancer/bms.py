@@ -1775,7 +1775,10 @@ def start_web_server(settings):
                         { label: 'Median Temp °C', data: hist.map(h => h.medtemp), borderColor: 'cyan', yAxisID: 'temp' }
                     ];
                     const ctx = document.getElementById('bmsChart').getContext('2d');
-                    new Chart(ctx, {
+                    if (myChart) {
+                        myChart.destroy();
+                    }
+                    myChart = new Chart(ctx, {
                         type: 'line',
                         data: { labels, datasets },
                         options: {
