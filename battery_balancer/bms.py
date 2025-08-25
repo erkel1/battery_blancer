@@ -1775,6 +1775,11 @@ def start_web_server(settings):
                         { label: 'Median Temp °C', data: hist.map(h => h.medtemp), borderColor: 'cyan', yAxisID: 'temp' }
                     ];
                     const ctx = document.getElementById('bmsChart').getContext('2d');
+                    if (hist.length === 0) {
+                        ctx.fillStyle = 'red';
+                        ctx.fillText('No history data available', 10, 50);
+                        return;
+                    }
                     if (myChart) {
                         myChart.destroy();
                     }
@@ -1788,7 +1793,8 @@ def start_web_server(settings):
                             }
                         }
                     });
-                });
+                })
+                .catch(error => console.error('Error fetching history:', error));
         }
         function initiateBalance() {
             fetch('/api/balance', { method: 'POST' })
