@@ -218,37 +218,36 @@ v                                                             |
 # --------------------------------------------------------------------------------
 # Code Begins Below - With Line-by-Line Comments for Non-Programmers
 # --------------------------------------------------------------------------------
-import socket # Used to connect to the Lantronix EDS4100 device over the network - like making a phone call to the sensor box.
-import statistics # Helps calculate averages and medians for temperature data - math helpers.
-import time # Manages timing, delays, and timestamps for events - like a clock and stopwatch.
-import configparser # Reads settings from the INI configuration file - loads the recipe.
-import logging # Logs events and errors to a file for troubleshooting - like a diary.
-import signal # Handles graceful shutdown when the user presses Ctrl+C - catches "stop" signal.
-import gc # Manages memory cleanup during long-running operations - garbage collector.
-import os # Handles file operations, like reading/writing offsets - file manager.
-import sys # Used to exit the script cleanly - system commands.
-import threading # Runs the web server in a separate thread - multitasking.
-import json # Formats data for the web interface - data packer.
-from urllib.parse import urlparse, parse_qs # Parses web requests - breaks down URLs.
-import base64 # Decodes authentication credentials for the web interface - secret decoder.
-import traceback # Logs detailed error information for debugging - error detective.
-import subprocess # Runs external commands like rrdtool for time-series database operations - external tool caller.
-import xml.etree.ElementTree as ET # Parses XML output from rrdtool for fetching history data - XML parser.
+import socket  # Used to connect to the Lantronix EDS4100 device over the network - like making a phone call to the sensor box.
+import statistics  # Helps calculate averages and medians for temperature data - math helpers.
+import time  # Manages timing, delays, and timestamps for events - like a clock and stopwatch.
+import configparser  # Reads settings from the INI configuration file - loads the recipe.
+import logging  # Logs events and errors to a file for troubleshooting - like a diary.
+import signal  # Handles graceful shutdown when the user presses Ctrl+C - catches "stop" signal.
+import gc  # Manages memory cleanup during long-running operations - garbage collector.
+import os  # Handles file operations, like reading/writing offsets - file manager.
+import sys  # Used to exit the script cleanly - system commands.
+import threading  # Runs the web server in a separate thread - multitasking.
+import json  # Formats data for the web interface - data packer.
+from urllib.parse import urlparse, parse_qs  # Parses web requests - breaks down URLs.
+import base64  # Decodes authentication credentials for the web interface - secret decoder.
+import traceback  # Logs detailed error information for debugging - error detective.
+import subprocess  # Runs external commands like rrdtool for time-series database operations - external tool caller.
+import xml.etree.ElementTree as ET  # Parses XML output from rrdtool for fetching history data - XML parser.
+from flask import Flask, jsonify, request, make_response  # Web server framework for reliable API handling.
 try:
-    import smbus # Communicates with I2C devices like the ADC and relays - hardware talker.
-    import RPi.GPIO as GPIO # Controls Raspberry Pi GPIO pins for relays - pin controller.
+    import smbus  # Communicates with I2C devices like the ADC and relays - hardware talker.
+    import RPi.GPIO as GPIO  # Controls Raspberry Pi GPIO pins for relays - pin controller.
 except ImportError:
-    print("Hardware libraries not available - running in test mode") # Warn user.
-    smbus = None # Set to none if missing.
-    GPIO = None # Set to none if missing.
-from email.mime.text import MIMEText # Builds email messages - email builder.
-import smtplib # Sends email alerts - email sender.
-from http.server import HTTPServer, BaseHTTPRequestHandler # Runs the web server - web host.
-import curses # Creates the terminal-based Text User Interface (TUI) - terminal drawer.
-from art import text2art # Generates ASCII art for the TUI display - art maker.
-import fcntl # For watchdog ioctl - low-level control.
-import struct # For watchdog struct - data packer.
-from flask import Flask, jsonify, request, make_response
+    print("Hardware libraries not available - running in test mode")  # Warn user.
+    smbus = None  # Set to none if missing.
+    GPIO = None  # Set to none if missing.
+from email.mime.text import MIMEText  # Builds email messages - email builder.
+import smtplib  # Sends email alerts - email sender.
+import curses  # Creates the terminal-based Text User Interface (TUI) - terminal drawer.
+from art import text2art  # Generates ASCII art for the TUI display - art maker.
+import fcntl  # For watchdog ioctl - low-level control.
+import struct  # For watchdog struct - data packer.
 logging.basicConfig(
     filename='battery_monitor.log', # Log file name - where diary is saved.
     level=logging.INFO, # Log level (INFO captures key events) - how detailed.
@@ -919,17 +918,16 @@ def fetch_rrd_history():
                                           'XPORT:mt:MedianTemp'])
         logging.debug(f"Raw RRD xport output: {output.decode()}")
         root = ET.fromstring(output.decode())
+        meta = root.find('meta')
+        if meta is not None:
+            meta_start = int(meta.find('start').text) if meta.find('start') is not None else start
+            meta_step = int(meta.find('step').text) if meta.find('step') is not None else 60
+        else:
+            meta_start = start
+            meta_step = 60
         data = []
+        current_time = meta_start
         for row in root.findall('.//row'):
-            t_elem = row.find('t')
-            if t_elem is None or t_elem.text is None:
-                logging.warning("Skipping RRD row with missing timestamp.")
-                continue
-            try:
-                t = int(t_elem.text)
-            except ValueError:
-                logging.warning("Skipping RRD row with invalid timestamp.")
-                continue
             vs = []
             for v in row.findall('v'):
                 if v.text is None:
@@ -942,7 +940,8 @@ def fetch_rrd_history():
             if len(vs) != 4:
                 logging.warning(f"Skipping RRD row with incomplete values (got {len(vs)}).")
                 continue
-            data.append({'time': t, 'volt1': vs[0], 'volt2': vs[1], 'volt3': vs[2], 'medtemp': vs[3]})
+            data.append({'time': current_time, 'volt1': vs[0], 'volt2': vs[1], 'volt3': vs[2], 'medtemp': vs[3]})
+            current_time += meta_step
         logging.debug(f"Fetched {len(data)} history entries from RRD.")
         return data[::-1]
     except subprocess.CalledProcessError as e:
@@ -1972,5 +1971,6 @@ def main(stdscr):
         gc.collect()
         logging.info("Poll cycle complete.")
         time.sleep(settings['poll_interval'])
+
 if __name__ == '__main__':
     curses.wrapper(main)
