@@ -1616,8 +1616,8 @@ def start_web_server(settings):
     app = Flask(__name__)
 
     @app.route('/')
-    def index():
-        return """<!DOCTYPE html>
+def index():
+    return """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -1625,54 +1625,93 @@ def start_web_server(settings):
     <title>Battery Management System</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+        body { font-family: Arial, sans-serif; margin: 20px; transition: background-color 0.3s, color 0.3s; }
+        body.light { background-color: #f5f5f5; color: #000; }
+        body.dark { background-color: #1e1e1e; color: #fff; }
         .container { max-width: 1200px; margin: 0 auto; }
-        .header { background-color: #2c3e50; color: white; padding: 15px; border-radius: 5px; }
-        .status-card { background-color: white; border-radius: 5px; padding: 15px; margin: 10px 0; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-        .battery { display: inline-block; margin: 10px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; background-color: #f9f9f9; }
+        .header { padding: 15px; border-radius: 5px; transition: background-color 0.3s, color 0.3s; }
+        .header.light { background-color: #2c3e50; color: white; }
+        .header.dark { background-color: #121212; color: #ddd; }
+        .status-card { border-radius: 5px; padding: 15px; margin: 10px 0; box-shadow: 0 2px 5px rgba(0,0,0,0.1); transition: background-color 0.3s, color 0.3s; }
+        .status-card.light { background-color: white; color: #000; }
+        .status-card.dark { background-color: #333; color: #ddd; box-shadow: 0 2px 5px rgba(255,255,255,0.1); }
+        .battery { display: inline-block; margin: 10px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; transition: background-color 0.3s, border-color 0.3s; }
+        .battery.light { background-color: #f9f9f9; border-color: #ddd; }
+        .battery.dark { background-color: #444; border-color: #555; }
         .voltage { font-size: 1.2em; font-weight: bold; }
         .bank-summary { font-size: 0.9em; }
         .temperatures { font-size: 0.8em; max-height: 200px; overflow-y: auto; }
         .alert { color: #e74c3c; font-weight: bold; }
         .normal { color: #27ae60; }
         .warning { color: #f39c12; }
-        .button { background-color: #3498db; color: white; border: none; padding: 10px 15px; border-radius: 3px; cursor: pointer; }
+        .button { background-color: #3498db; color: white; border: none; padding: 10px 15px; border-radius: 3px; cursor: pointer; transition: background-color 0.3s; }
         .button:hover { background-color: #2980b9; }
         .button:disabled { background-color: #95a5a6; cursor: not-allowed; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; }
+        #dark-mode-toggle { background-color: #555; color: white; margin-left: 10px; }
+        #dark-mode-toggle.light { background-color: #555; }
+        #dark-mode-toggle.dark { background-color: #aaa; color: #000; }
     </style>
 </head>
-<body>
+<body class="light">
     <div class="container">
-        <div class="header">
+        <div class="header light">
             <h1>Battery Management System</h1>
             <p>Status: <span id="system-status">Loading...</span></p>
             <p>Last Update: <span id="last-update">-</span></p>
+            <button id="dark-mode-toggle" class="button">Dark Mode</button>
         </div>
-        <div class="status-card">
+        <div class="status-card light">
             <h2>System Information</h2>
             <p>Total Voltage: <span id="total-voltage">-</span></p>
             <p>Balancing: <span id="balancing-status">No</span></p>
         </div>
-        <div class="status-card">
+        <div class="status-card light">
             <h2>Actions</h2>
             <button id="refresh-btn" class="button">Refresh</button>
             <button id="balance-btn" class="button" disabled>Balance Now</button>
         </div>
-        <div class="status-card">
+        <div class="status-card light">
             <h2>Alerts</h2>
             <div id="alerts-container"></div>
         </div>
-        <div class="status-card">
+        <div class="status-card light">
             <h2>Battery Banks</h2>
             <div id="battery-container" class="grid"></div>
         </div>
-        <div class="status-card">
+        <div class="status-card light">
             <h2>Time-Series Charts</h2>
             <canvas id="bmsChart" width="800" height="400"></canvas>
         </div>
     </div>
     <script>
+        const body = document.body;
+        const header = document.querySelector('.header');
+        const statusCards = document.querySelectorAll('.status-card');
+        const darkModeToggle = document.getElementById('dark-mode-toggle');
+        darkModeToggle.addEventListener('click', () => {
+            if (body.classList.contains('light')) {
+                body.classList.remove('light');
+                body.classList.add('dark');
+                header.classList.remove('light');
+                header.classList.add('dark');
+                statusCards.forEach(card => {
+                    card.classList.remove('light');
+                    card.classList.add('dark');
+                });
+                darkModeToggle.textContent = 'Light Mode';
+            } else {
+                body.classList.remove('dark');
+                body.classList.add('light');
+                header.classList.remove('dark');
+                header.classList.add('light');
+                statusCards.forEach(card => {
+                    card.classList.remove('dark');
+                    card.classList.add('light');
+                });
+                darkModeToggle.textContent = 'Dark Mode';
+            }
+        });
         function updateStatus() {
             fetch('/api/status')
                 .then(response => response.json())
