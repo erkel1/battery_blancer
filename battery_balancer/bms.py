@@ -1793,7 +1793,7 @@ def start_web_server(settings):
                 .then(data => {
                     if (data.success) {
                         alert('Balancing initiated');
-                    } else:
+                    } else
                         alert('Error: ' + data.message);
                     }
                 })
