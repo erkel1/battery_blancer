@@ -1027,21 +1027,21 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
         return
     battery_art_base = [
         " _______________ ",
-        " |             | ",
-        " |             | ",
-        " |             | ",
-        " |             | ",
-        " |     +++     | ",
-        " |     +++     | ",
-        " |             | ",
-        " |             | ",
-        " |             | ",
-        " |             | ",
-        " |     ---     | ",
-        " |     ---     | ",
-        " |     ---     | ",
-        " |             | ",
-        " |             | ",
+        " | | ",
+        " | | ",
+        " | | ",
+        " | | ",
+        " | +++ | ",
+        " | +++ | ",
+        " | | ",
+        " | | ",
+        " | | ",
+        " | | ",
+        " | --- | ",
+        " | --- | ",
+        " | --- | ",
+        " | | ",
+        " | | ",
         " |_____________| "
     ]
     art_height = len(battery_art_base)
@@ -1156,27 +1156,6 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
                 logging.warning("addstr error for no alerts message.")
         else:
             logging.warning("Skipping no alerts message - out of bounds.")
-    history = fetch_rrd_history()
-    y_chart = 1
-    chart_width = 30
-    chart_height = 10  # Increased height for single chart
-    volt_hists = []
-    for b in range(NUM_BANKS):
-        volt_hist = [h[f'volt{b+1}'] for h in history if h[f'volt{b+1}'] is not None] if history else []
-        volt_hists.append(volt_hist)
-    temp_hist = [h['medtemp'] for h in history if h['medtemp'] is not None] if history else []
-    all_hists = volt_hists + [temp_hist]
-    chart = ascii_multi_line_graph(all_hists, width=chart_width, height=chart_height, chars='123o')
-    label = "All(1,2,3,o): "
-    for i, line in enumerate(chart.splitlines()):
-        full_line = label + line if i == 0 else ' ' * len(label) + line
-        if y_chart + i < height and right_half_x + len(full_line) < width:
-            try:
-                stdscr.addstr(y_chart + i, right_half_x, full_line, curses.color_pair(4))
-            except curses.error:
-                logging.warning(f"addstr error for combined chart line {i}.")
-        else:
-            logging.warning(f"Skipping combined chart line {i} - out of bounds.")
     y_offset = height // 2
     if y_offset < height:
         try:
