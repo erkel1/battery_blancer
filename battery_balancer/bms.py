@@ -1768,6 +1768,7 @@ def start_web_server(settings):
                     document.getElementById('balancing-status').textContent = data.balancing ? 'Yes' : 'No';
                     const batteryContainer = document.getElementById('battery-container');
                     batteryContainer.innerHTML = '';
+                    const sensorsPerBank = data.temperatures.length / data.voltages.length;
                     data.voltages.forEach((voltage, index) => {
                         const summary = data.bank_summaries[index];
                         const bankDiv = document.createElement('div');
@@ -1783,9 +1784,10 @@ def start_web_server(settings):
                                 </p>
                             </div>
                             <div class="temperatures">
-                                ${data.temperatures.map((temp, tempIndex) => {
-                                    const batId = Math.floor(tempIndex / 24) + 1;
-                                    const localCh = (tempIndex % 24) + 1;
+                                ${data.temperatures.slice(index * sensorsPerBank, (index + 1) * sensorsPerBank).map((temp, localIndex) => {
+                                    const globalIndex = index * sensorsPerBank + localIndex;
+                                    const batId = Math.floor(globalIndex / 24) + 1;
+                                    const localCh = (globalIndex % 24) + 1;
                                     return `<p class="temperature ${temp === null ? 'alert' : (temp > 60 || temp < 0) ? 'warning' : 'normal'}">
                                         Bat ${batId} Local C${localCh}: ${temp !== null ? temp.toFixed(1) + '°C' : 'N/A'}
                                     </p>`;
