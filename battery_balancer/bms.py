@@ -1156,9 +1156,17 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
                 logging.warning("addstr error for no alerts message.")
         else:
             logging.warning("Skipping no alerts message - out of bounds.")
+    local_ip = 'localhost'
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        local_ip = socket.gethostbyname(socket.gethostname())
     y_config = 3
     config_lines = [
-        f"Web Dashboard URL: http://{socket.gethostbyname(socket.gethostname())}:{settings['web_port']}",
+        f"Web Dashboard URL: http://{local_ip}:{settings['web_port']}",
         f"Number of Parallel Batteries: {settings['number_of_parallel_batteries']}",
         f"Number of Series Banks: {settings['num_series_banks']}",
         f"Sensors per Bank per Battery: {settings['sensors_per_bank']}",
