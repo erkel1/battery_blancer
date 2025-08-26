@@ -1156,7 +1156,7 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
                 logging.warning("addstr error for no alerts message.")
         else:
             logging.warning("Skipping no alerts message - out of bounds.")
-    y_config = 1
+    y_config = 3
     config_lines = [
         f"Web Dashboard URL: http://{socket.gethostbyname(socket.gethostname())}:{settings['web_port']}",
         f"Number of Parallel Batteries: {settings['number_of_parallel_batteries']}",
