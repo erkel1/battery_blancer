@@ -513,8 +513,8 @@ def setup_hardware(settings):
                                    'DS:volt2:GAUGE:120:0:25',
                                    'DS:volt3:GAUGE:120:0:25',
                                    'DS:medtemp:GAUGE:120:-20:100',
-                                   'RRA:LAST:0.0:1:480',
-                                   'RRA:LAST:0.0:5:100'])
+                                   'RRA:LAST:0.0:1:1440',
+                                   'RRA:LAST:0.0:5:288'])
             logging.info("Created RRD database for time-series logging.")
         else:
             logging.info("Using existing RRD database.")
