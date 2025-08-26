@@ -1177,14 +1177,13 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
         f"High Voltage Threshold per Bank: {settings['HighVoltageThresholdPerBattery']}V",
         f"Voltage Difference to Balance: {settings['VoltageDifferenceToBalance']}V",
         f"Balance Duration: {settings['BalanceDurationSeconds']} seconds",
-        f"Balance Rest Period: {settings['BalanceRestPeriodSeconds']} seconds",
-        f"Email Alert Interval: {settings['EmailAlertIntervalSeconds']} seconds"
+        f"Balance Rest Period: {settings['BalanceRestPeriodSeconds']} seconds"
     ]
     col_width = max(len(line) for line in config_lines) + 2
-    num_cols = max(1, (width - right_half_x) // col_width)
+    num_cols = 1
     for i, line in enumerate(config_lines):
-        col = i // 20
-        row = i % 20
+        col = i // 16
+        row = i % 16
         if col < num_cols and y_config + row < height:
             try:
                 stdscr.addstr(y_config + row, right_half_x + col * col_width, line, curses.color_pair(7))
