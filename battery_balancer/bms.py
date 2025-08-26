@@ -1184,7 +1184,7 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
     num_cols = max(1, (width - right_half_x) // col_width)
     for i, line in enumerate(config_lines):
         col = i // 16
-        row = i % 16
+        row = i % 20
         if col < num_cols and y_config + row < height:
             try:
                 stdscr.addstr(y_config + row, right_half_x + col * col_width, line, curses.color_pair(7))
