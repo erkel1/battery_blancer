@@ -865,7 +865,7 @@ def check_for_issues(voltages, temps_alerts, settings):
         logging.info("No issues; alarm relay deactivated.")
     return alert_needed, alerts
 def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
-    global balance_start_time, last_balance_time, balancing_active, web_data
+    global balance_start_time, last_balance_time, balancing_active, web_data, alive_timestamp
     if temps_alerts:
         logging.warning("Skipping balancing due to temperature anomalies in banks.")
         return
@@ -891,6 +891,7 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
     right_half_x = width // 2
     progress_y = 1
     while time.time() - balance_start_time < settings['BalanceDurationSeconds']:
+        alive_timestamp = time.time()
         elapsed = time.time() - balance_start_time
         progress = min(1.0, elapsed / settings['BalanceDurationSeconds'])
         voltage_high, _, _ = read_voltage_with_retry(high, settings)
