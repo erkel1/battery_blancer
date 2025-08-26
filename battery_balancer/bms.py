@@ -1156,6 +1156,40 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
                 logging.warning("addstr error for no alerts message.")
         else:
             logging.warning("Skipping no alerts message - out of bounds.")
+    y_config = 1
+    config_lines = [
+        f"Web Dashboard URL: http://{socket.gethostbyname(socket.gethostname())}:{settings['web_port']}",
+        f"Number of Parallel Batteries: {settings['number_of_parallel_batteries']}",
+        f"Number of Series Banks: {settings['num_series_banks']}",
+        f"Sensors per Bank per Battery: {settings['sensors_per_bank']}",
+        f"Polling Interval: {settings['poll_interval']} seconds",
+        f"Temperature IP Address: {settings['ip']}",
+        f"Modbus TCP Port: {settings['modbus_port']}",
+        f"High Temperature Threshold: {settings['high_threshold']}°C",
+        f"Low Temperature Threshold: {settings['low_threshold']}°C",
+        f"Absolute Deviation Threshold: {settings['abs_deviation_threshold']}°C",
+        f"Relative Deviation Threshold: {settings['deviation_threshold']}",
+        f"Abnormal Rise Threshold: {settings['rise_threshold']}°C",
+        f"Group Lag Threshold: {settings['disconnection_lag_threshold']}°C",
+        f"Cabinet Over-Temp Threshold: {settings['cabinet_over_temp_threshold']}°C",
+        f"Valid Minimum Temperature: {settings['valid_min']}°C",
+        f"Low Voltage Threshold per Bank: {settings['LowVoltageThresholdPerBattery']}V",
+        f"High Voltage Threshold per Bank: {settings['HighVoltageThresholdPerBattery']}V",
+        f"Voltage Difference to Balance: {settings['VoltageDifferenceToBalance']}V",
+        f"Balance Duration: {settings['BalanceDurationSeconds']} seconds",
+        f"Balance Rest Period: {settings['BalanceRestPeriodSeconds']} seconds",
+        f"Email Alert Interval: {settings['EmailAlertIntervalSeconds']} seconds"
+    ]
+    col_width = max(len(line) for line in config_lines) + 2
+    num_cols = max(1, (width - right_half_x) // col_width)
+    for i, line in enumerate(config_lines):
+        col = i // 16
+        row = i % 16
+        if col < num_cols and y_config + row < height:
+            try:
+                stdscr.addstr(y_config + row, right_half_x + col * col_width, line, curses.color_pair(7))
+            except curses.error:
+                pass
     y_offset = height // 2
     if y_offset < height:
         try:
