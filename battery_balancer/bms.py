@@ -890,12 +890,22 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
     height, width = stdscr.getmaxyx()
     right_half_x = width // 2
     progress_y = 1
+    last_voltage_read = balance_start_time  # Track last voltage read time
+    voltage_read_interval = 0.5  # Read voltages every 0.5 seconds
+
     while time.time() - balance_start_time < settings['BalanceDurationSeconds']:
-        alive_timestamp = time.time()
+        alive_timestamp = time.time()  # Update timestamp at loop start
+
+        # Read voltages only at specified intervals
+        current_time = time.time()
+        if current_time - last_voltage_read >= voltage_read_interval:
+            voltage_high, _, _ = read_voltage_with_retry(high, settings)
+            voltage_low, _, _ = read_voltage_with_retry(low, settings)
+            last_voltage_read = current_time
+            alive_timestamp = time.time()  # Update after voltage reads
+
         elapsed = time.time() - balance_start_time
         progress = min(1.0, elapsed / settings['BalanceDurationSeconds'])
-        voltage_high, _, _ = read_voltage_with_retry(high, settings)
-        voltage_low, _, _ = read_voltage_with_retry(low, settings)
         bar_length = 20
         filled = int(bar_length * progress)
         bar = '=' * filled + ' ' * (bar_length - filled)
@@ -914,6 +924,8 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
         logging.debug(f"Balancing progress: {progress * 100:.2f}%, High: {voltage_high:.2f}V, Low: {voltage_low:.2f}V")
         frame_index += 1
         time.sleep(0.01)
+        alive_timestamp = time.time()  # Update timestamp before next iteration
+
     logging.info("Balancing process completed.")
     event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: Balancing completed from Bank {high} to {low}")
     if len(event_log) > 20:
@@ -925,6 +937,7 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
     balancing_active = False
     web_data['balancing'] = False
     last_balance_time = time.time()
+    alive_timestamp = time.time()  # Final update after balancing
 def compute_bank_medians(calibrated_temps, valid_min):
     bank_stats = []
     for bank_indices in BANK_SENSOR_INDICES:
