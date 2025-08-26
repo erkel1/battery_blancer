@@ -1183,7 +1183,7 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
     col_width = max(len(line) for line in config_lines) + 2
     num_cols = max(1, (width - right_half_x) // col_width)
     for i, line in enumerate(config_lines):
-        col = i // 16
+        col = i // 20
         row = i % 20
         if col < num_cols and y_config + row < height:
             try:
