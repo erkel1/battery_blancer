@@ -533,10 +533,11 @@ def signal_handler(sig, frame):
     close_watchdog()
     sys.exit(0)
 def load_offsets(num_channels):
-    logging.info("Loading startup offsets from 'offsets.txt'.")
-    if os.path.exists('offsets.txt'):
+    offsets_path = os.path.join(data_dir, 'offsets.txt')
+    logging.info(f"Loading startup offsets from '{offsets_path}'.")
+    if os.path.exists(offsets_path):
         try:
-            with open('offsets.txt', 'r') as f:
+            with open(offsets_path, 'r') as f:
                 lines = f.readlines()
             if len(lines) < 1:
                 logging.warning("Invalid offsets.txt; using none.")
@@ -554,9 +555,10 @@ def load_offsets(num_channels):
     logging.warning("No 'offsets.txt' found; using none.")
     return None, None
 def save_offsets(startup_median, startup_offsets):
-    logging.info("Saving startup offsets to 'offsets.txt'.")
+    offsets_path = os.path.join(data_dir, 'offsets.txt')
+    logging.info(f"Saving startup offsets to '{offsets_path}'.")
     try:
-        with open('offsets.txt', 'w') as f:
+        with open(offsets_path, 'w') as f:
             f.write(f"{startup_median}\n")
             for offset in startup_offsets:
                 f.write(f"{offset}\n")
@@ -1195,7 +1197,7 @@ def setup_watchdog(timeout=15):
     except Exception as e:
         logging.error(f"Failed to setup watchdog: {e}.")
         return False
-def watchdog_pet_thread(pet_interval=1, hang_threshold=2):
+def watchdog_pet_thread(pet_interval=5, hang_threshold=10):
     global watchdog_fd, alive_timestamp
     while True:
         try:
@@ -2011,17 +2013,14 @@ def main(stdscr):
         gc.collect()
         logging.info("Poll cycle complete.")
         time.sleep(settings['poll_interval'])
-        
+       
 if __name__ == '__main__':
     data_dir = sys.argv[1] if len(sys.argv) > 1 else '.'
-    # Update file paths
     logging.basicConfig(
         filename=os.path.join(data_dir, 'battery_monitor.log'),
         level=logging.INFO,
         format='%(asctime)s - %(message)s'
     )
     config_parser.read(os.path.join(data_dir, 'battery_monitor.ini'))
-    # For offsets.txt: os.path.join(data_dir, 'offsets.txt')
-    # For RRD_FILE = os.path.join(data_dir, 'bms.rrd')
-    # Adjust all file operations similarly
+    RRD_FILE = os.path.join(data_dir, 'bms.rrd')
     curses.wrapper(main)
