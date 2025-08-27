@@ -2011,5 +2011,13 @@ def main(stdscr):
         gc.collect()
         logging.info("Poll cycle complete.")
         time.sleep(settings['poll_interval'])
+        
 if __name__ == '__main__':
+    data_dir = sys.argv[1] if len(sys.argv) > 1 else '.'
+    # Update file paths
+    logging.basicConfig(filename=os.path.join(data_dir, 'battery_monitor.log'), ...)
+    config_parser.read(os.path.join(data_dir, 'battery_monitor.ini'))
+    # For offsets.txt: os.path.join(data_dir, 'offsets.txt')
+    # For RRD_FILE = os.path.join(data_dir, 'bms.rrd')
+    # Adjust all file operations similarly
     curses.wrapper(main)
