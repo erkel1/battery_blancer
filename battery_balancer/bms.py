@@ -394,8 +394,8 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
 def load_config():
     logging.info("Loading configuration from 'battery_monitor.ini'.")
     global alert_states
-    if not config_parser.read('battery_monitor.ini'):
-        logging.error("Config file 'battery_monitor.ini' not found.")
+    if not config_parser.sections():
+        logging.error("Config file 'battery_monitor.ini' not found or empty.")
         raise FileNotFoundError("Config file 'battery_monitor.ini' not found.")
     temp_settings = {
         'ip': config_parser.get('Temp', 'ip', fallback='192.168.15.240'),
