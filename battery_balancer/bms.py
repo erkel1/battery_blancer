@@ -49,7 +49,7 @@
 # 3. **Self-Test:** Checks if config makes sense, hardware responds (per Modbus slave), sensors give good readings, balancing actually changes voltages. If fail, alerts and retries.
 # 4. **Main Loop (Repeats Forever):**
 # - Read temperatures from all slaves, aggregate.
-# - Calibrate them (adjust based on startup values for accuracy).
+# - Calibrate them (adjust based based on startup values for accuracy).
 # - Check for temperature problems (too hot, too cold, etc.).
 # - Read voltages from 3 banks.
 # - Check for voltage problems (too high, too low, zero).
@@ -167,14 +167,14 @@ v |
 +--------------------------------------+ |
 | |
 v |
-+--------------------------------------+ |
-| Update Alive Timestamp | |
-+--------------------------------------+ |
++--------------------------------------+
+| Update Alive Timestamp |
++--------------------------------------+
 | |
 v |
-+--------------------------------------+ |
-| Sleep (Poll Interval) | |
-+--------------------------------------+ |
++--------------------------------------+
+| Sleep (Poll Interval) |
++--------------------------------------+
 | |
 +-------------------------------------------------------------+
 """
@@ -280,7 +280,7 @@ WATCHDOG_DEV = '/dev/watchdog' # Device file for watchdog - hardware reset preve
 watchdog_fd = None # File handle for watchdog - open connection.
 alive_timestamp = 0.0 # Shared timestamp updated by main to indicate aliveness - for watchdog thread.
 RRD_FILE = 'bms.rrd' # RRD database file for storing time-series data - persistent storage.
-HISTORY_LIMIT = 480 # Number of historical entries to retain (e.g., ~8 hours at 1min steps) - limit for memory/efficiency.
+HISTORY_LIMIT = 1440 # Number of historical entries to retain (e.g., ~24 hours at 1min steps) - limit for memory/efficiency.
 def get_bank_for_channel(ch):
     """
     Find which battery bank a temperature sensor belongs to.
@@ -644,62 +644,6 @@ def check_sudden_disconnection(current, previous_temps, ch, alerts):
         if len(event_log) > 20:
             event_log.pop(0)
         logging.warning(f"Sudden disconnection alert on Battery {bat_id} Bank {bank} Local Ch {local_ch}.")
-def plot_line(grid, x0, y0, x1, y1, char):
-    x0, y0, x1, y1 = int(x0), int(y0), int(x1), int(y1)
-    dx = abs(x1 - x0)
-    sx = 1 if x0 < x1 else -1
-    dy = -abs(y1 - y0)
-    sy = 1 if y0 < y1 else -1
-    err = dx + dy
-    while True:
-        if 0 <= x0 < len(grid[0]) and 0 <= y0 < len(grid):
-            if grid[y0][x0] == ' ':
-                grid[y0][x0] = char
-            else:
-                grid[y0][x0] = '.'
-        if x0 == x1 and y0 == y1:
-            break
-        e2 = 2 * err
-        if e2 >= dy:
-            if x0 == x1: break
-            err += dy
-            x0 += sx
-        if e2 <= dx:
-            if y0 == y1: break
-            err += dx
-            y0 += sy
-
-def ascii_multi_line_graph(datas, width=40, height=5, chars='123'):
-    all_vals = [v for data in datas for v in data if v is not None]
-    if not all_vals:
-        return '\n'.join([' ' * width] * height)
-    min_val = min(all_vals)
-    max_val = max(all_vals)
-    r = max_val - min_val if max_val > min_val else 1
-    grid = [[' ' for _ in range(width)] for _ in range(height)]
-    points = []
-    for s, data in enumerate(datas):
-        char = chars[s % len(chars)]
-        prev_x = None
-        prev_y = None
-        for x in range(width):
-            if x >= len(data) or data[x] is None:
-                prev_x = None
-                prev_y = None
-                continue
-            scaled = (data[x] - min_val) / r * (height - 1)
-            y = height - 1 - int(round(scaled))
-            points.append((x, y, char))
-            if prev_y is not None:
-                plot_line(grid, prev_x, prev_y, x, y, '.')
-            prev_x = x
-            prev_y = y
-    for x, y, char in points:
-        grid[y][x] = char
-    return '\n'.join(''.join(row) for row in grid)
-
-def ascii_line_chart(data, width=40, height=5, symbols='o'):
-    return ascii_multi_line_graph([data], width, height, symbols)
 def choose_channel(channel, multiplexer_address):
     logging.debug(f"Switching to I2C channel {channel}.")
     if bus:
@@ -718,15 +662,18 @@ def setup_voltage_meter(settings):
         except IOError as e:
             logging.error(f"I2C error configuring voltage meter: {str(e)}")
 def read_voltage_with_retry(bank_id, settings):
+    global alive_timestamp
     logging.info(f"Starting voltage read for Bank {bank_id}.")
     voltage_divider_ratio = settings['VoltageDividerRatio']
     sensor_id = bank_id
     calibration_factor = settings[f'Sensor{sensor_id}_Calibration']
     for attempt in range(2):
+        alive_timestamp = time.time()
         logging.debug(f"Voltage read attempt {attempt+1} for Bank {bank_id}.")
         readings = []
         raw_values = []
         for _ in range(2):
+            alive_timestamp = time.time()
             meter_channel = (bank_id - 1) % 3
             choose_channel(meter_channel, settings['MultiplexerAddress'])
             setup_voltage_meter(settings)
@@ -734,6 +681,7 @@ def read_voltage_with_retry(bank_id, settings):
                 try:
                     bus.write_byte(settings['VoltageMeterAddress'], 0x01)
                     time.sleep(0.05)
+                    alive_timestamp = time.time()
                     raw_adc = bus.read_word_data(settings['VoltageMeterAddress'], settings['ConversionRegister'])
                     raw_adc = (raw_adc & 0xFF) << 8 | (raw_adc >> 8)
                 except IOError as e:
@@ -890,22 +838,12 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
     height, width = stdscr.getmaxyx()
     right_half_x = width // 2
     progress_y = 1
-    last_voltage_read = balance_start_time  # Track last voltage read time
-    voltage_read_interval = 0.5  # Read voltages every 0.5 seconds
-
     while time.time() - balance_start_time < settings['BalanceDurationSeconds']:
-        alive_timestamp = time.time()  # Update timestamp at loop start
-
-        # Read voltages only at specified intervals
-        current_time = time.time()
-        if current_time - last_voltage_read >= voltage_read_interval:
-            voltage_high, _, _ = read_voltage_with_retry(high, settings)
-            voltage_low, _, _ = read_voltage_with_retry(low, settings)
-            last_voltage_read = current_time
-            alive_timestamp = time.time()  # Update after voltage reads
-
+        alive_timestamp = time.time()
         elapsed = time.time() - balance_start_time
         progress = min(1.0, elapsed / settings['BalanceDurationSeconds'])
+        voltage_high, _, _ = read_voltage_with_retry(high, settings)
+        voltage_low, _, _ = read_voltage_with_retry(low, settings)
         bar_length = 20
         filled = int(bar_length * progress)
         bar = '=' * filled + ' ' * (bar_length - filled)
@@ -924,8 +862,6 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
         logging.debug(f"Balancing progress: {progress * 100:.2f}%, High: {voltage_high:.2f}V, Low: {voltage_low:.2f}V")
         frame_index += 1
         time.sleep(0.01)
-        alive_timestamp = time.time()  # Update timestamp before next iteration
-
     logging.info("Balancing process completed.")
     event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: Balancing completed from Bank {high} to {low}")
     if len(event_log) > 20:
@@ -937,7 +873,6 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
     balancing_active = False
     web_data['balancing'] = False
     last_balance_time = time.time()
-    alive_timestamp = time.time()  # Final update after balancing
 def compute_bank_medians(calibrated_temps, valid_min):
     bank_stats = []
     for bank_indices in BANK_SENSOR_INDICES:
@@ -1260,7 +1195,7 @@ def setup_watchdog(timeout=15):
     except Exception as e:
         logging.error(f"Failed to setup watchdog: {e}.")
         return False
-def watchdog_pet_thread(pet_interval=5, hang_threshold=10):
+def watchdog_pet_thread(pet_interval=1, hang_threshold=2):
     global watchdog_fd, alive_timestamp
     while True:
         try:
