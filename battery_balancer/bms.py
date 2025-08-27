@@ -2015,7 +2015,11 @@ def main(stdscr):
 if __name__ == '__main__':
     data_dir = sys.argv[1] if len(sys.argv) > 1 else '.'
     # Update file paths
-    logging.basicConfig(filename=os.path.join(data_dir, 'battery_monitor.log'), ...)
+    logging.basicConfig(
+        filename=os.path.join(data_dir, 'battery_monitor.log'),
+        level=logging.INFO,
+        format='%(asctime)s - %(message)s'
+    )
     config_parser.read(os.path.join(data_dir, 'battery_monitor.ini'))
     # For offsets.txt: os.path.join(data_dir, 'offsets.txt')
     # For RRD_FILE = os.path.join(data_dir, 'bms.rrd')
