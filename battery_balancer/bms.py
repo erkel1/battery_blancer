@@ -242,11 +242,6 @@ import curses # Creates the terminal-based Text User Interface (TUI) - terminal 
 from art import text2art # Generates ASCII art for the TUI display - art maker.
 import fcntl # For watchdog ioctl - low-level control.
 import struct # For watchdog struct - data packer.
-logging.basicConfig(
-    filename='battery_monitor.log', # Log file name - where diary is saved.
-    level=logging.INFO, # Log level (INFO captures key events) - how detailed.
-    format='%(asctime)s - %(message)s' # Log format with timestamp - date + message.
-)
 config_parser = configparser.ConfigParser() # Object to read INI file - config reader.
 bus = None # I2C bus for communicating with hardware - hardware connection.
 last_email_time = 0 # Tracks when the last email alert was sent - email timer.
@@ -895,10 +890,10 @@ def fetch_rrd_history():
                                           '--start', str(start),
                                           '--end', 'now',
                                           '--step', '60',
-                                          'DEF:v1=bms.rrd:volt1:LAST',
-                                          'DEF:v2=bms.rrd:volt2:LAST',
-                                          'DEF:v3=bms.rrd:volt3:LAST',
-                                          'DEF:mt=bms.rrd:medtemp:LAST',
+                                          f'DEF:v1={RRD_FILE}:volt1:LAST',
+                                          f'DEF:v2={RRD_FILE}:volt2:LAST',
+                                          f'DEF:v3={RRD_FILE}:volt3:LAST',
+                                          f'DEF:mt={RRD_FILE}:medtemp:LAST',
                                           'XPORT:v1:Bank1',
                                           'XPORT:v2:Bank2',
                                           'XPORT:v3:Bank3',
