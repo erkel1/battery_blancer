@@ -1846,12 +1846,12 @@ def start_web_server(settings):
             color = colors[(i-1) % len(colors)]
             datasets_js += "{{ label: 'Bank " + str(i) + " V', data: hist.map(h => h.volt" + str(i) + "), borderColor: '" + color + "' }},\n                        "
         # Build the complete datasets array
-        datasets_array = f"""
+        datasets_array = """
                         {datasets_js}
                         {{ label: 'Median Temp °C', data: hist.map(h => h.medtemp), borderColor: 'cyan', yAxisID: 'temp' }}
-                    """
-        logging.debug(f"Constructed datasets_array: {datasets_array}")
-        html = f"""<!DOCTYPE html>
+                    """.format(datasets_js=datasets_js)
+        logging.debug("Constructed datasets_array: {0}".format(datasets_array))
+        html = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -2053,7 +2053,7 @@ def start_web_server(settings):
         setInterval(updateChart, 60000);
     </script>
 </body>
-</html>"""
+</html>""".format(datasets_array=datasets_array)
         return html
     @app.route('/api/status')
     def api_status():
@@ -2265,8 +2265,8 @@ def main(stdscr):
             current_time = time.time()
             any_low_temp = any(t is not None and t < 10 for t in calibrated_temps)
 
-            # Balance if: already balancing, OR (no alerts AND lowest isn't zero AND enough time has passed since last balance AND (low temp or voltage difference big enough))
-            if balancing_active or (not alert_needed and min_v > 0 and current_time - last_balance_time > settings['BalanceRestPeriodSeconds'] and (any_low_temp or max_v - min_v > settings['VoltageDifferenceToBalance'])):
+            # Balance if: already balancing, OR (no alerts AND (low temp or voltage difference big enough) AND lowest isn't zero AND enough time has passed since last balance)
+            if balancing_active or (not alert_needed and (any_low_temp or max_v - min_v > settings['VoltageDifferenceToBalance']) and min_v > 0 and current_time - last_balance_time > settings['BalanceRestPeriodSeconds']):
                 is_heating = any_low_temp
                 balance_battery_voltages(stdscr, high_b, low_b, settings, temps_alerts, is_heating=is_heating)  # Transfer charge
                 balancing_active = False
@@ -2313,4 +2313,3 @@ if __name__ == '__main__':
         config_parser.read(os.path.join(data_dir, 'battery_monitor.ini'))
         RRD_FILE = os.path.join(data_dir, 'bms.rrd')
         curses.wrapper(main)
-
