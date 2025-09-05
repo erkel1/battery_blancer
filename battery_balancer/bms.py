@@ -1815,21 +1815,7 @@ def startup_self_test(settings, stdscr, data_dir):
             time.sleep(2)
             logging.info("Startup self-test passed.")
             return []
-        
 def start_web_server(settings):
-    """
-    Start a web server to provide a user-friendly dashboard in a web browser.
-
-    This creates a simple website that shows:
-    - Current battery voltages and temperatures
-    - Any alerts or problems
-    - Historical charts of voltage and temperature trends
-    - Controls to manually trigger balancing
-
-    The web server runs in the background and can be accessed from any device
-    on the network using a web browser. It provides an easy way to monitor
-    the battery system without needing to look at the terminal.
-    """
     global web_server
     if not settings['WebInterfaceEnabled']:
         logging.info("Web interface disabled via configuration.")
@@ -1842,23 +1828,20 @@ def start_web_server(settings):
     def index():
         # Build dynamic datasets for voltage banks
         colors = ['green', 'blue', 'red', 'orange', 'purple', 'brown', 'pink', 'gray']
-        datasets_js = ""
+        datasets_list = []
         for i in range(1, settings['num_series_banks'] + 1):
             color = colors[(i-1) % len(colors)]
-            datasets_js += "{{ label: 'Bank " + str(i) + " V', data: hist.map(h => h.volt" + str(i) + "), borderColor: '" + color + "' }}," + "\n                        "
-        # Build the complete datasets array
-        datasets_array = """
-                        {datasets_js}
-                        {{ label: 'Median Temp °C', data: hist.map(h => h.medtemp), borderColor: 'cyan', yAxisID: 'temp' }}
-                    """.replace("{datasets_js}", datasets_js)
-        logging.debug("Constructed datasets_array: " + datasets_array)
-        html = """<!DOCTYPE html>
+            datasets_list.append(f"{{ label: 'Bank {i} V', data: hist.map(h => h.volt{i}), borderColor: '{color}' }}")
+        datasets_list.append("{{ label: 'Median Temp °C', data: hist.map(h => h.medtemp), borderColor: 'cyan', yAxisID: 'temp' }}")
+        datasets_array = ',\n'.join(datasets_list)
+        logging.debug(f"Constructed datasets_array: {datasets_array}")
+        html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Battery Management System</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0"></script>
     <style>
         body {{ font-family: Arial, sans-serif; margin: 20px; transition: background-color 0.3s, color 0.3s; }}
         body.light {{ background-color: #f5f5f5; color: #000; }}
@@ -1958,26 +1941,27 @@ def start_web_server(settings):
                     const batteryContainer = document.getElementById('battery-container');
                     batteryContainer.innerHTML = '';
                     const sensorsPerBank = data.temperatures.length / data.voltages.length;
+                    const sensorsPerBattery = data.sensors_per_battery;
                     data.voltages.forEach((voltage, index) => {{
                         const summary = data.bank_summaries[index];
                         const bankDiv = document.createElement('div');
                         bankDiv.className = 'battery';
                         bankDiv.innerHTML = `
                             <h3>Bank ${{index + 1}}</h3>
-                            <p class="voltage ${{voltage === 0 || voltage === null ? 'alert' : (voltage > 21 || voltage < 18.5) ? 'warning' : 'normal'}}">
+                            <p class="voltage ${{voltage === 0 || voltage === null ? 'alert' : (voltage > data.high_voltage_threshold || voltage < data.low_voltage_threshold) ? 'warning' : 'normal'}}">
                                 ${{voltage !== null ? voltage.toFixed(2) : 'N/A'}}V
                             </p>
                             <div class="bank-summary">
-                                <p class="temperature ${{summary.median > 60 || summary.median < 0 || summary.invalid > 0 ? 'warning' : 'normal'}}">
+                                <p class="temperature ${{summary.median > data.high_threshold || summary.median < data.low_threshold || summary.invalid > 0 ? 'warning' : 'normal'}}">
                                     Median: ${{summary.median.toFixed(1)}}°C Min: ${{summary.min.toFixed(1)}}°C Max: ${{summary.max.toFixed(1)}}°C Invalid: ${{summary.invalid}}
                                 </p>
                             </div>
                             <div class="temperatures">
                                 ${{data.temperatures.slice(index * sensorsPerBank, (index + 1) * sensorsPerBank).map((temp, localIndex) => {{
                                     const globalIndex = index * sensorsPerBank + localIndex;
-                                    const batId = Math.floor(globalIndex / 24) + 1;
-                                    const localCh = (globalIndex % 24) + 1;
-                                    return `<p class="temperature ${{temp === null ? 'alert' : (temp > 60 || temp < 0) ? 'warning' : 'normal'}}">
+                                    const batId = Math.floor(globalIndex / sensorsPerBattery) + 1;
+                                    const localCh = (globalIndex % sensorsPerBattery) + 1;
+                                    return `<p class="temperature ${{temp === null ? 'alert' : (temp > data.high_threshold || temp < data.low_threshold) ? 'warning' : 'normal'}}">
                                         Bat ${{batId}} Local C${{localCh}}: ${{temp !== null ? temp.toFixed(1) + '°C' : 'N/A'}}
                                     </p>`;
                                 }}).join('')}}
@@ -1996,7 +1980,7 @@ def start_web_server(settings):
                 }})
                 .catch(error => {{
                     console.error('Error fetching status:', error);
-                    document.getElementById('system-status').textContent = 'Error';
+                    document.getElementById('system-status').textContent = 'Error fetching status';
                 }});
         }}
         let myChart = null;
@@ -2066,7 +2050,12 @@ def start_web_server(settings):
             'balancing': web_data['balancing'],
             'last_update': web_data['last_update'],
             'system_status': web_data['system_status'],
-            'total_voltage': sum(web_data['voltages'])
+            'total_voltage': sum(web_data['voltages']),
+            'high_threshold': settings['high_threshold'],
+            'low_threshold': settings['low_threshold'],
+            'high_voltage_threshold': settings['HighVoltageThresholdPerBattery'],
+            'low_voltage_threshold': settings['LowVoltageThresholdPerBattery'],
+            'sensors_per_battery': settings['sensors_per_battery']
         }
         return jsonify(response)
     @app.route('/api/history')
@@ -2290,7 +2279,7 @@ def main(stdscr):
         logging.info("Poll cycle complete.")
         time.sleep(settings['poll_interval'])
        
-if __name__ == '__module__':
+if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Battery Management System')
     parser.add_argument('--validate-config', action='store_true', help='Validate configuration and exit')
     parser.add_argument('--data-dir', default='.', help='Directory containing config files')
