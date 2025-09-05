@@ -1844,12 +1844,12 @@ def start_web_server(settings):
             color = colors[(i-1) % len(colors)]
             datasets_js += "{ label: 'Bank " + str(i) + " V', data: hist.map(h => h.volt" + str(i) + "), borderColor: '" + color + "' },\n                        "
         # Build the complete datasets array
-        datasets_array = f"""
+        datasets_array = """
                         {datasets_js}
                         {{ label: 'Median Temp °C', data: hist.map(h => h.medtemp), borderColor: 'cyan', yAxisID: 'temp' }}
-                    """
+                    """.format(datasets_js=datasets_js)
         logging.debug(f"Constructed datasets_array: {datasets_array}")
-        html = f"""<!DOCTYPE html>
+        html = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -2051,7 +2051,7 @@ def start_web_server(settings):
         setInterval(updateChart, 60000);
     </script>
 </body>
-</html>"""
+</html>""".format(datasets_array=datasets_array)
     @app.route('/api/status')
     def api_status():
         response = {
