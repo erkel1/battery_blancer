@@ -606,10 +606,10 @@ adc_settings = {
     'SampleRateConfig': int(config_parser.get('ADC', 'SampleRateConfig', fallback='0x0080'), 16),
     'GainConfig': int(config_parser.get('ADC', 'GainConfig', fallback='0x0400'), 16)
 }
-    calibration_settings = {}
-    for i in range(1, temp_settings['num_series_banks'] + 1):
-        key = f'Sensor{i}_Calibration'
-        calibration_settings[key] = config_parser.getfloat('Calibration', key, fallback=1.0)
+calibration_settings = {}
+for i in range(1, temp_settings['num_series_banks'] + 1):
+    key = f'Sensor{i}_Calibration'
+    calibration_settings[key] = config_parser.getfloat('Calibration', key, fallback=1.0)
     startup_settings = {
         'test_balance_duration': config_parser.getint('Startup', 'test_balance_duration', fallback=15),
         'min_voltage_delta': config_parser.getfloat('Startup', 'min_voltage_delta', fallback=0.01),
