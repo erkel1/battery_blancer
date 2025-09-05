@@ -1,4 +1,3 @@
-```python
 # --------------------------------------------------------------------------------
 # Battery Management System (BMS) Script Documentation
 # --------------------------------------------------------------------------------
@@ -2314,4 +2313,3 @@ if __name__ == '__main__':
         config_parser.read(os.path.join(data_dir, 'battery_monitor.ini'))
         RRD_FILE = os.path.join(data_dir, 'bms.rrd')
         curses.wrapper(main)
-```
