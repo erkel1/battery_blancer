@@ -520,6 +520,43 @@ def load_config(data_dir):
         'SMTP_Password': config_parser.get('Email', 'SMTP_Password', fallback='your_app_password')
     }
 def validate_config(settings):
+    """
+    Validate configuration settings for consistency and required values.
+    Raises ValueError if invalid.
+    """
+    errors = []
+    
+    if settings['num_series_banks'] < 1:
+        errors.append("num_series_banks must be at least 1.")
+    if settings['num_series_banks'] > 20:
+        errors.append("num_series_banks > 20 may cause issues.")
+    
+    if settings['sensors_per_bank'] < 1:
+        errors.append("sensors_per_bank must be at least 1.")
+    
+    if settings['number_of_parallel_batteries'] < 1:
+        errors.append("number_of_parallel_batteries must be at least 1.")
+    
+    if len(settings['modbus_slave_addresses']) != settings['number_of_parallel_batteries']:
+        errors.append("modbus_slave_addresses count must match number_of_parallel_batteries.")
+    
+    if settings.get('relay_mapping'):
+        expected_pairs = []
+        for i in range(1, settings['num_series_banks'] + 1):
+            for j in range(1, settings['num_series_banks'] + 1):
+                if i != j:
+                    expected_pairs.append(f"{i}-{j}")
+        for pair in expected_pairs:
+            if pair not in settings['relay_mapping']:
+                errors.append(f"Relay mapping missing for {pair}.")
+    
+    if errors:
+        msg = "Configuration errors: " + "; ".join(errors)
+        logging.error(msg)
+        raise ValueError(msg)
+    
+    logging.info("Configuration validation passed.")
+
 def detect_hardware(settings):
     """
     Detect and log hardware connectivity at startup.
@@ -561,49 +598,14 @@ def detect_hardware(settings):
             logging.warning(f"Modbus slave {addr} detection failed: {e}")
     
     logging.info("Hardware detection complete.")
-    """
-    Validate configuration settings for consistency and required values.
-    Raises ValueError if invalid.
-    """
-    errors = []
-    
-    if settings['num_series_banks'] < 1:
-        errors.append("num_series_banks must be at least 1.")
-    if settings['num_series_banks'] > 20:
-        errors.append("num_series_banks > 20 may cause issues.")
-    
-    if settings['sensors_per_bank'] < 1:
-        errors.append("sensors_per_bank must be at least 1.")
-    
-    if settings['number_of_parallel_batteries'] < 1:
-        errors.append("number_of_parallel_batteries must be at least 1.")
-    
-    if len(settings['modbus_slave_addresses']) != settings['number_of_parallel_batteries']:
-        errors.append("modbus_slave_addresses count must match number_of_parallel_batteries.")
-    
-    if settings.get('relay_mapping'):
-        expected_pairs = []
-        for i in range(1, settings['num_series_banks'] + 1):
-            for j in range(1, settings['num_series_banks'] + 1):
-                if i != j:
-                    expected_pairs.append(f"{i}-{j}")
-        for pair in expected_pairs:
-            if pair not in settings['relay_mapping']:
-                errors.append(f"Relay mapping missing for {pair}.")
-    
-    if errors:
-        msg = "Configuration errors: " + "; ".join(errors)
-        logging.error(msg)
-        raise ValueError(msg)
-    
-    logging.info("Configuration validation passed.")
-    adc_settings = {
-        'ConfigRegister': int(config_parser.get('ADC', 'ConfigRegister', fallback='0x01'), 16),
-        'ConversionRegister': int(config_parser.get('ADC', 'ConversionRegister', fallback='0x00'), 16),
-        'ContinuousModeConfig': int(config_parser.get('ADC', 'ContinuousModeConfig', fallback='0x0100'), 16),
-        'SampleRateConfig': int(config_parser.get('ADC', 'SampleRateConfig', fallback='0x0080'), 16),
-        'GainConfig': int(config_parser.get('ADC', 'GainConfig', fallback='0x0400'), 16)
-    }
+
+adc_settings = {
+    'ConfigRegister': int(config_parser.get('ADC', 'ConfigRegister', fallback='0x01'), 16),
+    'ConversionRegister': int(config_parser.get('ADC', 'ConversionRegister', fallback='0x00'), 16),
+    'ContinuousModeConfig': int(config_parser.get('ADC', 'ContinuousModeConfig', fallback='0x0100'), 16),
+    'SampleRateConfig': int(config_parser.get('ADC', 'SampleRateConfig', fallback='0x0080'), 16),
+    'GainConfig': int(config_parser.get('ADC', 'GainConfig', fallback='0x0400'), 16)
+}
     calibration_settings = {}
     for i in range(1, temp_settings['num_series_banks'] + 1):
         key = f'Sensor{i}_Calibration'
