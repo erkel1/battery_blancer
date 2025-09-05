@@ -194,6 +194,7 @@ v |
 # 5. **Enable I2C:** Run sudo raspi-config, go to Interface Options > I2C > Enable, then reboot.
 # 6. **Create/Edit INI File:** Make 'battery_monitor.ini' in same folder as script. Copy template below and fill in values (e.g., emails, IPs, slave addresses).
 # 7. **Run Script:** sudo python bms.py (needs root for hardware access).
+#    **Validate Config:** python bms.py --validate-config [--data-dir /path/to/config]
 # 8. **View Web Dashboard:** Open browser to http://<your-pi-ip>:8080. Charts will load via Chart.js CDN.
 # 9. **Logs:** Check 'battery_monitor.log' for details. Set LoggingLevel=DEBUG in INI for more info.
 # 10. **RRD Database:** Created automatically as 'bms.rrd' on first run. No manual setup needed.
@@ -223,6 +224,7 @@ import signal # Shutdown handler - catches when user presses Ctrl+C to stop the 
 import gc # Memory cleaner - removes unused data from memory to keep the program running smoothly.
 import os # File system manager - handles reading/writing files, like saving calibration data.
 import sys # System controller - manages program exit and command-line arguments.
+import argparse # Command-line argument parser - handles options like --validate-config.
 import threading # Multi-tasking tool - runs the web server separately from the main program.
 import json # Data formatter - converts data to/from a format that web browsers understand.
 from urllib.parse import urlparse, parse_qs # Web request parser - breaks down web addresses and data.
@@ -292,7 +294,7 @@ def check_dependencies():
     
     logging.info("Dependency check passed.")
 import struct # For watchdog struct - data packer.
-config_parser = configparser.ConfigParser() # Object to read INI file - config reader.
+config_parser = configparser.ConfigParser(comment_prefixes=(';', '#')) # Object to read INI file - config reader, handles ; and # comments.
 bus = None # I2C bus for communicating with hardware - hardware connection.
 last_email_time = 0 # Tracks when the last email alert was sent - email timer.
 balance_start_time = None # Tracks when balancing started - balance clock start.
@@ -2280,12 +2282,27 @@ def main(stdscr):
         time.sleep(settings['poll_interval'])
        
 if __name__ == '__main__':
-    data_dir = sys.argv[1] if len(sys.argv) > 1 else '.'
-    logging.basicConfig(
-        filename=os.path.join(data_dir, 'battery_monitor.log'),
-        level=logging.INFO,
-        format='%(asctime)s - %(message)s'
-    )
-    config_parser.read(os.path.join(data_dir, 'battery_monitor.ini'))
-    RRD_FILE = os.path.join(data_dir, 'bms.rrd')
-    curses.wrapper(main)
+    parser = argparse.ArgumentParser(description='Battery Management System')
+    parser.add_argument('--validate-config', action='store_true', help='Validate configuration and exit')
+    parser.add_argument('--data-dir', default='.', help='Directory containing config files')
+    args = parser.parse_args()
+    data_dir = args.data_dir
+    if args.validate_config:
+        try:
+            config_parser.read(os.path.join(data_dir, 'battery_monitor.ini'))
+            settings = load_config(data_dir)
+            validate_config(settings)
+            print("Configuration validation passed.")
+            sys.exit(0)
+        except Exception as e:
+            print(f"Configuration validation failed: {e}")
+            sys.exit(1)
+    else:
+        logging.basicConfig(
+            filename=os.path.join(data_dir, 'battery_monitor.log'),
+            level=logging.INFO,
+            format='%(asctime)s - %(message)s'
+        )
+        config_parser.read(os.path.join(data_dir, 'battery_monitor.ini'))
+        RRD_FILE = os.path.join(data_dir, 'bms.rrd')
+        curses.wrapper(main)
