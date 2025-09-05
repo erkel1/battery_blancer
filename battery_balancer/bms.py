@@ -1815,6 +1815,7 @@ def startup_self_test(settings, stdscr, data_dir):
             time.sleep(2)
             logging.info("Startup self-test passed.")
             return []
+        
 def start_web_server(settings):
     """
     Start a web server to provide a user-friendly dashboard in a web browser.
@@ -1844,13 +1845,13 @@ def start_web_server(settings):
         datasets_js = ""
         for i in range(1, settings['num_series_banks'] + 1):
             color = colors[(i-1) % len(colors)]
-            datasets_js += f"{{ label: 'Bank {i} V', data: hist.map(h => h.volt{i}), borderColor: '{color}' }},\n                        "
+            datasets_js += "{{ label: 'Bank " + str(i) + " V', data: hist.map(h => h.volt" + str(i) + "), borderColor: '" + color + "' }}," + "\n                        "
         # Build the complete datasets array
-        datasets_array = f"""
+        datasets_array = """
                         {datasets_js}
                         {{ label: 'Median Temp °C', data: hist.map(h => h.medtemp), borderColor: 'cyan', yAxisID: 'temp' }}
-                    """
-        logging.debug(f"Constructed datasets_array: {datasets_array}")
+                    """.replace("{datasets_js}", datasets_js)
+        logging.debug("Constructed datasets_array: " + datasets_array)
         html = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2289,7 +2290,7 @@ def main(stdscr):
         logging.info("Poll cycle complete.")
         time.sleep(settings['poll_interval'])
        
-if __name__ == '__main__':
+if __name__ == '__module__':
     parser = argparse.ArgumentParser(description='Battery Management System')
     parser.add_argument('--validate-config', action='store_true', help='Validate configuration and exit')
     parser.add_argument('--data-dir', default='.', help='Directory containing config files')
