@@ -447,6 +447,7 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
         except Exception as e:
             logging.error(f"Unexpected error in temp read attempt {attempt+1} for slave {slave_addr}: {str(e)}\n{traceback.format_exc()}")
             return f"Error: Unexpected failure for slave {slave_addr} - {str(e)}"
+
 def load_config(data_dir):
     logging.info("Loading configuration from 'battery_monitor.ini'.")
     global alert_states
@@ -471,8 +472,8 @@ def load_config(data_dir):
         'cabinet_over_temp_threshold': config_parser.getfloat('Temp', 'cabinet_over_temp_threshold', fallback=35.0),
         'number_of_parallel_batteries': config_parser.getint('Temp', 'number_of_parallel_batteries', fallback=1),
         'modbus_slave_addresses': [int(x.strip()) for x in config_parser.get('Temp', 'modbus_slave_addresses', fallback='1').split(',')],
-        'sensors_per_bank': config_parser.getint('Temp', 'sensors_per_bank', fallback=8), # New: sensors per bank per battery.
-        'num_series_banks': config_parser.getint('General', 'num_series_banks', fallback=3) # New: number of series banks.
+        'sensors_per_bank': config_parser.getint('Temp', 'sensors_per_bank', fallback=8),  # New: sensors per bank per battery.
+        'num_series_banks': config_parser.getint('General', 'num_series_banks', fallback=3)  # New: number of series banks.
     }
     # Validate num_series_banks
     if temp_settings['num_series_banks'] < 1:
@@ -480,11 +481,11 @@ def load_config(data_dir):
         temp_settings['num_series_banks'] = 1
     elif temp_settings['num_series_banks'] > 20:
         logging.warning(f"num_series_banks={temp_settings['num_series_banks']} very high. Ensure hardware supports this.")
-    temp_settings['sensors_per_battery'] = temp_settings['num_series_banks'] * temp_settings['sensors_per_bank'] # Calc per battery.
-    temp_settings['total_channels'] = temp_settings['number_of_parallel_batteries'] * temp_settings['sensors_per_battery'] # Total sensors.
+    temp_settings['sensors_per_battery'] = temp_settings['num_series_banks'] * temp_settings['sensors_per_bank']  # Calc per battery.
+    temp_settings['total_channels'] = temp_settings['number_of_parallel_batteries'] * temp_settings['sensors_per_battery']  # Total sensors.
     startup_median, startup_offsets = load_offsets(temp_settings['total_channels'], data_dir)
     voltage_settings = {
-    'VoltageDifferenceToBalance': config_parser.getfloat('General', 'VoltageDifferenceToBalance', fallback=0.1),
+        'VoltageDifferenceToBalance': config_parser.getfloat('General', 'VoltageDifferenceToBalance', fallback=0.1),
         'BalanceDurationSeconds': config_parser.getint('General', 'BalanceDurationSeconds', fallback=5),
         'SleepTimeBetweenChecks': config_parser.getfloat('General', 'SleepTimeBetweenChecks', fallback=0.1),
         'BalanceRestPeriodSeconds': config_parser.getint('General', 'BalanceRestPeriodSeconds', fallback=60),
@@ -519,97 +520,17 @@ def load_config(data_dir):
         'SMTP_Username': config_parser.get('Email', 'SMTP_Username', fallback='your_email@gmail.com'),
         'SMTP_Password': config_parser.get('Email', 'SMTP_Password', fallback='your_app_password')
     }
-def validate_config(settings):
-    """
-    Validate configuration settings for consistency and required values.
-    Raises ValueError if invalid.
-    """
-    errors = []
-    
-    if settings['num_series_banks'] < 1:
-        errors.append("num_series_banks must be at least 1.")
-    if settings['num_series_banks'] > 20:
-        errors.append("num_series_banks > 20 may cause issues.")
-    
-    if settings['sensors_per_bank'] < 1:
-        errors.append("sensors_per_bank must be at least 1.")
-    
-    if settings['number_of_parallel_batteries'] < 1:
-        errors.append("number_of_parallel_batteries must be at least 1.")
-    
-    if len(settings['modbus_slave_addresses']) != settings['number_of_parallel_batteries']:
-        errors.append("modbus_slave_addresses count must match number_of_parallel_batteries.")
-    
-    if settings.get('relay_mapping'):
-        expected_pairs = []
-        for i in range(1, settings['num_series_banks'] + 1):
-            for j in range(1, settings['num_series_banks'] + 1):
-                if i != j:
-                    expected_pairs.append(f"{i}-{j}")
-        for pair in expected_pairs:
-            if pair not in settings['relay_mapping']:
-                errors.append(f"Relay mapping missing for {pair}.")
-    
-    if errors:
-        msg = "Configuration errors: " + "; ".join(errors)
-        logging.error(msg)
-        raise ValueError(msg)
-    
-    logging.info("Configuration validation passed.")
-
-def detect_hardware(settings):
-    """
-    Detect and log hardware connectivity at startup.
-    """
-    logging.info("Detecting hardware connectivity.")
-    if bus:
-        try:
-            # Test multiplexer
-            choose_channel(0, settings['MultiplexerAddress'])
-            logging.info("I2C multiplexer detected.")
-        except IOError as e:
-            logging.warning(f"I2C multiplexer not accessible: {e}")
-        
-        try:
-            # Test voltage meter
-            bus.read_byte(settings['VoltageMeterAddress'])
-            logging.info("I2C voltage meter detected.")
-        except IOError as e:
-            logging.warning(f"I2C voltage meter not accessible: {e}")
-        
-        try:
-            # Test relay
-            bus.read_byte(settings['RelayAddress'])
-            logging.info("I2C relay detected.")
-        except IOError as e:
-            logging.warning(f"I2C relay not accessible: {e}")
-    else:
-        logging.warning("I2C bus not available - hardware detection skipped.")
-    
-    # Test Modbus slaves
-    for addr in settings['modbus_slave_addresses']:
-        try:
-            test_result = read_ntc_sensors(settings['ip'], settings['modbus_port'], settings['query_delay'], 1, settings['scaling_factor'], 1, 1, slave_addr=addr)
-            if isinstance(test_result, str):
-                logging.warning(f"Modbus slave {addr} not accessible: {test_result}")
-            else:
-                logging.info(f"Modbus slave {addr} detected.")
-        except Exception as e:
-            logging.warning(f"Modbus slave {addr} detection failed: {e}")
-    
-    logging.info("Hardware detection complete.")
-
-adc_settings = {
-    'ConfigRegister': int(config_parser.get('ADC', 'ConfigRegister', fallback='0x01'), 16),
-    'ConversionRegister': int(config_parser.get('ADC', 'ConversionRegister', fallback='0x00'), 16),
-    'ContinuousModeConfig': int(config_parser.get('ADC', 'ContinuousModeConfig', fallback='0x0100'), 16),
-    'SampleRateConfig': int(config_parser.get('ADC', 'SampleRateConfig', fallback='0x0080'), 16),
-    'GainConfig': int(config_parser.get('ADC', 'GainConfig', fallback='0x0400'), 16)
-}
-calibration_settings = {}
-for i in range(1, temp_settings['num_series_banks'] + 1):
-    key = f'Sensor{i}_Calibration'
-    calibration_settings[key] = config_parser.getfloat('Calibration', key, fallback=1.0)
+    adc_settings = {
+        'ConfigRegister': int(config_parser.get('ADC', 'ConfigRegister', fallback='0x01'), 16),
+        'ConversionRegister': int(config_parser.get('ADC', 'ConversionRegister', fallback='0x00'), 16),
+        'ContinuousModeConfig': int(config_parser.get('ADC', 'ContinuousModeConfig', fallback='0x0100'), 16),
+        'SampleRateConfig': int(config_parser.get('ADC', 'SampleRateConfig', fallback='0x0080'), 16),
+        'GainConfig': int(config_parser.get('ADC', 'GainConfig', fallback='0x0400'), 16)
+    }
+    calibration_settings = {}
+    for i in range(1, temp_settings['num_series_banks'] + 1):
+        key = f'Sensor{i}_Calibration'
+        calibration_settings[key] = config_parser.getfloat('Calibration', key, fallback=1.0)
     startup_settings = {
         'test_balance_duration': config_parser.getint('Startup', 'test_balance_duration', fallback=15),
         'min_voltage_delta': config_parser.getfloat('Startup', 'min_voltage_delta', fallback=0.01),
@@ -640,6 +561,7 @@ for i in range(1, temp_settings['num_series_banks'] + 1):
     return {**temp_settings, **voltage_settings, **general_flags, **i2c_settings,
             **gpio_settings, **email_settings, **adc_settings, **calibration_settings,
             **startup_settings, **web_settings, 'relay_mapping': relay_mapping}
+
 def setup_hardware(settings):
     """
     Prepare the hardware connections for monitoring and controlling the batteries.
@@ -670,6 +592,7 @@ def setup_hardware(settings):
         GPIO.setup(settings['FanRelayPin'], GPIO.OUT, initial=GPIO.LOW)    # Cooling fan control
     else:
         logging.warning("GPIO library not available - running in test mode")
+
     def create_rrd():
         ds_list = ['DS:medtemp:GAUGE:120:-20:100']
         for i in range(1, settings['num_series_banks'] + 1):
@@ -706,6 +629,7 @@ def setup_hardware(settings):
         logging.error(f"RRD file operation failed: {e}")
     logging.info("Hardware setup complete, including RRD initialization.")
     detect_hardware(settings)
+
 def signal_handler(sig, frame):
     logging.info("Script stopped by user or signal.")
     global web_server
