@@ -1,3 +1,4 @@
+```python
 # --------------------------------------------------------------------------------
 # Battery Management System (BMS) Script Documentation
 # --------------------------------------------------------------------------------
@@ -1003,7 +1004,7 @@ def check_for_issues(voltages, temps_alerts, settings):
             GPIO.output(settings['AlarmRelayPin'], GPIO.LOW)
         logging.info("No issues; alarm relay deactivated.")
     return alert_needed, alerts
-def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
+def balance_battery_voltages(stdscr, high, low, settings, temps_alerts, is_heating=False):
     """
     Balance the charge between two battery banks by transferring energy from high to low voltage.
 
@@ -1021,6 +1022,7 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
         low (int): Bank number with lower voltage (destination for charge).
         settings: Configuration dictionary with timing and threshold values.
         temps_alerts: List of current temperature alerts (prevents balancing if not empty).
+        is_heating: Flag to indicate if balancing is for heating mode.
 
     Returns:
         None
@@ -1029,8 +1031,9 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
     if temps_alerts:
         logging.warning("Skipping balancing due to temperature anomalies in banks.")
         return
-    logging.info(f"Starting balance from Bank {high} to {low}.")
-    event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: Balancing started from Bank {high} to {low}")
+    mode = "Heating" if is_heating else "Normal"
+    logging.info(f"Starting {mode} balance from Bank {high} to {low}.")
+    event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {mode} balancing started from Bank {high} to {low}")
     if len(event_log) > settings.get('EventLogSize', 20):
         event_log.pop(0)
     balancing_active = True
@@ -1061,7 +1064,7 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
         bar = '=' * filled + ' ' * (bar_length - filled)
         if progress_y < height and right_half_x + 50 < width:
             try:
-                stdscr.addstr(progress_y, right_half_x, f"Balancing Bank {high} ({voltage_high:.2f}V) -> Bank {low} ({voltage_low:.2f}V)... [{animation_frames[frame_index % 4]}]", curses.color_pair(6))
+                stdscr.addstr(progress_y, right_half_x, f"{mode} Balancing Bank {high} ({voltage_high:.2f}V) -> Bank {low} ({voltage_low:.2f}V)... [{animation_frames[frame_index % 4]}]", curses.color_pair(6))
             except curses.error:
                 logging.warning("addstr error for balancing status.")
             try:
@@ -1074,8 +1077,8 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts):
         logging.debug(f"Balancing progress: {progress * 100:.2f}%, High: {voltage_high:.2f}V, Low: {voltage_low:.2f}V")
         frame_index += 1
         time.sleep(0.01)
-    logging.info("Balancing process completed.")
-    event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: Balancing completed from Bank {high} to {low}")
+    logging.info(f"{mode} balancing process completed.")
+    event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {mode} balancing completed from Bank {high} to {low}")
     if len(event_log) > settings.get('EventLogSize', 20):
         event_log.pop(0)
     control_dcdc_converter(False, settings)
@@ -1125,7 +1128,7 @@ def fetch_rrd_history(settings):
             meta_step = 60
         data = []
         current_time = meta_start
-        expected_vs = settings['num_series_banks'] + 1  # volts + medtemp
+        expected_vs = settings['num_series_banks'] + 1  # medtemp + volts
         for row in root.findall('.//row'):
             vs = []
             for v in row.findall('v'):
@@ -1139,9 +1142,9 @@ def fetch_rrd_history(settings):
             if len(vs) != expected_vs:
                 logging.warning(f"Skipping RRD row with incomplete values (got {len(vs)}, expected {expected_vs}).")
                 continue
-            row_data = {'time': current_time, 'medtemp': vs[-1]}
+            row_data = {'time': current_time, 'medtemp': vs[0]}
             for i in range(settings['num_series_banks']):
-                row_data[f'volt{i+1}'] = vs[i]
+                row_data[f'volt{i+1}'] = vs[i+1]
             data.append(row_data)
             current_time += meta_step
         logging.debug(f"Fetched {len(data)} history entries from RRD.")
@@ -1842,7 +1845,7 @@ def start_web_server(settings):
         datasets_js = ""
         for i in range(1, settings['num_series_banks'] + 1):
             color = colors[(i-1) % len(colors)]
-            datasets_js += "{ label: 'Bank " + str(i) + " V', data: hist.map(h => h.volt" + str(i) + "), borderColor: '" + color + "' },\n                        "
+            datasets_js += "{{ label: 'Bank " + str(i) + " V', data: hist.map(h => h.volt" + str(i) + "), borderColor: '" + color + "' }},\n                        "
         # Build the complete datasets array
         datasets_array = f"""
                         {datasets_js}
@@ -1857,32 +1860,32 @@ def start_web_server(settings):
     <title>Battery Management System</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; transition: background-color 0.3s, color 0.3s; }
-        body.light { background-color: #f5f5f5; color: #000; }
-        body.dark { background-color: #1e1e1e; color: #fff; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        .header { padding: 15px; border-radius: 5px; transition: background-color 0.3s, color 0.3s; }
-        .header.light { background-color: #2c3e50; color: white; }
-        .header.dark { background-color: #121212; color: #ddd; }
-        .status-card { border-radius: 5px; padding: 15px; margin: 10px 0; box-shadow: 0 2px 5px rgba(0,0,0,0.1); transition: background-color 0.3s, color 0.3s; }
-        .status-card.light { background-color: white; color: #000; }
-        .status-card.dark { background-color: #333; color: #ddd; box-shadow: 0 2px 5px rgba(255,255,255,0.1); }
-        .battery { display: inline-block; margin: 10px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; transition: background-color 0.3s, border-color 0.3s; }
-        .battery.light { background-color: #f9f9f9; border-color: #ddd; }
-        .battery.dark { background-color: #444; border-color: #555; }
-        .voltage { font-size: 1.2em; font-weight: bold; }
-        .bank-summary { font-size: 0.9em; }
-        .temperatures { font-size: 0.8em; max-height: 200px; overflow-y: auto; }
-        .alert { color: #e74c3c; font-weight: bold; }
-        .normal { color: #27ae60; }
-        .warning { color: #f39c12; }
-        .button { background-color: #3498db; color: white; border: none; padding: 10px 15px; border-radius: 3px; cursor: pointer; transition: background-color 0.3s; }
-        .button:hover { background-color: #2980b9; }
-        .button:disabled { background-color: #95a5a6; cursor: not-allowed; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; }
-        #dark-mode-toggle { background-color: #555; color: white; margin-left: 10px; }
-        #dark-mode-toggle.light { background-color: #555; }
-        #dark-mode-toggle.dark { background-color: #aaa; color: #000; }
+        body {{ font-family: Arial, sans-serif; margin: 20px; transition: background-color 0.3s, color 0.3s; }}
+        body.light {{ background-color: #f5f5f5; color: #000; }}
+        body.dark {{ background-color: #1e1e1e; color: #fff; }}
+        .container {{ max-width: 1200px; margin: 0 auto; }}
+        .header {{ padding: 15px; border-radius: 5px; transition: background-color 0.3s, color 0.3s; }}
+        .header.light {{ background-color: #2c3e50; color: white; }}
+        .header.dark {{ background-color: #121212; color: #ddd; }}
+        .status-card {{ border-radius: 5px; padding: 15px; margin: 10px 0; box-shadow: 0 2px 5px rgba(0,0,0,0.1); transition: background-color 0.3s, color 0.3s; }}
+        .status-card.light {{ background-color: white; color: #000; }}
+        .status-card.dark {{ background-color: #333; color: #ddd; box-shadow: 0 2px 5px rgba(255,255,255,0.1); }}
+        .battery {{ display: inline-block; margin: 10px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; transition: background-color 0.3s, border-color 0.3s; }}
+        .battery.light {{ background-color: #f9f9f9; border-color: #ddd; }}
+        .battery.dark {{ background-color: #444; border-color: #555; }}
+        .voltage {{ font-size: 1.2em; font-weight: bold; }}
+        .bank-summary {{ font-size: 0.9em; }}
+        .temperatures {{ font-size: 0.8em; max-height: 200px; overflow-y: auto; }}
+        .alert {{ color: #e74c3c; font-weight: bold; }}
+        .normal {{ color: #27ae60; }}
+        .warning {{ color: #f39c12; }}
+        .button {{ background-color: #3498db; color: white; border: none; padding: 10px 15px; border-radius: 3px; cursor: pointer; transition: background-color 0.3s; }}
+        .button:hover {{ background-color: #2980b9; }}
+        .button:disabled {{ background-color: #95a5a6; cursor: not-allowed; }}
+        .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; }}
+        #dark-mode-toggle {{ background-color: #555; color: white; margin-left: 10px; }}
+        #dark-mode-toggle.light {{ background-color: #555; }}
+        #dark-mode-toggle.dark {{ background-color: #aaa; color: #000; }}
     </style>
 </head>
 <body class="light">
@@ -1921,33 +1924,33 @@ def start_web_server(settings):
         const header = document.querySelector('.header');
         const statusCards = document.querySelectorAll('.status-card');
         const darkModeToggle = document.getElementById('dark-mode-toggle');
-        darkModeToggle.addEventListener('click', () => {
-            if (body.classList.contains('light')) {
+        darkModeToggle.addEventListener('click', () => {{
+            if (body.classList.contains('light')) {{
                 body.classList.remove('light');
                 body.classList.add('dark');
                 header.classList.remove('light');
                 header.classList.add('dark');
-                statusCards.forEach(card => {
+                statusCards.forEach(card => {{
                     card.classList.remove('light');
                     card.classList.add('dark');
-                });
+                }});
                 darkModeToggle.textContent = 'Light Mode';
-            } else {
+            }} else {{
                 body.classList.remove('dark');
                 body.classList.add('light');
                 header.classList.remove('dark');
                 header.classList.add('light');
-                statusCards.forEach(card => {
+                statusCards.forEach(card => {{
                     card.classList.remove('dark');
                     card.classList.add('light');
-                });
+                }});
                 darkModeToggle.textContent = 'Dark Mode';
-            }
-        });
-        function updateStatus() {
+            }}
+        }});
+        function updateStatus() {{
             fetch('/api/status')
                 .then(response => response.json())
-                .then(data => {
+                .then(data => {{
                     document.getElementById('system-status').textContent = data.system_status;
                     document.getElementById('last-update').textContent = new Date(data.last_update * 1000).toLocaleString();
                     document.getElementById('total-voltage').textContent = data.total_voltage.toFixed(2) + 'V';
@@ -1955,94 +1958,94 @@ def start_web_server(settings):
                     const batteryContainer = document.getElementById('battery-container');
                     batteryContainer.innerHTML = '';
                     const sensorsPerBank = data.temperatures.length / data.voltages.length;
-                    data.voltages.forEach((voltage, index) => {
+                    data.voltages.forEach((voltage, index) => {{
                         const summary = data.bank_summaries[index];
                         const bankDiv = document.createElement('div');
                         bankDiv.className = 'battery';
                         bankDiv.innerHTML = `
-                            <h3>Bank ${{index + 1}}</h3>
-                            <p class="voltage ${{voltage === 0 || voltage === null ? 'alert' : (voltage > 21 || voltage < 18.5) ? 'warning' : 'normal'}}">
-                                ${{voltage !== null ? voltage.toFixed(2) : 'N/A'}}V
+                            <h3>Bank ${{{index + 1}}}</h3>
+                            <p class="voltage ${{{voltage === 0 || voltage === null ? 'alert' : (voltage > 21 || voltage < 18.5) ? 'warning' : 'normal'}}}}">
+                                ${{{voltage !== null ? voltage.toFixed(2) : 'N/A'}}}V
                             </p>
                             <div class="bank-summary">
-                                <p class="temperature ${summary.median > 60 || summary.median < 0 || summary.invalid > 0 ? 'warning' : 'normal'}">
-                                    Median: ${summary.median.toFixed(1)}°C Min: ${summary.min.toFixed(1)}°C Max: ${summary.max.toFixed(1)}°C Invalid: ${summary.invalid}
+                                <p class="temperature ${{{summary.median > 60 || summary.median < 0 || summary.invalid > 0 ? 'warning' : 'normal'}}}}">
+                                    Median: ${{{summary.median.toFixed(1)}}}°C Min: ${{{summary.min.toFixed(1)}}}°C Max: ${{{summary.max.toFixed(1)}}}°C Invalid: ${{{summary.invalid}}}
                                 </p>
                             </div>
                             <div class="temperatures">
-                                ${data.temperatures.slice(index * sensorsPerBank, (index + 1) * sensorsPerBank).map((temp, localIndex) => {
+                                ${{{data.temperatures.slice(index * sensorsPerBank, (index + 1) * sensorsPerBank).map((temp, localIndex) => {{
                                     const globalIndex = index * sensorsPerBank + localIndex;
                                     const batId = Math.floor(globalIndex / 24) + 1;
                                     const localCh = (globalIndex % 24) + 1;
-                                    return `<p class="temperature ${temp === null ? 'alert' : (temp > 60 || temp < 0) ? 'warning' : 'normal'}">
-                                        Bat ${batId} Local C${localCh}: ${temp !== null ? temp.toFixed(1) + '°C' : 'N/A'}
+                                    return `<p class="temperature ${{{temp === null ? 'alert' : (temp > 60 || temp < 0) ? 'warning' : 'normal'}}}}">
+                                        Bat ${{{batId}}} Local C${{{localCh}}}: ${{{temp !== null ? temp.toFixed(1) + '°C' : 'N/A'}}}
                                     </p>`;
-                                }).join('')}
+                                }}).join('')}}}
                             </div>
                         `;
                         batteryContainer.appendChild(bankDiv);
-                    });
+                    }});
                     const alertsContainer = document.getElementById('alerts-container');
-                    if (data.alerts.length > 0) {
-                        alertsContainer.innerHTML = data.alerts.map(alert => `<p class="alert">${alert}</p>`).join('');
-                    } else {
+                    if (data.alerts.length > 0) {{
+                        alertsContainer.innerHTML = data.alerts.map(alert => `<p class="alert">${{{alert}}}</p>`).join('');
+                    }} else {{
                         alertsContainer.innerHTML = '<p class="normal">No alerts</p>';
-                    }
+                    }}
                     const balanceBtn = document.getElementById('balance-btn');
                     balanceBtn.disabled = data.balancing || data.alerts.length > 0;
-                })
-                .catch(error => {
+                }})
+                .catch(error => {{
                     console.error('Error fetching status:', error);
                     document.getElementById('system-status').textContent = 'Error';
-                });
-        }
+                }});
+        }}
         let myChart = null;
-        function updateChart() {
+        function updateChart() {{
             fetch('/api/history')
                 .then(response => response.json())
-                .then(data => {
+                .then(data => {{
                     const hist = data.history;
                     const labels = hist.map(h => new Date(h.time * 1000).toLocaleTimeString());
                     const datasets = [
                         {datasets_array}
                     ];
                     const ctx = document.getElementById('bmsChart').getContext('2d');
-                    if (hist.length === 0) {
+                    if (hist.length === 0) {{
                         ctx.fillStyle = 'red';
                         ctx.fillText('No history data available', 10, 50);
                         return;
-                    }
-                    if (myChart) {
+                    }}
+                    if (myChart) {{
                         myChart.destroy();
-                    }
-                    myChart = new Chart(ctx, {
+                    }}
+                    myChart = new Chart(ctx, {{
                         type: 'line',
-                        data: { labels, datasets },
-                        options: {
-                            scales: {
-                                y: { type: 'linear', position: 'left', title: { display: true, text: 'Voltage (V)' } },
-                                temp: { type: 'linear', position: 'right', title: { display: true, text: 'Temp (°C)' }, grid: { drawOnChartArea: false } }
-                            }
-                        }
-                    });
-                })
+                        data: {{ labels, datasets }},
+                        options: {{
+                            scales: {{
+                                y: {{ type: 'linear', position: 'left', title: {{ display: true, text: 'Voltage (V)' }} }},
+                                temp: {{ type: 'linear', position: 'right', title: {{ display: true, text: 'Temp (°C)' }}, grid: {{ drawOnChartArea: false }} }}
+                            }}
+                        }}
+                    }});
+                }})
                 .catch(error => console.error('Error fetching history:', error));
-        }
-        function initiateBalance() {
-            fetch('/api/balance', { method: 'POST' })
+        }}
+        function initiateBalance() {{
+            fetch('/api/balance', {{ method: 'POST' }})
                 .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
+                .then(data => {{
+                    if (data.success) {{
                         alert('Balancing initiated');
-                    } else {
+                    }} else {{
                         alert('Error: ' + data.message);
-                    }
-                })
-                .catch(error => {
+                    }}
+                }})
+                .catch(error => {{
                     console.error('Error initiating balance:', error);
                     alert('Error initiating balance');
-                });
-        }
+                }});
+        }}
         document.getElementById('refresh-btn').addEventListener('click', updateStatus);
         document.getElementById('balance-btn').addEventListener('click', initiateBalance);
         updateStatus();
@@ -2250,7 +2253,7 @@ def main(stdscr):
 
         # Step 6: Save current data to the time-series database for charts
         timestamp = int(time.time())
-        values = f"{timestamp}:{':'.join(map(str, battery_voltages))}:{overall_median}"
+        values = f"{timestamp}:{overall_median}:{':'.join(map(str, battery_voltages))}"
         subprocess.call(['rrdtool', 'update', RRD_FILE, values])
         logging.debug(f"RRD updated with: {values}")
 
@@ -2261,10 +2264,12 @@ def main(stdscr):
             high_b = battery_voltages.index(max_v) + 1  # Bank number with highest voltage
             low_b = battery_voltages.index(min_v) + 1   # Bank number with lowest voltage
             current_time = time.time()
+            any_low_temp = any(t is not None and t < 10 for t in calibrated_temps)
 
-            # Balance if: already balancing, OR (no alerts AND voltage difference is big enough AND lowest isn't zero AND enough time has passed since last balance)
-            if balancing_active or (alert_needed is False and max_v - min_v > settings['VoltageDifferenceToBalance'] and min_v > 0 and current_time - last_balance_time > settings['BalanceRestPeriodSeconds']):
-                balance_battery_voltages(stdscr, high_b, low_b, settings, temps_alerts)  # Transfer charge
+            # Balance if: already balancing, OR (no alerts AND lowest isn't zero AND enough time has passed since last balance AND (low temp or voltage difference big enough))
+            if balancing_active or (not alert_needed and min_v > 0 and current_time - last_balance_time > settings['BalanceRestPeriodSeconds'] and (any_low_temp or max_v - min_v > settings['VoltageDifferenceToBalance'])):
+                is_heating = any_low_temp
+                balance_battery_voltages(stdscr, high_b, low_b, settings, temps_alerts, is_heating=is_heating)  # Transfer charge
                 balancing_active = False
         web_data['voltages'] = battery_voltages
         web_data['temperatures'] = calibrated_temps
@@ -2309,3 +2314,4 @@ if __name__ == '__main__':
         config_parser.read(os.path.join(data_dir, 'battery_monitor.ini'))
         RRD_FILE = os.path.join(data_dir, 'bms.rrd')
         curses.wrapper(main)
+
