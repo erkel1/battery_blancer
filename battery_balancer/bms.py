@@ -1434,14 +1434,15 @@ def startup_self_test(settings, stdscr, data_dir):
         y += 2
         stdscr.refresh()
         logging.info("Step 1: Validating configuration parameters.")
-       logging.debug(f"Configuration details: "
-        f"I2C_BusNumber={settings['I2C_BusNumber']}, "
-                      f"MultiplexerAddress=0x{settings['MultiplexerAddress']:02x}, "
-                      f"VoltageMeterAddress=0x{settings['VoltageMeterAddress']:02x}, "
-                      f"RelayAddress=0x{settings['RelayAddress']:02x}, "
-                      f"Temp_IP={settings['ip']}, Temp_Port={settings['modbus_port']}, "
-                      f"TotalChannels={settings['total_channels']}, ScalingFactor={settings['scaling_factor']}, "
-                      f"ParallelBatteries={settings['number_of_parallel_batteries']}, SlaveAddresses={settings['modbus_slave_addresses']}")
+        logging.debug(
+            f"Configuration details: I2C_BusNumber={settings['I2C_BusNumber']}, "
+            f"MultiplexerAddress=0x{settings['MultiplexerAddress']:02x}, "
+            f"VoltageMeterAddress=0x{settings['VoltageMeterAddress']:02x}, "
+            f"RelayAddress=0x{settings['RelayAddress']:02x}, "
+            f"Temp_IP={settings['ip']}, Temp_Port={settings['modbus_port']}, "
+            f"TotalChannels={settings['total_channels']}, ScalingFactor={settings['scaling_factor']}, "
+            f"ParallelBatteries={settings['number_of_parallel_batteries']}, SlaveAddresses={settings['modbus_slave_addresses']}"
+        )
         if y < stdscr.getmaxyx()[0]:
             try:
                 stdscr.addstr(y, 0, "Step 1: Validating config...", curses.color_pair(4))
