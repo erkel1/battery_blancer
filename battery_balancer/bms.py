@@ -1815,295 +1815,382 @@ def startup_self_test(settings, stdscr, data_dir):
             time.sleep(2)
             logging.info("Startup self-test passed.")
             return []
-def start_web_server(settings):
-    global web_server
-    if not settings['WebInterfaceEnabled']:
-        logging.info("Web interface disabled via configuration.")
-        return
-    if Flask is None:
-        logging.warning("Flask not available - web interface cannot start.")
-        return
-    app = Flask(__name__)
-    @app.route('/')
-    def index():
-        # Build dynamic datasets for voltage banks
-        colors = ['green', 'blue', 'red', 'orange', 'purple', 'brown', 'pink', 'gray']
-        datasets_list = []
-        for i in range(1, settings['num_series_banks'] + 1):
-            color = colors[(i-1) % len(colors)]
-            datasets_list.append(f"{{ label: 'Bank {i} V', data: hist.map(h => h.volt{i}), borderColor: '{color}' }}")
-        datasets_list.append("{{ label: 'Median Temp °C', data: hist.map(h => h.medtemp), borderColor: 'cyan', yAxisID: 'temp' }}")
-        datasets_array = ',\n'.join(datasets_list)
-        logging.debug(f"Constructed datasets_array: {datasets_array}")
-        html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Battery Management System</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0"></script>
-    <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; transition: background-color 0.3s, color 0.3s; }}
-        body.light {{ background-color: #f5f5f5; color: #000; }}
-        body.dark {{ background-color: #1e1e1e; color: #fff; }}
-        .container {{ max-width: 1200px; margin: 0 auto; }}
-        .header {{ padding: 15px; border-radius: 5px; transition: background-color 0.3s, color 0.3s; }}
-        .header.light {{ background-color: #2c3e50; color: white; }}
-        .header.dark {{ background-color: #121212; color: #ddd; }}
-        .status-card {{ border-radius: 5px; padding: 15px; margin: 10px 0; box-shadow: 0 2px 5px rgba(0,0,0,0.1); transition: background-color 0.3s, color 0.3s; }}
-        .status-card.light {{ background-color: white; color: #000; }}
-        .status-card.dark {{ background-color: #333; color: #ddd; box-shadow: 0 2px 5px rgba(255,255,255,0.1); }}
-        .battery {{ display: inline-block; margin: 10px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; transition: background-color 0.3s, border-color 0.3s; }}
-        .battery.light {{ background-color: #f9f9f9; border-color: #ddd; }}
-        .battery.dark {{ background-color: #444; border-color: #555; }}
-        .voltage {{ font-size: 1.2em; font-weight: bold; }}
-        .bank-summary {{ font-size: 0.9em; }}
-        .temperatures {{ font-size: 0.8em; max-height: 200px; overflow-y: auto; }}
-        .alert {{ color: #e74c3c; font-weight: bold; }}
-        .normal {{ color: #27ae60; }}
-        .warning {{ color: #f39c12; }}
-        .button {{ background-color: #3498db; color: white; border: none; padding: 10px 15px; border-radius: 3px; cursor: pointer; transition: background-color 0.3s; }}
-        .button:hover {{ background-color: #2980b9; }}
-        .button:disabled {{ background-color: #95a5a6; cursor: not-allowed; }}
-        .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; }}
-        #dark-mode-toggle {{ background-color: #555; color: white; margin-left: 10px; }}
-        #dark-mode-toggle.light {{ background-color: #555; }}
-        #dark-mode-toggle.dark {{ background-color: #aaa; color: #000; }}
-    </style>
-</head>
-<body class="light">
-    <div class="container">
-        <div class="header light">
-            <h1>Battery Management System</h1>
-            <p>Status: <span id="system-status">Loading...</span></p>
-            <p>Last Update: <span id="last-update">-</span></p>
-            <button id="dark-mode-toggle" class="button">Dark Mode</button>
-        </div>
-        <div class="status-card light">
-            <h2>System Information</h2>
-            <p>Total Voltage: <span id="total-voltage">-</span></p>
-            <p>Balancing: <span id="balancing-status">No</span></p>
-        </div>
-        <div class="status-card light">
-            <h2>Actions</h2>
-            <button id="refresh-btn" class="button">Refresh</button>
-            <button id="balance-btn" class="button" disabled>Balance Now</button>
-        </div>
-        <div class="status-card light">
-            <h2>Alerts</h2>
-            <div id="alerts-container"></div>
-        </div>
-        <div class="status-card light">
-            <h2>Battery Banks</h2>
-            <div id="battery-container" class="grid"></div>
-        </div>
-        <div class="status-card light">
-            <h2>Time-Series Charts</h2>
-            <canvas id="bmsChart" width="800" height="400"></canvas>
-        </div>
-    </div>
-    <script>
-        const body = document.body;
-        const header = document.querySelector('.header');
-        const statusCards = document.querySelectorAll('.status-card');
-        const darkModeToggle = document.getElementById('dark-mode-toggle');
-        darkModeToggle.addEventListener('click', () => {{
-            if (body.classList.contains('light')) {{
-                body.classList.remove('light');
-                body.classList.add('dark');
-                header.classList.remove('light');
-                header.classList.add('dark');
-                statusCards.forEach(card => {{
-                    card.classList.remove('light');
-                    card.classList.add('dark');
-                }});
-                darkModeToggle.textContent = 'Light Mode';
-            }} else {{
-                body.classList.remove('dark');
-                body.classList.add('light');
-                header.classList.remove('dark');
-                header.classList.add('light');
-                statusCards.forEach(card => {{
-                    card.classList.remove('dark');
-                    card.classList.add('light');
-                }});
-                darkModeToggle.textContent = 'Dark Mode';
-            }}
-        }});
-        function updateStatus() {{
-            fetch('/api/status')
-                .then(response => response.json())
-                .then(data => {{
-                    document.getElementById('system-status').textContent = data.system_status;
-                    document.getElementById('last-update').textContent = new Date(data.last_update * 1000).toLocaleString();
-                    document.getElementById('total-voltage').textContent = data.total_voltage.toFixed(2) + 'V';
-                    document.getElementById('balancing-status').textContent = data.balancing ? 'Yes' : 'No';
-                    const batteryContainer = document.getElementById('battery-container');
-                    batteryContainer.innerHTML = '';
-                    const sensorsPerBank = data.temperatures.length / data.voltages.length;
-                    const sensorsPerBattery = data.sensors_per_battery;
-                    data.voltages.forEach((voltage, index) => {{
-                        const summary = data.bank_summaries[index];
-                        const bankDiv = document.createElement('div');
-                        bankDiv.className = 'battery';
-                        bankDiv.innerHTML = `
-                            <h3>Bank ${{index + 1}}</h3>
-                            <p class="voltage ${{voltage === 0 || voltage === null ? 'alert' : (voltage > data.high_voltage_threshold || voltage < data.low_voltage_threshold) ? 'warning' : 'normal'}}">
-                                ${{voltage !== null ? voltage.toFixed(2) : 'N/A'}}V
-                            </p>
-                            <div class="bank-summary">
-                                <p class="temperature ${{summary.median > data.high_threshold || summary.median < data.low_threshold || summary.invalid > 0 ? 'warning' : 'normal'}}">
-                                    Median: ${{summary.median.toFixed(1)}}°C Min: ${{summary.min.toFixed(1)}}°C Max: ${{summary.max.toFixed(1)}}°C Invalid: ${{summary.invalid}}
-                                </p>
-                            </div>
-                            <div class="temperatures">
-                                ${{data.temperatures.slice(index * sensorsPerBank, (index + 1) * sensorsPerBank).map((temp, localIndex) => {{
-                                    const globalIndex = index * sensorsPerBank + localIndex;
-                                    const batId = Math.floor(globalIndex / sensorsPerBattery) + 1;
-                                    const localCh = (globalIndex % sensorsPerBattery) + 1;
-                                    return `<p class="temperature ${{temp === null ? 'alert' : (temp > data.high_threshold || temp < data.low_threshold) ? 'warning' : 'normal'}}">
-                                        Bat ${{batId}} Local C${{localCh}}: ${{temp !== null ? temp.toFixed(1) + '°C' : 'N/A'}}
-                                    </p>`;
-                                }}).join('')}}
-                            </div>
-                        `;
-                        batteryContainer.appendChild(bankDiv);
-                    }});
-                    const alertsContainer = document.getElementById('alerts-container');
-                    if (data.alerts.length > 0) {{
-                        alertsContainer.innerHTML = data.alerts.map(alert => `<p class="alert">${{alert}}</p>`).join('');
-                    }} else {{
-                        alertsContainer.innerHTML = '<p class="normal">No alerts</p>';
-                    }}
-                    const balanceBtn = document.getElementById('balance-btn');
-                    balanceBtn.disabled = data.balancing || data.alerts.length > 0;
-                }})
-                .catch(error => {{
-                    console.error('Error fetching status:', error);
-                    document.getElementById('system-status').textContent = 'Error fetching status';
-                }});
-        }}
-        let myChart = null;
-        function updateChart() {{
-            fetch('/api/history')
-                .then(response => response.json())
-                .then(data => {{
-                    const hist = data.history;
-                    const labels = hist.map(h => new Date(h.time * 1000).toLocaleTimeString());
-                    const datasets = [
-                        {datasets_array}
-                    ];
-                    const ctx = document.getElementById('bmsChart').getContext('2d');
-                    if (hist.length === 0) {{
-                        ctx.fillStyle = 'red';
-                        ctx.fillText('No history data available', 10, 50);
-                        return;
-                    }}
-                    if (myChart) {{
-                        myChart.destroy();
-                    }}
-                    myChart = new Chart(ctx, {{
-                        type: 'line',
-                        data: {{ labels, datasets }},
-                        options: {{
-                            scales: {{
-                                y: {{ type: 'linear', position: 'left', title: {{ display: true, text: 'Voltage (V)' }} }},
-                                temp: {{ type: 'linear', position: 'right', title: {{ display: true, text: 'Temp (°C)' }}, grid: {{ drawOnChartArea: false }} }}
-                            }}
-                        }}
-                    }});
-                }})
-                .catch(error => console.error('Error fetching history:', error));
-        }}
-        function initiateBalance() {{
-            fetch('/api/balance', {{ method: 'POST' }})
-                .then(response => response.json())
-                .then(data => {{
-                    if (data.success) {{
-                        alert('Balancing initiated');
-                    }} else {{
-                        alert('Error: ' + data.message);
-                    }}
-                }})
-                .catch(error => {{
-                    console.error('Error initiating balance:', error);
-                    alert('Error initiating balance');
-                }});
-        }}
-        document.getElementById('refresh-btn').addEventListener('click', updateStatus);
-        document.getElementById('balance-btn').addEventListener('click', initiateBalance);
-        updateStatus();
-        updateChart();
-        setInterval(updateStatus, 5000);
-        setInterval(updateChart, 60000);
-    </script>
-</body>
-</html>"""
-        return html
-    @app.route('/api/status')
-    def api_status():
-        response = {
-            'voltages': web_data['voltages'],
-            'temperatures': web_data['temperatures'],
-            'bank_summaries': web_data['bank_summaries'],
-            'alerts': web_data['alerts'],
-            'balancing': web_data['balancing'],
-            'last_update': web_data['last_update'],
-            'system_status': web_data['system_status'],
-            'total_voltage': sum(web_data['voltages']),
-            'high_threshold': settings['high_threshold'],
-            'low_threshold': settings['low_threshold'],
-            'high_voltage_threshold': settings['HighVoltageThresholdPerBattery'],
-            'low_voltage_threshold': settings['LowVoltageThresholdPerBattery'],
-            'sensors_per_battery': settings['sensors_per_battery']
-        }
-        return jsonify(response)
-    @app.route('/api/history')
-    def api_history():
-        history = fetch_rrd_history(settings)
-        return jsonify({'history': history})
-    @app.route('/api/balance', methods=['POST'])
-    def api_balance():
-        global balancing_active
-        if balancing_active:
-            return jsonify({'success': False, 'message': 'Balancing already in progress'}), 400
-        if len(web_data['alerts']) > 0:
-            return jsonify({'success': False, 'message': 'Cannot balance with active alerts'}), 400
-        voltages = web_data['voltages']
-        if len(voltages) < 2:
-            return jsonify({'success': False, 'message': 'Not enough battery banks'}), 400
-        max_v = max(voltages)
-        min_v = min(voltages)
-        high_bank = voltages.index(max_v) + 1
-        low_bank = voltages.index(min_v) + 1
-        if max_v - min_v < settings['VoltageDifferenceToBalance']:
-            return jsonify({'success': False, 'message': 'Voltage difference too small for balancing'}), 400
-        balancing_active = True
-        logging.info(f"Balancing initiated via web API from Bank {high_bank} to Bank {low_bank}")
-        return jsonify({'success': True, 'message': f'Balancing initiated from Bank {high_bank} to Bank {low_bank}'})
-    @app.before_request
-    def before_request():
-        if settings['auth_required']:
-            auth = request.authorization
-            if not auth or not (auth.username == settings['username'] and auth.password == settings['password']):
-                return make_response('Unauthorized', 401, {'WWW-Authenticate': 'Basic realm="BMS"'})
-        if settings['cors_enabled']:
-            response = make_response()
-            response.headers['Access-Control-Allow-Origin'] = settings['cors_origins']
-            if request.method == 'OPTIONS':
-                response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-                response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-                return response
-    def run_app():
-        logging.info("Starting Flask app...")
+def startup_self_test(settings, stdscr, data_dir):
+    global startup_failed, startup_alerts, startup_set, startup_median, startup_offsets
+    if not settings['StartupSelfTestEnabled']:
+        logging.info("Startup self-test disabled via configuration.")
+        return []
+    max_retries = 5
+    retries = 0
+    while retries < max_retries:
+        logging.info(f"Starting self-test attempt {retries + 1}")
+        alerts = []
+        stdscr.clear()
+        y = 0
+        if y < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y, 0, "Startup Self-Test in Progress", curses.color_pair(1))
+            except curses.error:
+                logging.warning("addstr error for title.")
+        y += 2
+        stdscr.refresh()
+        logging.info("Step 1: Validating configuration parameters.")
+        logging.debug(f"Configuration details: "
+        f"I2C_BusNumber={settings['I2C_BusNumber']}, "
+                      f"MultiplexerAddress=0x{settings['MultiplexerAddress']:02x}, "
+                      f"VoltageMeterAddress=0x{settings['VoltageMeterAddress']:02x}, "
+                      f"RelayAddress=0x{settings['RelayAddress']:02x}, "
+                      f"Temp_IP={settings['ip']}, Temp_Port={settings['modbus_port']}, "
+                      f"TotalChannels={settings['total_channels']}, ScalingFactor={settings['scaling_factor']}, "
+                      f"ParallelBatteries={settings['number_of_parallel_batteries']}, SlaveAddresses={settings['modbus_slave_addresses']}")
+        if y < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y, 0, "Step 1: Validating config...", curses.color_pair(4))
+            except curses.error:
+                logging.warning("addstr error for step 1.")
+        stdscr.refresh()
+        time.sleep(0.5)
+        logging.debug("Configuration validation passed.")
+        if y + 1 < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y + 1, 0, "Config OK.", curses.color_pair(4))
+            except curses.error:
+                logging.warning("addstr error for config OK.")
+        y += 2
+        stdscr.refresh()
+        logging.info("Step 2: Testing hardware connectivity (I2C and Modbus per slave).")
+        if y < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y, 0, "Step 2: Testing hardware connectivity...", curses.color_pair(4))
+            except curses.error:
+                logging.warning("addstr error for step 2.")
+        stdscr.refresh()
+        time.sleep(0.5)
+        logging.debug(f"Testing I2C connectivity on bus {settings['I2C_BusNumber']}: "
+                      f"Multiplexer=0x{settings['MultiplexerAddress']:02x}, "
+                      f"VoltageMeter=0x{settings['VoltageMeterAddress']:02x}, "
+                      f"Relay=0x{settings['RelayAddress']:02x}")
         try:
-            app.run(host=settings['host'], port=settings['web_port'], threaded=True, debug=False, use_reloader=False)
-        except Exception as e:
-            logging.error(f"Web server error: {e}\n{traceback.format_exc()}")
-    server_thread = threading.Thread(target=run_app)
-    server_thread.daemon = True
-    server_thread.start()
-    logging.info(f"Web server started on {settings['host']}:{settings['web_port']}")
+            if bus:
+                logging.debug(f"Selecting I2C channel 0 on multiplexer 0x{settings['MultiplexerAddress']:02x}")
+                choose_channel(0, settings['MultiplexerAddress'])
+                logging.debug(f"Reading byte from VoltageMeter at 0x{settings['VoltageMeterAddress']:02x}")
+                bus.read_byte(settings['VoltageMeterAddress'])
+                logging.debug("I2C connectivity test passed for all devices.")
+            if y + 1 < stdscr.getmaxyx()[0]:
+                try:
+                    stdscr.addstr(y + 1, 0, "I2C OK.", curses.color_pair(4))
+                except curses.error:
+                    logging.warning("addstr error for I2C OK.")
+        except (IOError, AttributeError) as e:
+            alert = f"I2C connectivity failure: {str(e)}"
+            alerts.append(alert)
+            event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+            if len(event_log) > settings.get('EventLogSize', 20):
+                event_log.pop(0)
+            logging.error(f"I2C connectivity failure: {str(e)}. Bus={settings['I2C_BusNumber']}, "
+                          f"Multiplexer=0x{settings['MultiplexerAddress']:02x}, "
+                          f"VoltageMeter=0x{settings['VoltageMeterAddress']:02x}, "
+                          f"Relay=0x{settings['RelayAddress']:02x}")
+            if y + 1 < stdscr.getmaxyx()[0]:
+                try:
+                    stdscr.addstr(y + 1, 0, f"I2C failure: {str(e)}", curses.color_pair(2))
+                except curses.error:
+                    logging.warning("addstr error for I2C failure.")
+        y_test = y + 2
+        for addr in settings['modbus_slave_addresses']:
+            logging.debug(f"Testing Modbus slave {addr} connectivity to {settings['ip']}:{settings['modbus_port']} with num_channels=1")
+            try:
+                test_query = read_ntc_sensors(settings['ip'], settings['modbus_port'], settings['query_delay'], 1, settings['scaling_factor'], 1, 1, slave_addr=addr)
+                if isinstance(test_query, str) and "Error" in test_query:
+                    raise ValueError(test_query)
+                logging.debug(f"Modbus test successful for slave {addr}: Received {len(test_query)} values: {test_query}")
+                if y_test < stdscr.getmaxyx()[0]:
+                    try:
+                        stdscr.addstr(y_test, 0, f"Modbus Slave {addr} OK.", curses.color_pair(4))
+                    except curses.error:
+                        logging.warning("addstr error for Modbus Slave {addr} OK.")
+            except Exception as e:
+                alert = f"Modbus Slave {addr} test failure: {str(e)}"
+                alerts.append(alert)
+                event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+                if len(event_log) > settings.get('EventLogSize', 20):
+                    event_log.pop(0)
+                logging.error(f"Modbus Slave {addr} test failure: {str(e)}. Connection={settings['ip']}:{settings['modbus_port']}, "
+                              f"num_channels=1, query_delay={settings['query_delay']}, scaling_factor={settings['scaling_factor']}")
+                if y_test < stdscr.getmaxyx()[0]:
+                    try:
+                        stdscr.addstr(y_test, 0, f"Modbus Slave {addr} failure: {str(e)}", curses.color_pair(2))
+                    except curses.error:
+                        logging.warning("addstr error for Modbus Slave {addr} failure.")
+            y_test += 1
+            stdscr.refresh()
+        y = y_test
+        logging.info("Step 3: Performing initial sensor reads (temperature per slave and voltage).")
+        if y < stdscr.getmaxyx()[0]:
+            try:
+                stdscr.addstr(y, 0, "Step 3: Initial sensor reads...", curses.color_pair(4))
+            except curses.error:
+                logging.warning("addstr error for step 3.")
+        stdscr.refresh()
+        time.sleep(0.5)
+        all_initial_temps = []
+        temp_fail = False
+        for addr in settings['modbus_slave_addresses']:
+            initial_temps = read_ntc_sensors(settings['ip'], settings['modbus_port'], settings['query_delay'],
+                                              settings['sensors_per_battery'], settings['scaling_factor'],
+                                              settings['max_retries'], settings['retry_backoff_base'], slave_addr=addr)
+            if isinstance(initial_temps, str):
+                alert = f"Initial temp read failure for slave {addr}: {initial_temps}"
+                alerts.append(alert)
+                event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+                if len(event_log) > settings.get('EventLogSize', 20):
+                    event_log.pop(0)
+                logging.error(f"Initial temperature read failure for slave {addr}: {initial_temps}")
+                all_initial_temps.extend([settings['valid_min']] * settings['sensors_per_battery'])
+                temp_fail = True
+            else:
+                logging.debug(f"Initial temperature read successful for slave {addr}: {len(initial_temps)} values, {initial_temps}")
+                all_initial_temps.extend(initial_temps)
+        if temp_fail:
+            if y + 1 < stdscr.getmaxyx()[0]:
+                try:
+                    stdscr.addstr(y + 1, 0, "Some temp read failures.", curses.color_pair(2))
+                except curses.error:
+                    logging.warning("addstr error for temp failure.")
+        else:
+            if y + 1 < stdscr.getmaxyx()[0]:
+                try:
+                    stdscr.addstr(y + 1, 0, "Temps OK.", curses.color_pair(4))
+                except curses.error:
+                    logging.warning("addstr error for temps OK.")
+        initial_voltages = []
+        for i in range(1, NUM_BANKS + 1):
+            voltage, readings, adc_values = read_voltage_with_retry(i, settings)
+            initial_voltages.append(voltage if voltage is not None else 0.0)
+        if any(v == 0.0 for v in initial_voltages):
+            alert = "Initial voltage read failure: Zero voltage on one or more banks."
+            alerts.append(alert)
+            event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+            if len(event_log) > settings.get('EventLogSize', 20):
+                event_log.pop(0)
+            logging.error(f"Initial voltage read failure: Voltages={initial_voltages}")
+            if y + 2 < stdscr.getmaxyx()[0]:
+                try:
+                    stdscr.addstr(y + 2, 0, "Voltage read failure (zero).", curses.color_pair(2))
+                except curses.error:
+                    logging.warning("addstr error for voltage failure.")
+        else:
+            logging.debug(f"Initial voltage read successful: Voltages={initial_voltages}")
+            if y + 2 < stdscr.getmaxyx()[0]:
+                try:
+                    stdscr.addstr(y + 2, 0, "Voltages OK.", curses.color_pair(4))
+                except curses.error:
+                    logging.warning("addstr error for voltages OK.")
+        if not temp_fail:
+            valid_count = sum(1 for t in all_initial_temps if t > settings['valid_min'])
+            if valid_count == settings['total_channels']:
+                startup_median = statistics.median(all_initial_temps)
+                logging.debug(f"Calculated startup median: {startup_median:.1f}°C")
+                _, startup_offsets = load_offsets(settings['total_channels'], data_dir)
+                if startup_offsets is None:
+                    startup_offsets = [startup_median - t for t in all_initial_temps]
+                    save_offsets(startup_median, startup_offsets, data_dir)
+                    logging.info(f"Calculated and saved new offsets: {startup_offsets}")
+                else:
+                    logging.info(f"Using existing offsets: {startup_offsets}")
+                startup_set = True
+            else:
+                logging.warning(f"Calibration skipped: Only {valid_count}/{settings['total_channels']} valid.")
+                startup_median = None
+                startup_offsets = None
+                startup_set = False
+        y += 3
+        stdscr.refresh()
+        if not alerts and all(v > 0 for v in initial_voltages):
+            logging.info("Step 4: Verifying balancer functionality.")
+            if y < stdscr.getmaxyx()[0]:
+                try:
+                    stdscr.addstr(y, 0, "Step 4: Balancer verification...", curses.color_pair(4))
+                except curses.error:
+                    logging.warning("addstr error for step 4.")
+            y += 1
+            stdscr.refresh()
+            time.sleep(0.5)
+            initial_bank_voltages = []
+            for bank in range(1, NUM_BANKS + 1):
+                voltage, _, _ = read_voltage_with_retry(bank, settings)
+                initial_bank_voltages.append(voltage if voltage is not None else 0.0)
+            if y + 1 < stdscr.getmaxyx()[0]:
+                try:
+                    voltage_str = ", ".join([f"Bank {i+1}={v:.2f}V" if v is not None else f"Bank {i+1}=N/A" for i, v in enumerate(initial_bank_voltages)])
+                    stdscr.addstr(y + 1, 0, f"Initial Bank Voltages: {voltage_str}", curses.color_pair(4))
+                except curses.error:
+                    logging.warning("addstr error for initial bank voltages.")
+            voltage_debug = ", ".join([f"Bank {i+1}={v:.2f}V" if v is not None else f"Bank {i+1}=N/A" for i, v in enumerate(initial_bank_voltages)])
+            logging.debug(f"Initial Bank Voltages: {voltage_debug}")
+            y += 2
+            stdscr.refresh()
+            bank_voltages_dict = {b: initial_bank_voltages[b-1] for b in range(1, NUM_BANKS + 1)}
+            sorted_banks = sorted(bank_voltages_dict, key=bank_voltages_dict.get, reverse=True)
+            pairs = []
+            for source in sorted_banks:
+                for dest in [b for b in range(1, NUM_BANKS + 1) if b != source]:
+                    pairs.append((source, dest))
+            test_duration = settings['test_balance_duration']
+            read_interval = settings['test_read_interval']
+            min_delta = settings['min_voltage_delta']
+            logging.debug(f"Balancer test parameters: test_duration={test_duration}s, "
+                          f"read_interval={read_interval}s, min_voltage_delta={min_delta}V")
+            for source, dest in pairs:
+                logging.debug(f"Testing balance from Bank {source} to Bank {dest}")
+                if y < stdscr.getmaxyx()[0]:
+                    try:
+                        stdscr.addstr(y, 0, f"Testing balance from Bank {source} to Bank {dest} for {test_duration}s.", curses.color_pair(6))
+                    except curses.error:
+                        logging.warning("addstr error for testing balance.")
+                stdscr.refresh()
+                logging.info(f"Testing balance from Bank {source} to Bank {dest} for {test_duration}s.")
+                temp_anomaly = False
+                if all_initial_temps:
+                    for t in all_initial_temps:
+                        if t > settings['high_threshold'] or t < settings['low_threshold']:
+                            temp_anomaly = True
+                            break
+                if temp_anomaly:
+                    alert = f"Skipping balance test from Bank {source} to Bank {dest}: Temp anomalies."
+                    alerts.append(alert)
+                    event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+                    if len(event_log) > settings.get('EventLogSize', 20):
+                        event_log.pop(0)
+                    logging.warning(f"Skipping balance test from Bank {source} to Bank {dest}: Temperature anomalies detected.")
+                    if y + 1 < stdscr.getmaxyx()[0]:
+                        try:
+                            stdscr.addstr(y + 1, 0, "Skipped: Temp anomalies.", curses.color_pair(2))
+                        except curses.error:
+                            logging.warning("addstr error for skipped temp.")
+                    y += 2
+                    stdscr.refresh()
+                    continue
+                initial_source_v = read_voltage_with_retry(source, settings)[0] or 0.0
+                initial_dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0
+                time.sleep(0.5)
+                logging.debug(f"Balance test from Bank {source} to Bank {dest}: Initial - Bank {source}={initial_source_v:.2f}V, Bank {dest}={initial_dest_v:.2f}V")
+                set_relay_connection(source, dest, settings)
+                control_dcdc_converter(True, settings)
+                start_time = time.time()
+                source_trend = [initial_source_v]
+                dest_trend = [initial_dest_v]
+                progress_y = y + 1
+                while time.time() - start_time < test_duration:
+                    time.sleep(read_interval)
+                    source_v = read_voltage_with_retry(source, settings)[0] or 0.0
+                    dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0
+                    source_trend.append(source_v)
+                    dest_trend.append(dest_v)
+                    logging.debug(f"Balance test from Bank {source} to Bank {dest}: Bank {source}={source_v:.2f}V, Bank {dest}={dest_v:.2f}V")
+                    elapsed = time.time() - start_time
+                    if progress_y < stdscr.getmaxyx()[0]:
+                        try:
+                            stdscr.addstr(progress_y, 0, " " * 80, curses.color_pair(6))
+                            stdscr.addstr(progress_y, 0, f"Progress: {elapsed:.1f}s, Bank {source} {source_v:.2f}V, Bank {dest} {dest_v:.2f}V", curses.color_pair(6))
+                        except curses.error:
+                            logging.warning("addstr error in startup balance progress.")
+                    stdscr.refresh()
+                final_source_v = read_voltage_with_retry(source, settings)[0] or 0.0
+                final_dest_v = read_voltage_with_retry(dest, settings)[0] or 0.0
+                time.sleep(0.5)
+                logging.debug(f"Balance test from Bank {source} to Bank {dest}: Final - Bank {source}={final_source_v:.2f}V, Bank {dest}={final_dest_v:.2f}V")
+                control_dcdc_converter(False, settings)
+                set_relay_connection(0, 0, settings)
+                if progress_y + 1 < stdscr.getmaxyx()[0]:
+                    try:
+                        stdscr.addstr(progress_y + 1, 0, "Analyzing...", curses.color_pair(6))
+                    except curses.error:
+                        logging.warning("addstr error for analyzing.")
+                stdscr.refresh()
+                if len(source_trend) >= 3:
+                    source_change = final_source_v - initial_source_v
+                    dest_change = final_dest_v - initial_dest_v
+                    logging.debug(f"Balance test from Bank {source} to Bank {dest} analysis: Bank {source} Initial={initial_source_v:.2f}V, Final={final_source_v:.2f}V, Change={source_change:+.3f}V, Bank {dest} Initial={initial_dest_v:.2f}V, Final={final_dest_v:.2f}V, Change={dest_change:+.3f}V, Min change={min_delta}V")
+                    if source_change >= 0 or dest_change <= 0 or abs(source_change) < min_delta or dest_change < min_delta:
+                        alert = f"Balance test from Bank {source} to Bank {dest} failed: Unexpected trend or insufficient change (Bank {source} Initial={initial_source_v:.2f}V, Final={final_source_v:.2f}V, Change={source_change:+.3f}V, Bank {dest} Initial={initial_dest_v:.2f}V, Final={final_dest_v:.2f}V, Change={dest_change:+.3f}V)."
+                        alerts.append(alert)
+                        event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+                        if len(event_log) > settings.get('EventLogSize', 20):
+                            event_log.pop(0)
+                        logging.error(f"Balance test from Bank {source} to Bank {dest} failed: Source did not decrease or destination did not increase sufficiently.")
+                        if progress_y + 1 < stdscr.getmaxyx()[0]:
+                            try:
+                                stdscr.addstr(progress_y + 1, 0, f"Test failed: Unexpected trend or insufficient change (Bank {source} Initial={initial_source_v:.2f}V, Final={final_source_v:.2f}V, Change={source_change:+.3f}V, Bank {dest} Initial={initial_dest_v:.2f}V, Final={final_dest_v:.2f}V, Change={dest_change:+.3f}V).", curses.color_pair(2))
+                            except curses.error:
+                                logging.warning("addstr error for test failed insufficient change.")
+                    else:
+                        logging.debug(f"Balance test from Bank {source} to Bank {dest} passed: Correct trend and sufficient voltage change.")
+                        if progress_y + 1 < stdscr.getmaxyx()[0]:
+                            try:
+                                stdscr.addstr(progress_y + 1, 0, f"Test passed (Bank {source} Initial={initial_source_v:.2f}V, Final={final_source_v:.2f}V, Change={source_change:+.3f}V, Bank {dest} Initial={initial_dest_v:.2f}V, Final={final_dest_v:.2f}V, Change={dest_change:+.3f}V).", curses.color_pair(4))
+                            except curses.error:
+                                logging.warning("addstr error for test passed.")
+                else:
+                    alert = f"Balance test from Bank {source} to Bank {dest} failed: Insufficient readings."
+                    alerts.append(alert)
+                    event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+                    if len(event_log) > settings.get('EventLogSize', 20):
+                        event_log.pop(0)
+                    logging.error(f"Balance test from Bank {source} to Bank {dest} failed: Only {len(source_trend)} readings collected.")
+                    if progress_y + 1 < stdscr.getmaxyx()[0]:
+                        try:
+                            stdscr.addstr(progress_y + 1, 0, "Test failed: Insufficient readings.", curses.color_pair(2))
+                        except curses.error:
+                            logging.warning("addstr error for test failed insufficient readings.")
+                stdscr.refresh()
+                y = progress_y + 2
+                time.sleep(2)
+        startup_alerts = alerts
+        if alerts:
+            startup_failed = True
+            logging.error("Startup self-test failures: " + "; ".join(alerts))
+            send_alert_email("Startup self-test failures:\n" + "\n".join(alerts), settings)
+            if GPIO:
+                GPIO.output(settings['AlarmRelayPin'], GPIO.HIGH)
+            stdscr.clear()
+            if stdscr.getmaxyx()[0] > 0:
+                try:
+                    stdscr.addstr(0, 0, "Startup failures: " + "; ".join(alerts), curses.color_pair(2))
+                except curses.error:
+                    logging.warning("addstr error for self-test failures.")
+            if stdscr.getmaxyx()[0] > 2:
+                try:
+                    stdscr.addstr(2, 0, f"Alarm activated. Retry {retries + 1}/{max_retries}...", curses.color_pair(2))
+                except curses.error:
+                    logging.warning("addstr error for retry message.")
+            stdscr.refresh()
+            # Update web_data for failed state
+            web_data['system_status'] = f'Startup Self-Test Failed - Retry {retries + 1}/{max_retries}'
+            web_data['alerts'] = startup_alerts
+            web_data['last_update'] = time.time()
+            retries += 1
+            if retries >= max_retries:
+                logging.error("Max retries reached for startup self-test. Proceeding to main loop with warnings.")
+                break
+            time.sleep(120)  # Wait 2 minutes before retry
+            continue
+        else:
+            startup_failed = False
+            startup_alerts = []
+            if GPIO:
+                GPIO.output(settings['AlarmRelayPin'], GPIO.LOW)
+            stdscr.clear()
+            if stdscr.getmaxyx()[0] > 0:
+                try:
+                    stdscr.addstr(0, 0, "Self-Test Passed. Proceeding to main loop.", curses.color_pair(4))
+                except curses.error:
+                    logging.warning("addstr error for self-test OK.")
+            stdscr.refresh()
+            time.sleep(2)
+            logging.info("Startup self-test passed.")
+            return []
 def main(stdscr):
     check_dependencies()
     stdscr.keypad(True)
