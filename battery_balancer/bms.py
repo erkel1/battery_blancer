@@ -3,7 +3,7 @@
 # --------------------------------------------------------------------------------
 #
 # **Script Name:** bms.py
-# **Version:** 1.8 (As of September 06, 2025) - Updated to handle startup failures more gracefully: proceed after max retries with startup_failed reset to False for balancing. Extended balancing verification logic to regular operations for robustness. Restored and enhanced documentation, comments, and logic flow diagram. Improved fail-safes for relay switching detection via voltage change monitoring.
+# **Version:** 1.9 (As of September 07, 2025) - Fixed UnboundLocalError in balance_battery_voltages by initializing voltage_high and voltage_low before the loop using initial values. Enhanced robustness by handling potential None from reads.
 # **Author:** [Your Name or Original Developer] - Built for Raspberry Pi-based battery monitoring and balancing.
 # **Purpose:** This script acts as a complete Battery Management System (BMS) for a configurable NsXp battery configuration (N series banks, X parallel cells per bank, where X = sensors_per_bank * number_of_parallel_batteries). It monitors temperatures from multiple Modbus slaves and voltages, balances charge between banks, detects issues, logs events, sends alerts, and provides user interfaces via terminal (TUI) and web dashboard. Includes time-series logging using RRDTool, ASCII line charts in TUI, and interactive charts in web via Chart.js.
 #
@@ -1055,13 +1055,15 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts, is_heati
     set_relay_connection(high, low, settings)
     control_dcdc_converter(True, settings)
     balance_start_time = time.time()
+    voltage_high = initial_high_v if initial_high_v is not None else 0.0
+    voltage_low = initial_low_v if initial_low_v is not None else 0.0
     animation_frames = ['|', '/', '-', '\\']
     frame_index = 0
     height, width = stdscr.getmaxyx()
     right_half_x = width // 2
     progress_y = 1
-    high_trend = [initial_high_v]
-    low_trend = [initial_low_v]
+    high_trend = [voltage_high]
+    low_trend = [voltage_low]
     read_interval = settings['test_read_interval']  # Reuse from startup
     last_read = time.time()
     while time.time() - balance_start_time < settings['BalanceDurationSeconds']:
@@ -1069,8 +1071,10 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts, is_heati
         elapsed = time.time() - balance_start_time
         progress = min(1.0, elapsed / settings['BalanceDurationSeconds'])
         if time.time() - last_read >= read_interval:
-            voltage_high, _, _ = read_voltage_with_retry(high, settings)
-            voltage_low, _, _ = read_voltage_with_retry(low, settings)
+            new_high, _, _ = read_voltage_with_retry(high, settings)
+            new_low, _, _ = read_voltage_with_retry(low, settings)
+            voltage_high = new_high if new_high is not None else voltage_high
+            voltage_low = new_low if new_low is not None else voltage_low
             high_trend.append(voltage_high)
             low_trend.append(voltage_low)
             last_read = time.time()
@@ -1094,6 +1098,8 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts, is_heati
         time.sleep(0.01)
     final_high_v, _, _ = read_voltage_with_retry(high, settings)
     final_low_v, _, _ = read_voltage_with_retry(low, settings)
+    final_high_v = final_high_v if final_high_v is not None else voltage_high
+    final_low_v = final_low_v if final_low_v is not None else voltage_low
     high_trend.append(final_high_v)
     low_trend.append(final_low_v)
     control_dcdc_converter(False, settings)
@@ -1428,7 +1434,7 @@ def startup_self_test(settings, stdscr, data_dir):
         y += 2
         stdscr.refresh()
         logging.info("Step 1: Validating configuration parameters.")
-        logging.debug(f"Configuration details: "
+       logging.debug(f"Configuration details: "
         f"I2C_BusNumber={settings['I2C_BusNumber']}, "
                       f"MultiplexerAddress=0x{settings['MultiplexerAddress']:02x}, "
                       f"VoltageMeterAddress=0x{settings['VoltageMeterAddress']:02x}, "
