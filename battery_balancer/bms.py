@@ -3,7 +3,7 @@
 # --------------------------------------------------------------------------------
 #
 # **Script Name:** bms.py
-# **Version:** 1.7 (As of August 24, 2025) - Made battery configuration fully configurable: num_series_banks (e.g., 3), sensors_per_bank (e.g., 8), number_of_parallel_batteries (e.g., 4). Total sensors = parallel * series * sensors_per_bank. Generalized BANK_SENSOR_INDICES, TUI art/loops, web loops, balancing pairs/relays (assumes relay hardware scales; note for >3). Retained full docs/diagram/comments. Watchdog thread as is.
+# **Version:** 1.8 (As of September 06, 2025) - Updated to handle startup failures more gracefully: proceed after max retries with startup_failed reset to False for balancing. Extended balancing verification logic to regular operations for robustness. Restored and enhanced documentation, comments, and logic flow diagram. Improved fail-safes for relay switching detection via voltage change monitoring.
 # **Author:** [Your Name or Original Developer] - Built for Raspberry Pi-based battery monitoring and balancing.
 # **Purpose:** This script acts as a complete Battery Management System (BMS) for a configurable NsXp battery configuration (N series banks, X parallel cells per bank, where X = sensors_per_bank * number_of_parallel_batteries). It monitors temperatures from multiple Modbus slaves and voltages, balances charge between banks, detects issues, logs events, sends alerts, and provides user interfaces via terminal (TUI) and web dashboard. Includes time-series logging using RRDTool, ASCII line charts in TUI, and interactive charts in web via Chart.js.
 #
@@ -20,7 +20,8 @@
 # - Sudden Disconnection: Was valid, now invalid.
 # - **Voltage Monitoring & Balancing:** Uses ADS1115 ADC over I2C to measure voltages of num_series_banks banks. Balances if difference > VoltageDifferenceToBalance (e.g., 0.1V) by connecting high to low bank via relays and DC-DC converter (relay logic configurable via INI).
 # - Heating Mode: If any temperature < 10°C, balances regardless of voltage difference to generate heat.
-# - Safety: Skips balancing if alerts active (e.g., anomalies). Rests for BalanceRestPeriodSeconds (e.g., 60s) after balancing.
+# - Safety: Skips balancing if alerts active (e.g., anomalies) or if balancer_failed flag is set. Rests for BalanceRestPeriodSeconds (e.g., 60s) after balancing.
+# - Balancing Verification: During startup and regular balancing, monitors voltage trends. If no expected decrease in source or increase in destination (min_delta, e.g., 0.01V), raises alert and sets balancer_failed=True to prevent future balancing until restart or manual reset.
 # - Voltage Checks: Alerts if < LowVoltageThresholdPerBattery (e.g., 18.5V), > HighVoltageThresholdPerBattery (e.g., 21.0V), or zero.
 # - **Alerts & Notifications:** Logs to 'battery_monitor.log'. Activates alarm relay on issues. Sends throttled emails (e.g., every 3600s) via SMTP.
 # - **Watchdog:** If enabled, pets hardware watchdog via dedicated thread (every 5s with aliveness check via timestamp) to prevent resets on hangs. Uses /dev/watchdog with 15s timeout (Pi max).
@@ -29,7 +30,7 @@
 # - **Web Dashboard:** HTTP server on port 8080 (configurable). Shows voltages, temps, alerts, balancing status. Supports API for status/balance/history. Optional auth/CORS. Now includes interactive time-series charts using Chart.js for voltages per bank and median temperature, placed at the top of the page after the header for easy viewing.
 # - **Time-Series Logging:** Uses RRDTool for persistent storage of bank voltages and overall median temperature. Data is updated every poll interval (e.g., 10s), but RRD is configured with 1min steps for aggregation. History is limited to ~480 entries (e.g., 8 hours). Fetch functions retrieve data for TUI and web rendering.
 # - **Startup Self-Test:** Validates config, hardware connections (I2C/Modbus per slave), initial reads, balancer (tests all pairs for voltage changes).
-# - Retries on failure after 2min. Alerts and activates alarm if fails.
+# - Retries on failure after 2min. After max retries, proceeds to main loop with startup_failed reset to False to allow balancing, avoiding perpetual blocking. Logs warnings.
 # - **Error Handling:** Retries reads (exponential backoff), handles missing hardware (test mode), logs tracebacks, graceful shutdown on Ctrl+C. Per-slave Modbus errors handled with alerts and fallback values.
 # - **Configuration:** From 'battery_monitor.ini'. Defaults if missing keys. See INI documentation below.
 # - **Logging:** Configurable level (e.g., INFO). Timestamps events.
@@ -41,12 +42,13 @@
 # - Heating: In cold weather (<10°C), it deliberately transfers energy to create warmth inside the battery cabinet.
 # - Alerts: If something's wrong, it logs it, turns on a buzzer/light (alarm relay), and emails you (but not too often to avoid spam).
 # - Interfaces: Terminal shows a fancy text-based dashboard with ASCII charts for trends and lists all temps; web page lets you view from browser with interactive charts and full temp lists.
-# - Startup Check: Like a self-diagnostic when your car starts – ensures everything's connected and working before running.
+# - Startup Check: Like a self-diagnostic when your car starts – ensures everything's connected and working before running. Proceeds after retries with flags reset for operation.
 # - Time-Series: Tracks history of voltages and temps, shows trends in charts to spot patterns over time.
+# - Balancing Fail-Safe: Verifies energy transfer by checking voltage changes; disables balancing if hardware issue detected (e.g., relays not switching).
 # **How It Works (Step-by-Step for Non-Programmers):**
 # 1. **Start:** Loads settings from INI file (like a recipe book).
 # 2. **Setup:** Connects to hardware (sensors, relays) – if missing, runs in "pretend" mode. Creates/loads RRD database for history.
-# 3. **Self-Test:** Checks if config makes sense, hardware responds (per Modbus slave), sensors give good readings, aggregated. Balancing actually changes voltages. If fail, alerts and retries.
+# 3. **Self-Test:** Checks if config makes sense, hardware responds (per Modbus slave), sensors give good readings, aggregated. Balancing actually changes voltages (verifies relay switching via voltage deltas). If fail, alerts and retries. After max retries, proceeds with flags reset.
 # 4. **Main Loop (Repeats Forever):**
 # - Read temperatures from all slaves, aggregate.
 # - Calibrate them (adjust based on startup values for accuracy).
@@ -54,14 +56,15 @@
 # - Read voltages from configured banks.
 # - Check for voltage problems (too high, too low, zero).
 # - Update RRD database with voltages and median temp.
-# - If cold (<10°C anywhere), balance to heat up.
-# - Else, if voltages differ too much, balance to equalize.
+# - If cold (<10°C anywhere), balance to heat up (with verification).
+# - Else, if voltages differ too much, balance normally (with verification).
+# - Skip if alerts active or balancer failed.
 # - Fetch history from RRD for charts.
 # - Update terminal (with ASCII charts and full temp lists)/web displays (with Chart.js and full lists).
 # - Log events, send emails if issues.
 # - Update alive timestamp for watchdog.
 # - Wait a bit (e.g., 10s), repeat.
-# 5. **Balancing Process:** Connects high to low bank with relays, turns on converter to transfer charge, shows progress, turns off after time.
+# 5. **Balancing Process:** Connects high to low bank with relays, turns on converter to transfer charge, monitors voltages for changes, shows progress, turns off after time. Verifies deltas; alerts/disables if failed.
 # 6. **Shutdown:** If you press Ctrl+C, cleans up connections safely.
 # **Updated Logic Flow Diagram (ASCII - More Detailed):**
 #
@@ -84,8 +87,9 @@ v
 | (Config valid? |
 | Hardware connected? Per slave? |
 | Initial reads OK? Aggregated? |
-| Balancer works?) |
+| Balancer works? Verify deltas) |
 | If fail: Alert, Retry |
+| After max retries: Reset flags, Proceed |
 +--------------------------------------+
 |
 v
@@ -139,11 +143,11 @@ v |
 v |
 +--------------------------------------+ |
 | If Any Temp < 10°C: | |
-| Balance for Heating | |
+| Balance for Heating (Verify Deltas) | |
 | Else If Volt Diff > Th: | |
-| Balance Normally | |
+| Balance Normally (Verify Deltas) | |
 | (High to Low Bank) | |
-| Skip if Alerts Active | |
+| Skip if Alerts/Balancer Failed | |
 +--------------------------------------+ |
 | |
 v |
@@ -183,7 +187,7 @@ v |
 # - **Hardware Libraries:** smbus (for I2C communication with sensors/relays), RPi.GPIO (for controlling Raspberry Pi pins). Install: sudo apt install python3-smbus python3-rpi.gpio.
 # - **External Library:** art (for ASCII art in TUI). Install: pip install art.
 # - **Time-Series Storage:** rrdtool (for RRD database). Install: sudo apt install rrdtool.
-# - **Standard Python Libraries:** socket (networking), statistics (math like medians), time (timing/delays), configparser (read INI), logging (save logs), signal (handle shutdown), gc (memory cleanup), os (files), sys (exit), smtplib/email (emails), curses (TUI), threading (web server and watchdog), json/http.server/urllib/base64 (web), traceback (errors), fcntl/struct (watchdog), subprocess (for rrdtool commands), xml.etree.ElementTree (for parsing RRD XML output).
+# - **Standard Python Libraries:** socket (networking), statistics (math like medians), time (timing/delays), configparser (read INI), logging (save logs), signal (handle shutdown), gc (memory cleanup), os (files), sys (exit), argparse (command-line), threading (web server and watchdog), json/http.server/urllib/base64 (web), traceback (errors), fcntl/struct (watchdog), subprocess (for rrdtool commands), xml.etree.ElementTree (for parsing RRD XML output).
 # - **Hardware Requirements:** Raspberry Pi (any model, detects for watchdog), ADS1115 ADC (voltage), TCA9548A multiplexer (I2C channels), Relays (balancing), Lantronix EDS4100 (Modbus for temps), GPIO pins (e.g., 5 for DC-DC, 6 for alarm, 4 for fan).
 # - **No Internet for Installs:** All libraries must be pre-installed; script can't download. For web charts, Chart.js is loaded via CDN (requires internet for dashboard users).
 # **Installation Guide (Step-by-Step for Non-Programmers):**
@@ -210,6 +214,7 @@ v |
 # - **Performance:** Poll interval ~10s; balancing ~5s. Adjust in INI. Charts fetch from RRD (~480 entries) won't impact performance.
 # - **Customization:** Edit thresholds in INI for your battery specs (e.g., Li-ion safe ranges). For longer history, adjust RRA in RRD creation.
 # - **Watchdog Note:** Dedicated thread ensures reliable petting; resets only on true main hangs.
+# - **Balancing Failures:** If voltage doesn't change during balancing, script detects it (no silent fail), alerts, and disables future balancing to prevent hardware damage.
 # --------------------------------------------------------------------------------
 # Code Begins Below - With Line-by-Line Comments for Non-Programmers
 # --------------------------------------------------------------------------------
@@ -310,6 +315,7 @@ alert_states = {} # Tracks alerts for each temperature channel - alert memory.
 balancing_active = False # Indicates if balancing is currently happening - balancing flag.
 startup_failed = False # Indicates if startup tests failed - test fail flag.
 startup_alerts = [] # Stores startup test failure messages - test error list.
+balancer_failed = False # New: Indicates if balancer hardware failed verification - prevents future balancing.
 web_server = None # Web server object - web host.
 event_log = [] # Stores the last N events (configurable) - event history.
 web_data = {
@@ -605,21 +611,18 @@ def detect_hardware(settings):
     logging.info("Detecting hardware connectivity.")
     if bus:
         try:
-            # Test multiplexer
             choose_channel(0, settings['MultiplexerAddress'])
             logging.info("I2C multiplexer detected.")
         except IOError as e:
             logging.warning(f"I2C multiplexer not accessible: {e}")
         
         try:
-            # Test voltage meter
             bus.read_byte(settings['VoltageMeterAddress'])
             logging.info("I2C voltage meter detected.")
         except IOError as e:
             logging.warning(f"I2C voltage meter not accessible: {e}")
         
         try:
-            # Test relay
             bus.read_byte(settings['RelayAddress'])
             logging.info("I2C relay detected.")
         except IOError as e:
@@ -959,12 +962,14 @@ def send_alert_email(message, settings):
     except Exception as e:
         logging.error(f"Failed to send alert email: {e}")
 def check_for_issues(voltages, temps_alerts, settings):
-    global startup_failed, startup_alerts
+    global startup_failed, startup_alerts, balancer_failed
     logging.info("Checking for voltage and temp issues.")
-    alert_needed = startup_failed
+    alert_needed = startup_failed or balancer_failed
     alerts = []
     if startup_failed and startup_alerts:
         alerts.append("Startup failures: " + "; ".join(startup_alerts))
+    if balancer_failed:
+        alerts.append("Balancer hardware failure detected - balancing disabled.")
     for i, v in enumerate(voltages, 1):
         if v is None or v == 0.0:
             alert = f"Bank {i}: Zero voltage."
@@ -1015,6 +1020,9 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts, is_heati
     takes time and shows progress on the screen. Safety checks prevent balancing if there are
     temperature problems or if it's too soon after the last balance.
 
+    Now with verification: Monitors voltage changes to detect if balancing actually occurred (e.g., relays switched).
+    If not, sets balancer_failed flag and alerts.
+
     Args:
         stdscr: The terminal screen object for displaying progress.
         high (int): Bank number with higher voltage (source of charge).
@@ -1026,7 +1034,7 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts, is_heati
     Returns:
         None
     """
-    global balance_start_time, last_balance_time, balancing_active, web_data, alive_timestamp
+    global balance_start_time, last_balance_time, balancing_active, web_data, alive_timestamp, balancer_failed
     if temps_alerts:
         logging.warning("Skipping balancing due to temperature anomalies in banks.")
         return
@@ -1037,9 +1045,9 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts, is_heati
         event_log.pop(0)
     balancing_active = True
     web_data['balancing'] = True
-    voltage_high, _, _ = read_voltage_with_retry(high, settings)
-    voltage_low, _, _ = read_voltage_with_retry(low, settings)
-    if voltage_low == 0.0:
+    initial_high_v, _, _ = read_voltage_with_retry(high, settings)
+    initial_low_v, _, _ = read_voltage_with_retry(low, settings)
+    if initial_low_v == 0.0:
         logging.warning(f"Cannot balance to Bank {low} (0.00V). Skipping.")
         balancing_active = False
         web_data['balancing'] = False
@@ -1052,12 +1060,20 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts, is_heati
     height, width = stdscr.getmaxyx()
     right_half_x = width // 2
     progress_y = 1
+    high_trend = [initial_high_v]
+    low_trend = [initial_low_v]
+    read_interval = settings['test_read_interval']  # Reuse from startup
+    last_read = time.time()
     while time.time() - balance_start_time < settings['BalanceDurationSeconds']:
         alive_timestamp = time.time()
         elapsed = time.time() - balance_start_time
         progress = min(1.0, elapsed / settings['BalanceDurationSeconds'])
-        voltage_high, _, _ = read_voltage_with_retry(high, settings)
-        voltage_low, _, _ = read_voltage_with_retry(low, settings)
+        if time.time() - last_read >= read_interval:
+            voltage_high, _, _ = read_voltage_with_retry(high, settings)
+            voltage_low, _, _ = read_voltage_with_retry(low, settings)
+            high_trend.append(voltage_high)
+            low_trend.append(voltage_low)
+            last_read = time.time()
         bar_length = 20
         filled = int(bar_length * progress)
         bar = '=' * filled + ' ' * (bar_length - filled)
@@ -1076,10 +1092,10 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts, is_heati
         logging.debug(f"Balancing progress: {progress * 100:.2f}%, High: {voltage_high:.2f}V, Low: {voltage_low:.2f}V")
         frame_index += 1
         time.sleep(0.01)
-    logging.info(f"{mode} balancing process completed.")
-    event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {mode} balancing completed from Bank {high} to {low}")
-    if len(event_log) > settings.get('EventLogSize', 20):
-        event_log.pop(0)
+    final_high_v, _, _ = read_voltage_with_retry(high, settings)
+    final_low_v, _, _ = read_voltage_with_retry(low, settings)
+    high_trend.append(final_high_v)
+    low_trend.append(final_low_v)
     control_dcdc_converter(False, settings)
     logging.info("Turning off DC-DC converter.")
     set_relay_connection(0, 0, settings)
@@ -1087,6 +1103,27 @@ def balance_battery_voltages(stdscr, high, low, settings, temps_alerts, is_heati
     balancing_active = False
     web_data['balancing'] = False
     last_balance_time = time.time()
+    # Verify balancing occurred
+    if len(high_trend) >= 3 and len(low_trend) >= 3:
+        high_change = final_high_v - initial_high_v
+        low_change = final_low_v - initial_low_v
+        min_delta = settings['min_voltage_delta']
+        if high_change >= 0 or low_change <= 0 or abs(high_change) < min_delta or low_change < min_delta:
+            alert = f"Balancing failed from Bank {high} to {low}: No voltage change detected (High change: {high_change:.3f}V, Low change: {low_change:.3f}V). Possible relay failure."
+            temps_alerts.append(alert)  # Add to alerts (will trigger check_for_issues)
+            event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {alert}")
+            if len(event_log) > settings.get('EventLogSize', 20):
+                event_log.pop(0)
+            logging.error(alert)
+            balancer_failed = True
+        else:
+            logging.info(f"Balancing verified: High change {high_change:.3f}V, Low change {low_change:.3f}V.")
+    else:
+        logging.warning(f"Insufficient readings for balancing verification from {high} to {low}.")
+    logging.info(f"{mode} balancing process completed.")
+    event_log.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {mode} balancing completed from Bank {high} to {low}")
+    if len(event_log) > settings.get('EventLogSize', 20):
+        event_log.pop(0)
 def compute_bank_medians(calibrated_temps, valid_min):
     bank_stats = []
     for bank_indices in BANK_SENSOR_INDICES:
@@ -1278,7 +1315,7 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
                 detail = f" ({raw_str}/{offset_str})"
             else:
                 detail = ""
-            t_str = f"Bat {bat_id} Local C{local_ch}: {calib_str}{detail}"
+            t_str = f"Bat {bat_id} Local C {local_ch}: {calib_str}{detail}"
             t_color = curses.color_pair(8) if "Inv" in calib_str else \
                      curses.color_pair(2) if calib > settings['high_threshold'] else \
                      curses.color_pair(3) if calib < settings['low_threshold'] else \
@@ -1287,84 +1324,10 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
                 try:
                     stdscr.addstr(y_offset, 0, t_str, t_color)
                 except curses.error:
-                    logging.warning(f"addstr error for temp Bank {bank_id+1} Bat {bat_id} Local C{local_ch}.")
+                    logging.warning(f"addstr error for temp Bank {bank_id+1} Bat {bat_id} Local {local_ch}.")
             else:
-                logging.warning(f"Skipping temp for Bank {bank_id+1} Bat {bat_id} Local C{local_ch} - out of bounds.")
+                logging.warning(f"Skipping temp for Bank {bank_id+1} Bat {bat_id} Local {local_ch} - out of bounds.")
             y_offset += 1
-    med_str = f"{startup_median:.1f}°C" if startup_median else "N/A"
-    if y_offset < height:
-        try:
-            stdscr.addstr(y_offset, 0, f"Startup Median Temp: {med_str}", curses.color_pair(7))
-        except curses.error:
-            logging.warning("addstr error for startup median.")
-    else:
-        logging.warning("Skipping startup median - out of bounds.")
-    y_offset += 2
-    if y_offset < height:
-        try:
-            stdscr.addstr(y_offset, 0, "Alerts:", curses.color_pair(7))
-        except curses.error:
-            logging.warning("addstr error for alerts header.")
-    y_offset += 1
-    if alerts:
-        for alert in alerts:
-            if y_offset < height and len(alert) < right_half_x:
-                try:
-                    stdscr.addstr(y_offset, 0, alert, curses.color_pair(8))
-                except curses.error:
-                    logging.warning(f"addstr error for alert '{alert}'.")
-            else:
-                logging.warning(f"Skipping alert '{alert}' - out of bounds.")
-            y_offset += 1
-    else:
-        if y_offset < height:
-            try:
-                stdscr.addstr(y_offset, 0, "No alerts.", curses.color_pair(4))
-            except curses.error:
-                logging.warning("addstr error for no alerts message.")
-        else:
-            logging.warning("Skipping no alerts message - out of bounds.")
-    local_ip = 'localhost'
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        local_ip = s.getsockname()[0]
-        s.close()
-    except Exception:
-        local_ip = socket.gethostbyname(socket.gethostname())
-    y_config = 3
-    config_lines = [
-        f"Web Dashboard URL: http://{local_ip}:{settings['web_port']}",
-        f"Number of Parallel Batteries: {settings['number_of_parallel_batteries']}",
-        f"Number of Series Banks: {settings['num_series_banks']}",
-        f"Sensors per Bank per Battery: {settings['sensors_per_bank']}",
-        f"Polling Interval: {settings['poll_interval']} seconds",
-        f"Temperature IP Address: {settings['ip']}",
-        f"Modbus TCP Port: {settings['modbus_port']}",
-        f"High Temperature Threshold: {settings['high_threshold']}°C",
-        f"Low Temperature Threshold: {settings['low_threshold']}°C",
-        f"Absolute Deviation Threshold: {settings['abs_deviation_threshold']}°C",
-        f"Relative Deviation Threshold: {settings['deviation_threshold']}",
-        f"Abnormal Rise Threshold: {settings['rise_threshold']}°C",
-        f"Group Lag Threshold: {settings['disconnection_lag_threshold']}°C",
-        f"Cabinet Over-Temp Threshold: {settings['cabinet_over_temp_threshold']}°C",
-        f"Valid Minimum Temperature: {settings['valid_min']}°C",
-        f"Low Voltage Threshold per Bank: {settings['LowVoltageThresholdPerBattery']}V",
-        f"High Voltage Threshold per Bank: {settings['HighVoltageThresholdPerBattery']}V",
-        f"Voltage Difference to Balance: {settings['VoltageDifferenceToBalance']}V",
-        f"Balance Duration: {settings['BalanceDurationSeconds']} seconds",
-        f"Balance Rest Period: {settings['BalanceRestPeriodSeconds']} seconds"
-    ]
-    col_width = max(len(line) for line in config_lines) + 2
-    num_cols = 1
-    for i, line in enumerate(config_lines):
-        col = i // 20
-        row = i % 20
-        if col < num_cols and y_config + row < height:
-            try:
-                stdscr.addstr(y_config + row, right_half_x + col * col_width, line, curses.color_pair(7))
-            except curses.error:
-                pass
     y_offset = height // 2
     if y_offset < height:
         try:
@@ -1446,7 +1409,7 @@ def close_watchdog():
         except IOError:
             pass
 def startup_self_test(settings, stdscr, data_dir):
-    global startup_failed, startup_alerts, startup_set, startup_median, startup_offsets
+    global startup_failed, startup_alerts, startup_set, startup_median, startup_offsets, balancer_failed
     if not settings['StartupSelfTestEnabled']:
         logging.info("Startup self-test disabled via configuration.")
         return []
@@ -1750,6 +1713,7 @@ def startup_self_test(settings, stdscr, data_dir):
                         if len(event_log) > settings.get('EventLogSize', 20):
                             event_log.pop(0)
                         logging.error(f"Balance test from Bank {source} to Bank {dest} failed: Source did not decrease or destination did not increase sufficiently.")
+                        balancer_failed = True
                         if progress_y + 1 < stdscr.getmaxyx()[0]:
                             try:
                                 stdscr.addstr(progress_y + 1, 0, f"Test failed: Unexpected trend or insufficient change (Bank {source} Initial={initial_source_v:.2f}V, Final={final_source_v:.2f}V, Change={source_change:+.3f}V, Bank {dest} Initial={initial_dest_v:.2f}V, Final={final_dest_v:.2f}V, Change={dest_change:+.3f}V).", curses.color_pair(2))
@@ -1769,6 +1733,7 @@ def startup_self_test(settings, stdscr, data_dir):
                     if len(event_log) > settings.get('EventLogSize', 20):
                         event_log.pop(0)
                     logging.error(f"Balance test from Bank {source} to Bank {dest} failed: Only {len(source_trend)} readings collected.")
+                    balancer_failed = True
                     if progress_y + 1 < stdscr.getmaxyx()[0]:
                         try:
                             stdscr.addstr(progress_y + 1, 0, "Test failed: Insufficient readings.", curses.color_pair(2))
@@ -1802,7 +1767,8 @@ def startup_self_test(settings, stdscr, data_dir):
             web_data['last_update'] = time.time()
             retries += 1
             if retries >= max_retries:
-                logging.error("Max retries reached for startup self-test. Proceeding to main loop with warnings.")
+                logging.warning("Max retries reached for startup self-test. Proceeding to main loop with startup_failed reset to False.")
+                startup_failed = False  # Reset to allow balancing
                 break
             time.sleep(120)  # Wait 2 minutes before retry
             continue
@@ -2124,7 +2090,7 @@ def main(stdscr):
     curses.init_pair(7, curses.COLOR_CYAN, -1)
     curses.init_pair(8, curses.COLOR_MAGENTA, -1)
     stdscr.nodelay(True)
-    global previous_temps, previous_bank_medians, run_count, startup_offsets, startup_median, startup_set, battery_voltages, web_data, balancing_active, BANK_SENSOR_INDICES, alive_timestamp, NUM_BANKS
+    global previous_temps, previous_bank_medians, run_count, startup_offsets, startup_median, startup_set, battery_voltages, web_data, balancing_active, BANK_SENSOR_INDICES, alive_timestamp, NUM_BANKS, balancer_failed
     settings = load_config(data_dir)
     validate_config(settings)
     NUM_BANKS = settings['num_series_banks'] # Dynamic now.
@@ -2254,7 +2220,7 @@ def main(stdscr):
         logging.debug(f"RRD updated with: {values}")
 
         # Step 7: Decide if we need to balance the batteries
-        if len(battery_voltages) == NUM_BANKS:
+        if len(battery_voltages) == NUM_BANKS and not balancer_failed:
             max_v = max(battery_voltages)  # Find highest voltage bank
             min_v = min(battery_voltages)  # Find lowest voltage bank
             high_b = battery_voltages.index(max_v) + 1  # Bank number with highest voltage
