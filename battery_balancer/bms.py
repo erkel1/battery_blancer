@@ -3,7 +3,7 @@
 # --------------------------------------------------------------------------------
 #
 # **Script Name:** bms.py
-# **Version:** 1.9 (As of September 07, 2025) - Fixed UnboundLocalError in balance_battery_voltages by initializing voltage_high and voltage_low before the loop using initial values. Enhanced robustness by handling potential None from reads.
+# **Version:** 1.10 (As of September 07, 2025) - Added thread safety with locks for web_data to prevent race conditions. Enhanced error handling in API routes with try/except and JSON error responses.
 # **Author:** [Your Name or Original Developer] - Built for Raspberry Pi-based battery monitoring and balancing.
 # **Purpose:** This script acts as a complete Battery Management System (BMS) for a configurable NsXp battery configuration (N series banks, X parallel cells per bank, where X = sensors_per_bank * number_of_parallel_batteries). It monitors temperatures from multiple Modbus slaves and voltages, balances charge between banks, detects issues, logs events, sends alerts, and provides user interfaces via terminal (TUI) and web dashboard. Includes time-series logging using RRDTool, ASCII line charts in TUI, and interactive charts in web via Chart.js.
 #
@@ -334,6 +334,7 @@ watchdog_fd = None # File handle for watchdog - open connection.
 alive_timestamp = 0.0 # Shared timestamp updated by main to indicate aliveness - for watchdog thread.
 RRD_FILE = 'bms.rrd' # RRD database file for storing time-series data - persistent storage.
 HISTORY_LIMIT = 1440 # Number of historical entries to retain (e.g., ~24 hours at 1min steps) - limit for memory/efficiency.
+data_lock = threading.Lock()  # Lock for thread-safe access to web_data
 def get_bank_for_channel(ch):
     """
     Find which battery bank a temperature sensor belongs to.
@@ -1321,7 +1322,7 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
                 detail = f" ({raw_str}/{offset_str})"
             else:
                 detail = ""
-            t_str = f"Bat {bat_id} Local C {local_ch}: {calib_str}{detail}"
+            t_str = f"Bat {bat_id} Local C{local_ch}: {calib_str}{detail}"
             t_color = curses.color_pair(8) if "Inv" in calib_str else \
                      curses.color_pair(2) if calib > settings['high_threshold'] else \
                      curses.color_pair(3) if calib < settings['low_threshold'] else \
@@ -1330,10 +1331,84 @@ def draw_tui(stdscr, voltages, calibrated_temps, raw_temps, offsets, bank_stats,
                 try:
                     stdscr.addstr(y_offset, 0, t_str, t_color)
                 except curses.error:
-                    logging.warning(f"addstr error for temp Bank {bank_id+1} Bat {bat_id} Local {local_ch}.")
+                    logging.warning(f"addstr error for temp Bank {bank_id+1} Bat {bat_id} Local C{local_ch}.")
             else:
-                logging.warning(f"Skipping temp for Bank {bank_id+1} Bat {bat_id} Local {local_ch} - out of bounds.")
+                logging.warning(f"Skipping temp for Bank {bank_id+1} Bat {bat_id} Local C{local_ch} - out of bounds.")
             y_offset += 1
+    med_str = f"{startup_median:.1f}°C" if startup_median else "N/A"
+    if y_offset < height:
+        try:
+            stdscr.addstr(y_offset, 0, f"Startup Median Temp: {med_str}", curses.color_pair(7))
+        except curses.error:
+            logging.warning("addstr error for startup median.")
+    else:
+        logging.warning("Skipping startup median - out of bounds.")
+    y_offset += 2
+    if y_offset < height:
+        try:
+            stdscr.addstr(y_offset, 0, "Alerts:", curses.color_pair(7))
+        except curses.error:
+            logging.warning("addstr error for alerts header.")
+    y_offset += 1
+    if alerts:
+        for alert in alerts:
+            if y_offset < height and len(alert) < right_half_x:
+                try:
+                    stdscr.addstr(y_offset, 0, alert, curses.color_pair(8))
+                except curses.error:
+                    logging.warning(f"addstr error for alert '{alert}'.")
+            else:
+                logging.warning(f"Skipping alert '{alert}' - out of bounds.")
+            y_offset += 1
+    else:
+        if y_offset < height:
+            try:
+                stdscr.addstr(y_offset, 0, "No alerts.", curses.color_pair(4))
+            except curses.error:
+                logging.warning("addstr error for no alerts message.")
+        else:
+            logging.warning("Skipping no alerts message - out of bounds.")
+    local_ip = 'localhost'
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        local_ip = socket.gethostbyname(socket.gethostname())
+    y_config = 3
+    config_lines = [
+        f"Web Dashboard URL: http://{local_ip}:{settings['web_port']}",
+        f"Number of Parallel Batteries: {settings['number_of_parallel_batteries']}",
+        f"Number of Series Banks: {settings['num_series_banks']}",
+        f"Sensors per Bank per Battery: {settings['sensors_per_bank']}",
+        f"Polling Interval: {settings['poll_interval']} seconds",
+        f"Temperature IP Address: {settings['ip']}",
+        f"Modbus TCP Port: {settings['modbus_port']}",
+        f"High Temperature Threshold: {settings['high_threshold']}°C",
+        f"Low Temperature Threshold: {settings['low_threshold']}°C",
+        f"Absolute Deviation Threshold: {settings['abs_deviation_threshold']}°C",
+        f"Relative Deviation Threshold: {settings['deviation_threshold']}",
+        f"Abnormal Rise Threshold: {settings['rise_threshold']}°C",
+        f"Group Lag Threshold: {settings['disconnection_lag_threshold']}°C",
+        f"Cabinet Over-Temp Threshold: {settings['cabinet_over_temp_threshold']}°C",
+        f"Valid Minimum Temperature: {settings['valid_min']}°C",
+        f"Low Voltage Threshold per Bank: {settings['LowVoltageThresholdPerBattery']}V",
+        f"High Voltage Threshold per Bank: {settings['HighVoltageThresholdPerBattery']}V",
+        f"Voltage Difference to Balance: {settings['VoltageDifferenceToBalance']}V",
+        f"Balance Duration: {settings['BalanceDurationSeconds']} seconds",
+        f"Balance Rest Period: {settings['BalanceRestPeriodSeconds']} seconds"
+    ]
+    col_width = max(len(line) for line in config_lines) + 2
+    num_cols = 1
+    for i, line in enumerate(config_lines):
+        col = i // 20
+        row = i % 20
+        if col < num_cols and y_config + row < height:
+            try:
+                stdscr.addstr(y_config + row, right_half_x + col * col_width, line, curses.color_pair(7))
+            except curses.error:
+                pass
     y_offset = height // 2
     if y_offset < height:
         try:
@@ -1959,7 +2034,7 @@ def start_web_server(settings):
                 }})
                 .catch(error => {{
                     console.error('Error fetching status:', error);
-                    document.getElementById('system-status').textContent = 'Error fetching status';
+                    document.getElementById('system-status').textContent = 'Error: ' + error.message;
                 }});
         }}
         let myChart = null;
@@ -2021,26 +2096,36 @@ def start_web_server(settings):
         return html
     @app.route('/api/status')
     def api_status():
-        response = {
-            'voltages': web_data['voltages'],
-            'temperatures': web_data['temperatures'],
-            'bank_summaries': web_data['bank_summaries'],
-            'alerts': web_data['alerts'],
-            'balancing': web_data['balancing'],
-            'last_update': web_data['last_update'],
-            'system_status': web_data['system_status'],
-            'total_voltage': sum(web_data['voltages']),
-            'high_threshold': settings['high_threshold'],
-            'low_threshold': settings['low_threshold'],
-            'high_voltage_threshold': settings['HighVoltageThresholdPerBattery'],
-            'low_voltage_threshold': settings['LowVoltageThresholdPerBattery'],
-            'sensors_per_battery': settings['sensors_per_battery']
-        }
-        return jsonify(response)
+        try:
+            with data_lock:
+                voltages = [v if v is not None else 0.0 for v in web_data['voltages']]
+                response = {
+                    'voltages': web_data['voltages'],
+                    'temperatures': web_data['temperatures'],
+                    'bank_summaries': web_data['bank_summaries'],
+                    'alerts': web_data['alerts'],
+                    'balancing': web_data['balancing'],
+                    'last_update': web_data['last_update'],
+                    'system_status': web_data['system_status'],
+                    'total_voltage': sum(voltages),
+                    'high_threshold': settings['high_threshold'],
+                    'low_threshold': settings['low_threshold'],
+                    'high_voltage_threshold': settings['HighVoltageThresholdPerBattery'],
+                    'low_voltage_threshold': settings['LowVoltageThresholdPerBattery'],
+                    'sensors_per_battery': settings['sensors_per_battery']
+                }
+            return jsonify(response)
+        except Exception as e:
+            logging.error(f"Error in /api/status: {str(e)}\n{traceback.format_exc()}")
+            return jsonify({'error': str(e)}), 500
     @app.route('/api/history')
     def api_history():
-        history = fetch_rrd_history(settings)
-        return jsonify({'history': history})
+        try:
+            history = fetch_rrd_history(settings)
+            return jsonify({'history': history})
+        except Exception as e:
+            logging.error(f"Error in /api/history: {str(e)}\n{traceback.format_exc()}")
+            return jsonify({'error': str(e)}), 500
     @app.route('/api/balance', methods=['POST'])
     def api_balance():
         global balancing_active
@@ -2240,13 +2325,14 @@ def main(stdscr):
                 is_heating = any_low_temp
                 balance_battery_voltages(stdscr, high_b, low_b, settings, temps_alerts, is_heating=is_heating)  # Transfer charge
                 balancing_active = False
-        web_data['voltages'] = battery_voltages
-        web_data['temperatures'] = calibrated_temps
-        web_data['bank_summaries'] = bank_stats
-        web_data['alerts'] = all_alerts
-        web_data['balancing'] = balancing_active
-        web_data['last_update'] = time.time()
-        web_data['system_status'] = 'Alert' if alert_needed else 'Running'
+        with data_lock:
+            web_data['voltages'] = battery_voltages
+            web_data['temperatures'] = calibrated_temps
+            web_data['bank_summaries'] = bank_stats
+            web_data['alerts'] = all_alerts
+            web_data['balancing'] = balancing_active
+            web_data['last_update'] = time.time()
+            web_data['system_status'] = 'Alert' if alert_needed else 'Running'
         draw_tui(
             stdscr, battery_voltages, calibrated_temps, raw_temps,
             startup_offsets or [0]*total_channels, bank_stats,
