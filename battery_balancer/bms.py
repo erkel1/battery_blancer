@@ -411,10 +411,10 @@ def modbus_crc(data):
     that verifies the message wasn't garbled during transmission (e.g., by electrical noise on wires).
     This function computes the CRC-16 checksum using the Modbus polynomial (0xA001), which is standard for error checking.
     Non-programmer analogy: Like double-checking a phone number by repeating it—ensures no digits were misheard.
-    
+
     Args:
         data (bytes): Data to calculate the CRC for - the message bytes to checksum.
-    
+
     Returns:
         bytes: 2-byte CRC value in little-endian order - the check code appended to messages.
     """
@@ -434,6 +434,28 @@ def modbus_crc(data):
                 crc >>= 1
     # Convert the 16-bit CRC to 2 bytes, little-endian (low byte first).
     return crc.to_bytes(2, 'little')
+
+def test_modbus_connectivity(ip, port):
+    """
+    Test network connectivity to the Modbus device.
+    Attempts a socket connection with a short timeout to check if the device is reachable.
+    Non-programmer analogy: Like knocking on a door to see if someone is home.
+
+    Args:
+        ip (str): IP address of the Modbus device.
+        port (int): Port number.
+
+    Returns:
+        bool: True if connection succeeds, False otherwise.
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1)  # 1 second timeout
+        s.connect((ip, port))
+        s.close()
+        return True
+    except socket.error:
+        return False
 
 def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor, max_retries, retry_backoff_base, slave_addr=1):
     """
@@ -468,6 +490,8 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
     crc = modbus_crc(query_base)
     # Append CRC to complete the query packet.
     query = query_base + crc
+    # Network retry counter for transient network issues.
+    network_retry_count = 0
     # Retry loop: Try up to max_retries times if failures occur.
     for attempt in range(max_retries):
         try:
@@ -520,22 +544,50 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
         # Handle network errors (e.g., connection refused, timeout).
         except socket.error as e:
             # Log warning for this attempt.
-            logging.warning(f"Temp read attempt {attempt+1} for slave {slave_addr} failed: {str(e)}. Retrying.")
-            # If not last attempt, wait with backoff (1^0=1s, 1^1=1s, etc.—but base=1 is minimal).
-            if attempt < max_retries - 1:
-                time.sleep(retry_backoff_base ** attempt)
+            logging.warning(f"Temp read attempt {attempt+1} for slave {slave_addr} failed: {str(e)}. Checking network connectivity.")
+            # Sleep 3 seconds for network recovery.
+            time.sleep(3)
+            # Test network connectivity.
+            if test_modbus_connectivity(ip, modbus_port):
+                # Network is up, so it's a legitimate device error—use original retry logic.
+                logging.warning(f"Network is up, treating as device error for slave {slave_addr}.")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_backoff_base ** attempt)
+                else:
+                    logging.error(f"Temp read for slave {slave_addr} failed after {max_retries} attempts - {str(e)}.")
+                    return f"Error: Failed after {max_retries} attempts for slave {slave_addr} - {str(e)}."
             else:
-                # Last attempt failed—log error and return message.
-                logging.error(f"Temp read for slave {slave_addr} failed after {max_retries} attempts - {str(e)}.")
-                return f"Error: Failed after {max_retries} attempts for slave {slave_addr} - {str(e)}."
+                # Network is down, retry up to 3 times.
+                network_retry_count += 1
+                if network_retry_count < 3:
+                    logging.warning(f"Network down, retrying ({network_retry_count}/3) for slave {slave_addr}.")
+                    continue  # Retry without backoff for network issues
+                else:
+                    logging.error(f"Network down after 3 retries for slave {slave_addr} - {str(e)}.")
+                    return f"Error: Network unreachable after retries for slave {slave_addr} - {str(e)}."
         # Handle validation errors (e.g., bad response format).
         except ValueError as e:
-            logging.warning(f"Temp read attempt {attempt+1} for slave {slave_addr} failed (validation): {str(e)}. Retrying.")
-            if attempt < max_retries - 1:
-                time.sleep(retry_backoff_base ** attempt)
+            logging.warning(f"Temp read attempt {attempt+1} for slave {slave_addr} failed (validation): {str(e)}. Checking network connectivity.")
+            # Sleep 3 seconds for network recovery.
+            time.sleep(3)
+            # Test network connectivity.
+            if test_modbus_connectivity(ip, modbus_port):
+                # Network is up, so it's a legitimate device error—use original retry logic.
+                logging.warning(f"Network is up, treating as device error for slave {slave_addr}.")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_backoff_base ** attempt)
+                else:
+                    logging.error(f"Temp read for slave {slave_addr} failed after {max_retries} attempts - {str(e)}.")
+                    return f"Error: Failed after {max_retries} attempts for slave {slave_addr} - {str(e)}."
             else:
-                logging.error(f"Temp read for slave {slave_addr} failed after {max_retries} attempts - {str(e)}.")
-                return f"Error: Failed after {max_retries} attempts for slave {slave_addr} - {str(e)}."
+                # Network is down, retry up to 3 times.
+                network_retry_count += 1
+                if network_retry_count < 3:
+                    logging.warning(f"Network down, retrying ({network_retry_count}/3) for slave {slave_addr}.")
+                    continue  # Retry without backoff for network issues
+                else:
+                    logging.error(f"Network down after 3 retries for slave {slave_addr} - {str(e)}.")
+                    return f"Error: Network unreachable after retries for slave {slave_addr} - {str(e)}."
         # Catch any unexpected errors.
         except Exception as e:
             logging.error(f"Unexpected error in temp read attempt {attempt+1} for slave {slave_addr}: {str(e)}\n{traceback.format_exc()}")
@@ -622,7 +674,6 @@ def load_config(data_dir):
     i2c_settings = {
         'MultiplexerAddress': int(config_parser.get('I2C', 'MultiplexerAddress', fallback='0x70'), 16),  # TCA9548A mux addr.
         'VoltageMeterAddress': int(config_parser.get('I2C', 'VoltageMeterAddress', fallback='0x49'), 16),  # ADS1115 ADC addr.
-        'RelayAddress': int(config_parser.get('I2C', 'RelayAddress', fallback='0x26'), 16)  # Relay board addr.
     }
     # GPIO pin assignments.
     gpio_settings = {
@@ -687,9 +738,12 @@ def load_config(data_dir):
     # Log success.
     logging.info("Configuration loaded successfully.")
     # Combine all settings into one big dictionary.
+    relay_pins = {
+        f'Relay{i}_Pin': config_parser.getint('GPIO', f'Relay{i}_Pin', fallback=[17,18,27,22][i]) for i in range(4)
+    }
     return {**temp_settings, **voltage_settings, **general_flags, **i2c_settings,
             **gpio_settings, **email_settings, **adc_settings, **calibration_settings,
-            **startup_settings, **web_settings, 'relay_mapping': relay_mapping}
+            **startup_settings, **web_settings, 'relay_mapping': relay_mapping, **relay_pins}
 
 def validate_config(settings):
     """
@@ -780,13 +834,6 @@ def detect_hardware(settings):
             logging.info("I2C voltage meter detected.")
         except IOError as e:
             logging.warning(f"I2C voltage meter not accessible: {e}")
-       
-        try:
-            # Try reading from relay address.
-            bus.read_byte(settings['RelayAddress'])
-            logging.info("I2C relay detected.")
-        except IOError as e:
-            logging.warning(f"I2C relay not accessible: {e}")
     else:
         # No I2C—skip, likely test mode.
         logging.warning("I2C bus not available - hardware detection skipped.")
@@ -849,6 +896,11 @@ def setup_hardware(settings):
         GPIO.setup(settings['AlarmRelayPin'], GPIO.OUT, initial=GPIO.LOW) # Alarm buzzer/light
         # Fan pin low (off).
         GPIO.setup(settings['FanRelayPin'], GPIO.OUT, initial=GPIO.LOW) # Cooling fan control
+        # Set up relay pins
+        for i in range(4):
+            pin = settings[f'Relay{i}_Pin']
+            GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)
+            logging.info(f"Relay {i} GPIO pin {pin} set up.")
     else:
         logging.warning("GPIO library not available - running in test mode")
     # Nested function to create RRD database if needed.
@@ -1380,57 +1432,60 @@ def read_voltage_with_retry(bank_id, settings):
 
 def set_relay_connection(high, low, settings):
     """
-    Set relay connections for balancing between high and low banks.
-    Switches I2C channel to relays, looks up the bitmask for the pair in relay_mapping,
-    writes the state to relay board. Resets to 0 if invalid. Non-programmer: Like flipping specific switches
-    to connect two water pipes for flow.
+    Set relay connections for balancing between high and low banks using GPIO.
+    Looks up the relays for the pair in relay_mapping, sets corresponding GPIO pins HIGH to activate.
+    For reset (high=0, low=0), sets all relay pins LOW. Assumes active-high relays.
     
     Args:
-        high (int): Source bank (higher voltage).
-        low (int): Destination bank.
-        settings (dict): Config with mapping, addresses.
+        high (int): Source bank (higher voltage), or 0 for reset.
+        low (int): Destination bank, or 0 for reset.
+        settings (dict): Config with relay_mapping and Relay{i}_Pin.
     
     Returns:
         None
     """
     try:
-        # Validate banks.
-        if high > settings['num_series_banks'] or low > settings['num_series_banks']:
-            logging.warning(f"Bank {high} or {low} exceeds configured num_series_banks ({settings['num_series_banks']}). Cannot balance.")
+        # Validate banks unless reset.
+        if high != 0 and low != 0:
+            if high > settings['num_series_banks'] or low > settings['num_series_banks']:
+                logging.warning(f"Bank {high} or {low} exceeds configured num_series_banks ({settings['num_series_banks']}). Cannot balance.")
+                return
+            logging.info(f"Attempting to set GPIO relays for connection from Bank {high} to {low}")
+        else:
+            logging.info("Resetting all GPIO relays to off")
+        
+        # Reset: Set all relay pins LOW
+        if high == 0 and low == 0:
+            for i in range(4):  # Assuming 4 relays
+                pin = settings[f'Relay{i}_Pin']
+                GPIO.output(pin, GPIO.LOW)
+            logging.info("All relays deactivated")
             return
-        # Log intent.
-        logging.info(f"Attempting to set relay for connection from Bank {high} to {low}")
-        # Log channel switch.
-        logging.debug("Switching to relay control channel.")
-        # Select channel 3 (relay channel).
-        choose_channel(3, settings['MultiplexerAddress'])
-        # Start with all relays off (0).
-        relay_state = 0
-        # Key for mapping (e.g., '1-2').
+        
+        # Key for mapping (e.g., '1-2')
         pair_key = f"{high}-{low}"
-        # Look up relays for pair.
         if pair_key in settings.get('relay_mapping', {}):
             relays = settings['relay_mapping'][pair_key]
-            # Set bits for each relay (1 << relay_num).
+            logging.debug(f"Activating relays {relays} for {pair_key}")
+            # First, deactivate all relays to ensure clean state
+            for i in range(4):
+                pin = settings[f'Relay{i}_Pin']
+                GPIO.output(pin, GPIO.LOW)
+            # Activate specific relays
             for relay in relays:
-                relay_state |= (1 << relay)
-            logging.debug(f"Relays {relays} activated for {pair_key}.")
+                if 0 <= relay < 4:  # Validate relay index
+                    pin = settings[f'Relay{relay}_Pin']
+                    GPIO.output(pin, GPIO.HIGH)
+                    logging.debug(f"Relay {relay} on pin {pin} activated")
+                else:
+                    logging.warning(f"Invalid relay index {relay} for {pair_key}")
         else:
-            # No mapping—can't balance.
             logging.warning(f"No relay mapping found for {pair_key}. Cannot balance.")
             return
-        # Log final state (binary).
-        logging.debug(f"Final relay state: {bin(relay_state)}")
-        if bus:
-            # Write state to relay board (reg 0x11?).
-            logging.info(f"Sending relay state command to hardware.")
-            bus.write_byte_data(settings['RelayAddress'], 0x11, relay_state)
-        # Log completion.
-        logging.info(f"Relay setup completed for balancing from Bank {high} to {low}")
-    except (IOError, AttributeError) as e:
-        logging.error(f"I/O error while setting up relay: {e}")
+        
+        logging.info(f"GPIO relay setup completed for balancing from Bank {high} to {low}")
     except Exception as e:
-        logging.error(f"Unexpected error in set_relay_connection: {e}")
+        logging.error(f"Error in set_relay_connection: {e}")
 
 def control_dcdc_converter(turn_on, settings):
     """
@@ -2304,15 +2359,14 @@ def startup_self_test(settings, stdscr, data_dir):
         time.sleep(0.5)
         logging.debug(f"Testing I2C connectivity on bus {settings['I2C_BusNumber']}: "
                       f"Multiplexer=0x{settings['MultiplexerAddress']:02x}, "
-                      f"VoltageMeter=0x{settings['VoltageMeterAddress']:02x}, "
-                      f"Relay=0x{settings['RelayAddress']:02x}")
+                      f"VoltageMeter=0x{settings['VoltageMeterAddress']:02x}")
         try:
             if bus:
                 logging.debug(f"Selecting I2C channel 0 on multiplexer 0x{settings['MultiplexerAddress']:02x}")
                 choose_channel(0, settings['MultiplexerAddress'])
                 logging.debug(f"Reading byte from VoltageMeter at 0x{settings['VoltageMeterAddress']:02x}")
                 bus.read_byte(settings['VoltageMeterAddress'])
-                logging.debug("I2C connectivity test passed for all devices.")
+                logging.debug("I2C connectivity test passed for voltage meter.")
             if y + 1 < stdscr.getmaxyx()[0]:
                 try:
                     stdscr.addstr(y + 1, 0, "I2C OK.", curses.color_pair(4))
@@ -2326,8 +2380,7 @@ def startup_self_test(settings, stdscr, data_dir):
                 event_log.pop(0)
             logging.error(f"I2C connectivity failure: {str(e)}. Bus={settings['I2C_BusNumber']}, "
                           f"Multiplexer=0x{settings['MultiplexerAddress']:02x}, "
-                          f"VoltageMeter=0x{settings['VoltageMeterAddress']:02x}, "
-                          f"Relay=0x{settings['RelayAddress']:02x}")
+                          f"VoltageMeter=0x{settings['VoltageMeterAddress']:02x}")
             if y + 1 < stdscr.getmaxyx()[0]:
                 try:
                     stdscr.addstr(y + 1, 0, f"I2C failure: {str(e)}", curses.color_pair(2))
