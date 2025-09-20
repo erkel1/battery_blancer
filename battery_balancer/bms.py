@@ -2327,7 +2327,6 @@ def startup_self_test(settings, stdscr, data_dir):
             f"Configuration details: I2C_BusNumber={settings['I2C_BusNumber']}, "
             f"MultiplexerAddress=0x{settings['MultiplexerAddress']:02x}, "
             f"VoltageMeterAddress=0x{settings['VoltageMeterAddress']:02x}, "
-            f"RelayAddress=0x{settings['RelayAddress']:02x}, "
             f"Temp_IP={settings['ip']}, Temp_Port={settings['modbus_port']}, "
             f"TotalChannels={settings['total_channels']}, ScalingFactor={settings['scaling_factor']}, "
             f"ParallelBatteries={settings['number_of_parallel_batteries']}, SlaveAddresses={settings['modbus_slave_addresses']}"
