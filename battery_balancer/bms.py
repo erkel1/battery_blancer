@@ -593,6 +593,9 @@ def read_ntc_sensors(ip, modbus_port, query_delay, num_channels, scaling_factor,
             logging.error(f"Unexpected error in temp read attempt {attempt+1} for slave {slave_addr}: {str(e)}\n{traceback.format_exc()}")
             return f"Error: Unexpected failure for slave {slave_addr} - {str(e)}"
 
+    # If loop exits without returning (e.g., due to continue on last attempt), return error
+    return f"Error: All retries exhausted for slave {slave_addr}"
+
 def load_config(data_dir):
     """
     Load and parse the configuration from the 'battery_monitor.ini' file.
